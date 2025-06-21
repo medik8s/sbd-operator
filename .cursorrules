@@ -50,6 +50,8 @@ TESTING REQUIREMENTS:
 - Aim for 80%+ code coverage
 - Test error conditions and edge cases
 - Use test fixtures for complex scenarios
+- Never use the --ginkgo.dry-run option
+- Always run e2e tests from the makefile
 
 ERROR HANDLING:
 - Always return errors, don't panic
@@ -107,6 +109,7 @@ DEPENDENCIES:
 - Prefer standard library when possible
 - Keep dependencies minimal and well-maintained
 - Update dependencies regularly for security patches
+- Always use UBI base images
 
 When suggesting code changes:
 1. Ensure Kubernetes best practices are followed
@@ -118,6 +121,4 @@ When suggesting code changes:
 7. Ensure backwards compatibility when possible
 8. Document any breaking changes 
 9. Commit all changes with a concise summary
-
-When running tests:
-1. Never use the --ginkgo.dry-run option
+10. Prefer modifying existing make targets instead of creating new ones
