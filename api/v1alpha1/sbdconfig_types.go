@@ -17,11 +17,24 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"fmt"
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+
+// Constants for SBDConfig validation and defaults
+const (
+	// DefaultStaleNodeTimeout is the default timeout for considering nodes stale
+	DefaultStaleNodeTimeout = 10 * time.Minute
+	// MinStaleNodeTimeout is the minimum allowed stale node timeout
+	MinStaleNodeTimeout = 1 * time.Minute
+	// MaxStaleNodeTimeout is the maximum allowed stale node timeout
+	MaxStaleNodeTimeout = 24 * time.Hour
+)
 
 // SBDConfigSpec defines the desired state of SBDConfig.
 type SBDConfigSpec struct {
@@ -40,6 +53,39 @@ type SBDConfigSpec struct {
 	// Namespace is the namespace where the SBD agent DaemonSet will be deployed
 	// +kubebuilder:default="sbd-system"
 	Namespace string `json:"namespace,omitempty"`
+
+	// StaleNodeTimeout defines how long to wait before considering a node stale and removing it from slot mapping
+	// This timeout determines when inactive nodes are cleaned up from the shared SBD device slot assignments.
+	// Nodes that haven't updated their heartbeat within this duration will be considered stale and their slots
+	// will be freed for reuse by new nodes. The value must be at least 1 minute.
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+	// +kubebuilder:default="10m"
+	// +optional
+	StaleNodeTimeout *metav1.Duration `json:"staleNodeTimeout,omitempty"`
+}
+
+// GetStaleNodeTimeout returns the stale node timeout with default fallback
+func (s *SBDConfigSpec) GetStaleNodeTimeout() time.Duration {
+	if s.StaleNodeTimeout != nil {
+		return s.StaleNodeTimeout.Duration
+	}
+	return DefaultStaleNodeTimeout
+}
+
+// ValidateStaleNodeTimeout validates the stale node timeout value
+func (s *SBDConfigSpec) ValidateStaleNodeTimeout() error {
+	timeout := s.GetStaleNodeTimeout()
+
+	if timeout < MinStaleNodeTimeout {
+		return fmt.Errorf("stale node timeout %v is less than minimum %v", timeout, MinStaleNodeTimeout)
+	}
+
+	if timeout > MaxStaleNodeTimeout {
+		return fmt.Errorf("stale node timeout %v is greater than maximum %v", timeout, MaxStaleNodeTimeout)
+	}
+
+	return nil
 }
 
 // SBDConfigStatus defines the observed state of SBDConfig.

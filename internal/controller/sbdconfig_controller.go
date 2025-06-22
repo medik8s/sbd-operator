@@ -618,6 +618,7 @@ func (r *SBDConfigReconciler) buildDaemonSet(sbdConfig *medik8sv1alpha1.SBDConfi
 								fmt.Sprintf("--watchdog-path=%s", sbdConfig.Spec.SbdWatchdogPath),
 								"--watchdog-timeout=30s",
 								"--log-level=info",
+								fmt.Sprintf("--stale-node-timeout=%s", sbdConfig.Spec.GetStaleNodeTimeout().String()),
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: "dev", MountPath: "/dev"},

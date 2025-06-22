@@ -14,3 +14,8 @@ spec:
   
   # Namespace where the SBD Agent DaemonSet will be deployed
   namespace: "sbd-system"
+  
+  # Timeout for considering nodes stale and removing them from slot mapping
+  # Nodes that don't send heartbeats within this duration will have their slots freed
+  # for reuse by new nodes. Default is 10m (10 minutes). Minimum is 1m.
+  staleNodeTimeout: "15m"
