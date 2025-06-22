@@ -814,6 +814,23 @@ rules:
   - get
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/component: openshift-resources
+    app.kubernetes.io/name: sbd-operator
+  name: sbd-operator-system:openshift:scc:sbd-operator-sbd-agent-privileged
+rules:
+- apiGroups:
+  - security.openshift.io
+  resourceNames:
+  - sbd-operator-sbd-agent-privileged
+  resources:
+  - securitycontextconstraints
+  verbs:
+  - use
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   labels:
@@ -911,6 +928,22 @@ subjects:
 - kind: ServiceAccount
   name: sbd-operator-sbd-operator-controller-manager
   namespace: sbd-operator-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/component: openshift-resources
+    app.kubernetes.io/name: sbd-operator
+  name: sbd-operator-system:openshift:scc:sbd-operator-sbd-agent-privileged:sbd-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sbd-operator-system:openshift:scc:sbd-operator-sbd-agent-privileged
+subjects:
+- kind: ServiceAccount
+  name: sbd-agent
+  namespace: sbd-system
 ---
 apiVersion: v1
 kind: Service
