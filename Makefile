@@ -179,8 +179,8 @@ cleanup-test-e2e: ## Clean up e2e test environment and stop CRC cluster
 	@$(MAKE) uninstall || true
 
 destroy-crc:
-	@echo "Stopping CRC cluster..."
-	@crc stop || true
+	@echo "Deleting CRC cluster..."
+	@crc delete -f || true
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -218,38 +218,25 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # PLATFORMS defines the target platforms for multi-platform builds
 PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
 
-# Internal function to build operator image
-define build-operator-image
+.PHONY: build-operator-image
+build-operator-image: manifests generate fmt vet ## Build operator container image.
 	@echo "Building operator image: $(QUAY_OPERATOR_IMG):$(VERSION)"
 	$(CONTAINER_TOOL) build -t sbd-operator:$(VERSION) . --load
 	$(CONTAINER_TOOL) tag sbd-operator:$(VERSION) $(QUAY_OPERATOR_IMG):$(VERSION)
 	$(CONTAINER_TOOL) tag sbd-operator:$(VERSION) $(QUAY_OPERATOR_IMG):latest
-endef
 
-# Internal function to build agent image  
-define build-agent-image
+.PHONY: build-agent-image  
+build-agent-image: manifests generate fmt vet ## Build agent container image.
 	@echo "Building agent image: $(QUAY_AGENT_IMG):$(VERSION)"
 	$(CONTAINER_TOOL) build -f Dockerfile.sbd-agent -t sbd-agent:$(VERSION) . --load
 	$(CONTAINER_TOOL) tag sbd-agent:$(VERSION) $(QUAY_AGENT_IMG):$(VERSION)
 	$(CONTAINER_TOOL) tag sbd-agent:$(VERSION) $(QUAY_AGENT_IMG):latest
-endef
-
-.PHONY: build-operator
-build-operator: manifests generate fmt vet ## Build operator container image.
-	$(call build-operator-image)
-
-.PHONY: build-agent-image  
-build-agent-image: manifests generate fmt vet ## Build agent container image.
-	$(call build-agent-image)
 
 .PHONY: build-images
-build-images: manifests generate fmt vet ## Build both operator and agent container images.
-	@echo "Building SBD Operator images..."
+build-images: build-operator-image build-agent-image ## Build both operator and agent container images.
+	@echo "Built SBD Operator images..."
 	@echo "Operator: $(QUAY_OPERATOR_IMG):$(VERSION)"
 	@echo "Agent: $(QUAY_AGENT_IMG):$(VERSION)"
-	$(call build-operator-image)
-	$(call build-agent-image)
-	@echo "Successfully built both images!"
 
 .PHONY: push-operator
 push-operator: ## Push operator container image to registry.
@@ -264,12 +251,8 @@ push-agent: ## Push agent container image to registry.
 	$(CONTAINER_TOOL) push $(QUAY_AGENT_IMG):latest
 
 .PHONY: push-images
-push-images: ## Push both operator and agent container images to registry.
-	@echo "Pushing SBD Operator images to registry..."
-	@echo "Make sure you are logged in: docker login $(QUAY_REGISTRY)"
-	$(MAKE) push-operator
-	$(MAKE) push-agent
-	@echo "Successfully pushed both images!"
+push-images: push-operator push-agent ## Push both operator and agent container images to registry.
+	@echo "Pushed SBD images to registry..."
 
 .PHONY: build-push
 build-push: update-manifests build-images push-images ## Build and push both operator and agent images to registry.
@@ -311,48 +294,17 @@ buildx: manifests generate fmt vet ## Build and push multi-platform images to re
 ##@ Legacy Docker Aliases (Deprecated - Use build-* targets instead)
 
 .PHONY: docker-build
-docker-build: ## Legacy alias with IMG support (deprecated - use build-operator instead).
-	@echo "⚠️  Warning: 'docker-build' is deprecated. Use 'make build-operator' instead."
-	@if [ "$(IMG)" != "$(QUAY_OPERATOR_IMG):$(VERSION)" ]; then \
-		echo "Building with legacy IMG=$(IMG) for backwards compatibility..."; \
-		$(CONTAINER_TOOL) build -t $(IMG) . --load; \
-	else \
-		$(MAKE) build-operator; \
-	fi
+docker-build: build-images ## Legacy alias with IMG support (deprecated - use build-images instead).
+	@echo "⚠️  Warning: 'docker-build' is deprecated. Use 'make build-images' instead."
 
 .PHONY: docker-push
-docker-push: push-operator ## Legacy alias for push-operator (deprecated).
-	@echo "⚠️  Warning: 'docker-push' is deprecated. Use 'make push-operator' instead."
+docker-push: push-images ## Legacy alias for push-images (deprecated).
+	@echo "⚠️  Warning: 'docker-push' is deprecated. Use 'make push-images' instead."
 
 .PHONY: docker-buildx
 docker-buildx: buildx ## Legacy alias for buildx (deprecated).
 	@echo "⚠️  Warning: 'docker-buildx' is deprecated. Use 'make buildx' instead."
 
-.PHONY: docker-build-agent
-docker-build-agent: build-agent-image ## Legacy alias for build-agent-image (deprecated).
-	@echo "⚠️  Warning: 'docker-build-agent' is deprecated. Use 'make build-agent-image' instead."
-
-.PHONY: docker-push-agent  
-docker-push-agent: push-agent ## Legacy alias for push-agent (deprecated).
-	@echo "⚠️  Warning: 'docker-push-agent' is deprecated. Use 'make push-agent' instead."
-
-##@ Legacy Quay Aliases (Deprecated - Use build-* targets instead)
-
-.PHONY: quay-build
-quay-build: build-images ## Legacy alias for build-images (deprecated).
-	@echo "⚠️  Warning: 'quay-build' is deprecated. Use 'make build-images' instead."
-
-.PHONY: quay-build-push  
-quay-build-push: build-push ## Legacy alias for build-push (deprecated).
-	@echo "⚠️  Warning: 'quay-build-push' is deprecated. Use 'make build-push' instead."
-
-.PHONY: quay-buildx
-quay-buildx: buildx ## Legacy alias for buildx (deprecated).
-	@echo "⚠️  Warning: 'quay-buildx' is deprecated. Use 'make buildx' instead."
-
-.PHONY: quay-push
-quay-push: push-images ## Legacy alias for push-images (deprecated).
-	@echo "⚠️  Warning: 'quay-push' is deprecated. Use 'make push-images' instead."
 
 .PHONY: update-manifests
 update-manifests: ## Update all manifests to use current QUAY image references (auto-runs with build-push).
