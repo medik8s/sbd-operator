@@ -368,19 +368,44 @@ func (r *SBDConfigReconciler) ensureNamespace(ctx context.Context, sbdConfig *me
 	namespace := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: namespaceName,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":       "sbd-operator",
+				"app.kubernetes.io/component":  "sbd-system",
+				"app.kubernetes.io/part-of":    "sbd-operator",
+				"app.kubernetes.io/managed-by": "sbd-operator",
+				// OpenShift specific labels to allow privileged workloads
+				"security.openshift.io/scc.podSecurityLabelSync": "false",
+				"pod-security.kubernetes.io/enforce":             "privileged",
+				"pod-security.kubernetes.io/audit":               "privileged",
+				"pod-security.kubernetes.io/warn":                "privileged",
+			},
 		},
 	}
 
 	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, namespace, func() error {
-		// No changes needed for namespace
+		// Ensure labels are set on updates too
+		if namespace.Labels == nil {
+			namespace.Labels = make(map[string]string)
+		}
+		namespace.Labels["app.kubernetes.io/name"] = "sbd-operator"
+		namespace.Labels["app.kubernetes.io/component"] = "sbd-system"
+		namespace.Labels["app.kubernetes.io/part-of"] = "sbd-operator"
+		namespace.Labels["app.kubernetes.io/managed-by"] = "sbd-operator"
+		// OpenShift specific labels to allow privileged workloads
+		namespace.Labels["security.openshift.io/scc.podSecurityLabelSync"] = "false"
+		namespace.Labels["pod-security.kubernetes.io/enforce"] = "privileged"
+		namespace.Labels["pod-security.kubernetes.io/audit"] = "privileged"
+		namespace.Labels["pod-security.kubernetes.io/warn"] = "privileged"
 		return nil
 	})
 
 	if err == nil && result == controllerutil.OperationResultCreated {
 		// Emit event for namespace creation
-		logger.Info("Namespace created for SBD system", "namespace", namespaceName)
+		logger.Info("Namespace created for SBD system with privileged security profile", "namespace", namespaceName)
 		r.emitEventf(sbdConfig, EventTypeNormal, ReasonNamespaceCreated,
-			"Namespace '%s' created for SBD system", namespaceName)
+			"Namespace '%s' created for SBD system with privileged security profile", namespaceName)
+	} else if err == nil && result == controllerutil.OperationResultUpdated {
+		logger.Info("Namespace updated for SBD system with privileged security profile", "namespace", namespaceName)
 	}
 
 	return err
@@ -542,7 +567,10 @@ func (r *SBDConfigReconciler) buildDaemonSet(sbdConfig *medik8sv1alpha1.SBDConfi
 								AllowPrivilegeEscalation: &[]bool{true}[0],
 								Capabilities: &corev1.Capabilities{
 									Add:  []corev1.Capability{"SYS_ADMIN"},
-									Drop: []corev1.Capability{"ALL"},
+									Drop: []corev1.Capability{},
+								},
+								SeccompProfile: &corev1.SeccompProfile{
+									Type: corev1.SeccompProfileTypeUnconfined,
 								},
 							},
 							Resources: corev1.ResourceRequirements{
