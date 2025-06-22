@@ -22,7 +22,7 @@ allowedCapabilities:
 defaultAddCapabilities: null
 fsGroup:
   type: RunAsAny
-priority: null
+priority: 10
 readOnlyRootFilesystem: false
 requiredDropCapabilities: null
 runAsUser:
@@ -31,6 +31,8 @@ seLinuxContext:
   type: RunAsAny
 supplementalGroups:
   type: RunAsAny
+seccompProfiles:
+- "*"
 volumes:
 - configMap
 - downwardAPI

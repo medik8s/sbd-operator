@@ -354,6 +354,21 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - ""
+  resources:
   - serviceaccounts
   verbs:
   - create
@@ -1006,13 +1021,15 @@ metadata:
     app.kubernetes.io/name: sbd-operator
   name: sbd-operator-sbd-agent-privileged
   namespace: sbd-operator-system
-priority: null
+priority: 10
 readOnlyRootFilesystem: false
 requiredDropCapabilities: null
 runAsUser:
   type: RunAsAny
 seLinuxContext:
   type: RunAsAny
+seccompProfiles:
+- '*'
 supplementalGroups:
   type: RunAsAny
 users:
