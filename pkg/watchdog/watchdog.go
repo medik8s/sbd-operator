@@ -20,6 +20,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -55,6 +58,16 @@ const (
 	WatchdogRetryBackoffFactor = 2.0
 )
 
+// Softdog configuration constants
+const (
+	// SoftdogModule is the name of the Linux software watchdog kernel module
+	SoftdogModule = "softdog"
+	// DefaultSoftdogTimeout is the default timeout in seconds for the softdog module
+	DefaultSoftdogTimeout = 60
+	// SoftdogModprobe is the command to load the softdog module
+	SoftdogModprobe = "modprobe"
+)
+
 // Watchdog represents a Linux kernel watchdog device interface.
 // It provides methods to interact with hardware watchdog devices through
 // the Linux watchdog subsystem.
@@ -69,6 +82,166 @@ type Watchdog struct {
 	logger logr.Logger
 	// retryConfig holds the retry configuration for this watchdog
 	retryConfig retry.Config
+	// isSoftdog indicates if this watchdog is using the software watchdog (softdog) module
+	isSoftdog bool
+}
+
+// NewWithSoftdogFallback creates a new Watchdog instance, attempting to use the specified path first,
+// and falling back to loading and using the softdog module if no hardware watchdog is available.
+//
+// This function provides automatic fallback behavior:
+// 1. Try to open the specified watchdog device path
+// 2. If that fails and no other watchdog devices exist, try to load softdog module
+// 3. If softdog loads successfully, use /dev/watchdog as the device path
+//
+// Parameters:
+//   - path: The preferred filesystem path to the watchdog device (e.g., "/dev/watchdog")
+//   - logger: Logger for debugging and error reporting
+//
+// Returns:
+//   - *Watchdog: A new Watchdog instance if successful
+//   - error: An error if neither hardware nor software watchdog can be initialized
+//
+// This is the recommended function for production use as it provides the best reliability.
+func NewWithSoftdogFallback(path string, logger logr.Logger) (*Watchdog, error) {
+	if path == "" {
+		return nil, fmt.Errorf("watchdog device path cannot be empty")
+	}
+
+	// First, try to open the specified watchdog device
+	wd, err := NewWithLogger(path, logger)
+	if err == nil {
+		logger.Info("Successfully opened hardware watchdog device", "path", path)
+		return wd, nil
+	}
+
+	logger.Info("Failed to open specified watchdog device, checking for alternatives",
+		"requestedPath", path, "error", err.Error())
+
+	// Check if any watchdog devices exist in the system
+	existingDevices, err := findWatchdogDevices()
+	if err != nil {
+		logger.Error(err, "Failed to scan for existing watchdog devices")
+	} else if len(existingDevices) > 0 {
+		logger.Info("Found existing watchdog devices, not loading softdog",
+			"devices", existingDevices)
+		// If other watchdog devices exist, return the original error
+		// Don't automatically load softdog when hardware watchdogs are present
+		return nil, fmt.Errorf("failed to open watchdog device at %s (other watchdog devices exist: %v): %w",
+			path, existingDevices, err)
+	}
+
+	// No watchdog devices found, try to load softdog
+	logger.Info("No watchdog devices found, attempting to load softdog module")
+	if err := loadSoftdogModule(logger); err != nil {
+		return nil, fmt.Errorf("failed to load softdog module after watchdog device failure: %w", err)
+	}
+
+	// Wait a moment for the device to appear after module load
+	time.Sleep(100 * time.Millisecond)
+
+	// Try to open the softdog device (typically /dev/watchdog)
+	softdogPath := "/dev/watchdog"
+	wd, err = NewWithLogger(softdogPath, logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open softdog device at %s after loading module: %w", softdogPath, err)
+	}
+
+	// Mark this watchdog as using softdog
+	wd.isSoftdog = true
+	logger.Info("Successfully loaded and opened softdog watchdog device",
+		"originalPath", path, "softdogPath", softdogPath)
+
+	return wd, nil
+}
+
+// findWatchdogDevices scans the system for existing watchdog devices
+// Returns a list of watchdog device paths found in /dev/
+func findWatchdogDevices() ([]string, error) {
+	var devices []string
+
+	// Common watchdog device patterns
+	patterns := []string{
+		"/dev/watchdog*",
+		"/dev/wdt*",
+	}
+
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			continue // Skip patterns that fail to expand
+		}
+
+		for _, match := range matches {
+			// Verify it's actually a character device
+			if info, err := os.Stat(match); err == nil {
+				if info.Mode()&os.ModeCharDevice != 0 {
+					devices = append(devices, match)
+				}
+			}
+		}
+	}
+
+	// Always return an empty slice instead of nil
+	if devices == nil {
+		devices = []string{}
+	}
+
+	return devices, nil
+}
+
+// loadSoftdogModule attempts to load the Linux softdog kernel module
+func loadSoftdogModule(logger logr.Logger) error {
+	// Check if softdog module is already loaded
+	if isModuleLoaded(SoftdogModule) {
+		logger.Info("Softdog module is already loaded")
+		return nil
+	}
+
+	// Try to load the softdog module with a default timeout
+	cmd := exec.Command(SoftdogModprobe, SoftdogModule,
+		fmt.Sprintf("soft_margin=%d", DefaultSoftdogTimeout))
+
+	logger.Info("Loading softdog module",
+		"command", cmd.String(),
+		"timeout", DefaultSoftdogTimeout)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to load softdog module: %w (output: %s)", err, string(output))
+	}
+
+	// Verify the module was loaded successfully
+	if !isModuleLoaded(SoftdogModule) {
+		return fmt.Errorf("softdog module not loaded after modprobe command")
+	}
+
+	logger.Info("Successfully loaded softdog module")
+	return nil
+}
+
+// isModuleLoaded checks if a kernel module is currently loaded
+func isModuleLoaded(moduleName string) bool {
+	// Read /proc/modules to check if the module is loaded
+	content, err := os.ReadFile("/proc/modules")
+	if err != nil {
+		return false
+	}
+
+	// Each line in /proc/modules starts with the module name
+	lines := strings.Split(string(content), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, moduleName+" ") || line == moduleName {
+			return true
+		}
+	}
+
+	return false
+}
+
+// IsSoftdog returns true if this watchdog is using the software watchdog (softdog) module
+func (w *Watchdog) IsSoftdog() bool {
+	return w.isSoftdog
 }
 
 // New creates a new Watchdog instance by opening the watchdog device at the specified path.

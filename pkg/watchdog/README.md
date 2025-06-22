@@ -1,6 +1,6 @@
 # Watchdog Package
 
-The `watchdog` package provides a Go interface for interacting with Linux kernel watchdog devices. It allows applications to control hardware watchdog timers to ensure system reliability through automatic reboot capabilities.
+The watchdog package provides a Go interface for interacting with Linux kernel watchdog devices, with automatic fallback to software watchdog (softdog) when hardware watchdog devices are not available.
 
 ## Overview
 
@@ -8,115 +8,191 @@ Hardware watchdog devices are used to automatically reset the system if the soft
 
 ## Features
 
-- **Device Management**: Opens and manages watchdog device files (`/dev/watchdog`, `/dev/watchdog0`, etc.)
-- **Timer Reset**: Provides `Pet()` method to reset the watchdog timer using Linux ioctl calls
-- **Safe Closure**: Implements "magic close" functionality to safely disable watchdog on exit
-- **Error Handling**: Comprehensive error handling for device operations
-- **Thread Safety**: Safe for concurrent access (though typically used by single monitoring thread)
+- **Hardware Watchdog Support**: Direct interface to hardware watchdog devices via `/dev/watchdog`, `/dev/watchdog0`, etc.
+- **Software Watchdog Fallback**: Automatic loading and use of the Linux `softdog` kernel module when no hardware watchdog is present
+- **Robust Error Handling**: Comprehensive retry logic with exponential backoff for critical operations
+- **Device Detection**: Automatic scanning for available watchdog devices on the system
+- **Logging Integration**: Structured logging with logr for debugging and monitoring
 
-## Usage
+## Quick Start
 
-### Basic Example
+### Basic Usage with Automatic Fallback
 
 ```go
 package main
 
 import (
-    "log"
-    "time"
-    
     "github.com/medik8s/sbd-operator/pkg/watchdog"
+    "github.com/go-logr/logr"
 )
 
 func main() {
-    // Open the watchdog device
-    wd, err := watchdog.New("/dev/watchdog")
+    logger := logr.Discard() // Use your preferred logger
+    
+    // This will try hardware watchdog first, fallback to softdog if needed
+    wd, err := watchdog.NewWithSoftdogFallback("/dev/watchdog", logger)
     if err != nil {
-        log.Fatalf("Failed to open watchdog: %v", err)
+        panic(err)
     }
     defer wd.Close()
     
-    // Pet the watchdog every 10 seconds
-    ticker := time.NewTicker(10 * time.Second)
-    defer ticker.Stop()
+    // Check if we're using software watchdog
+    if wd.IsSoftdog() {
+        logger.Info("Using software watchdog (softdog)")
+    }
     
+    // Pet the watchdog periodically
     for {
-        select {
-        case <-ticker.C:
-            if err := wd.Pet(); err != nil {
-                log.Printf("Failed to pet watchdog: %v", err)
-            }
+        if err := wd.Pet(); err != nil {
+            logger.Error(err, "Failed to pet watchdog")
+            break
         }
+        time.Sleep(10 * time.Second)
     }
 }
 ```
 
-### API Reference
+### Hardware-Only Usage
 
-#### `New(path string) (*Watchdog, error)`
+```go
+// For cases where you only want hardware watchdog (no fallback)
+wd, err := watchdog.New("/dev/watchdog")
+if err != nil {
+    panic(err)
+}
+defer wd.Close()
+```
 
-Creates a new Watchdog instance by opening the device at the specified path.
+## Softdog Fallback Behavior
 
-- **Parameters**: `path` - filesystem path to watchdog device (e.g., "/dev/watchdog")
-- **Returns**: Watchdog instance or error
-- **Note**: Opening a watchdog device typically activates the timer
+The `NewWithSoftdogFallback` function implements intelligent fallback logic:
 
-#### `(*Watchdog) Pet() error`
+1. **Primary Attempt**: Try to open the specified watchdog device path
+2. **Device Scan**: If that fails, scan for other existing watchdog devices
+3. **Fallback Decision**: Only attempt softdog loading if no hardware watchdog devices exist
+4. **Module Loading**: Load the `softdog` kernel module with appropriate timeout
+5. **Device Creation**: Wait for `/dev/watchdog` to appear and open it
 
-Resets the watchdog timer to prevent system reset.
+### System Requirements for Softdog
 
-- **Returns**: Error if the operation fails
-- **Note**: Must be called before the timeout period expires
+- Linux kernel with `softdog` module support
+- `modprobe` command available in PATH
+- Sufficient privileges to load kernel modules (typically requires `SYS_MODULE` capability)
+- Container environments need `privileged: true` or `SYS_MODULE` capability
 
-#### `(*Watchdog) Close() error`
+## Error Handling
 
-Closes the watchdog device and attempts to disable the timer.
+The package provides detailed error information:
 
-- **Returns**: Error if the close operation fails
-- **Note**: Uses "magic close" (writing 'V') to safely disable some watchdog devices
+```go
+wd, err := watchdog.NewWithSoftdogFallback("/dev/watchdog", logger)
+if err != nil {
+    if strings.Contains(err.Error(), "failed to load softdog module") {
+        // Softdog loading failed - likely permission or modprobe issues
+        log.Printf("Cannot load softdog: %v", err)
+    } else if strings.Contains(err.Error(), "other watchdog devices exist") {
+        // Hardware watchdog present but can't access specified path
+        log.Printf("Hardware watchdog access issue: %v", err)
+    }
+    return err
+}
+```
 
-#### `(*Watchdog) IsOpen() bool`
+## Integration with SBD Operator
 
-Returns true if the watchdog device is currently open.
+In the SBD operator context, the watchdog is used for:
 
-#### `(*Watchdog) Path() string`
+- **System Fencing**: Ensuring unhealthy nodes reset themselves via watchdog timeout
+- **Heartbeat Monitoring**: Regular watchdog petting as a liveness indicator
+- **High Availability**: Automatic fallback ensures watchdog functionality even on systems without hardware support
 
-Returns the filesystem path of the watchdog device.
+### Container Deployment
 
-## Important Notes
+When deploying in containers, ensure the following:
 
-### Device Behavior
+```yaml
+apiVersion: apps/v1
+kind: DaemonSet
+spec:
+  template:
+    spec:
+      containers:
+      - name: sbd-agent
+        securityContext:
+          privileged: true
+          capabilities:
+            add:
+            - SYS_ADMIN
+            - SYS_MODULE  # Required for loading softdog
+        volumeMounts:
+        - name: dev
+          mountPath: /dev
+        - name: modules
+          mountPath: /lib/modules
+          readOnly: true
+      volumes:
+      - name: dev
+        hostPath:
+          path: /dev
+      - name: modules
+        hostPath:
+          path: /lib/modules
+```
 
-- **Activation**: Opening a watchdog device usually activates the timer immediately
-- **Timeout**: Each watchdog has a specific timeout period (typically 15-60 seconds)
-- **Reset Frequency**: Pet the watchdog at least twice as often as the timeout period
-- **System Reset**: Failure to pet within the timeout causes an immediate system reset
+## Logging
 
-### Driver Variations
+The package uses structured logging to provide visibility into watchdog operations:
 
-Different watchdog drivers may have varying behaviors:
+```
+INFO Successfully opened hardware watchdog device path="/dev/watchdog"
+INFO Failed to open specified watchdog device, checking for alternatives requestedPath="/dev/watchdog" error="..."
+INFO No watchdog devices found, attempting to load softdog module
+INFO Loading softdog module command="modprobe softdog soft_margin=60" timeout=60
+INFO Successfully loaded and opened softdog watchdog device originalPath="/dev/watchdog" softdogPath="/dev/watchdog"
+```
 
-- **Magic Close**: Some require writing 'V' before closing to disable the timer
-- **Automatic Disable**: Others automatically disable when the device is closed
-- **Persistent**: Some continue running even after the application exits
+## Testing
 
-### Error Handling
-
-- **Device Not Found**: `/dev/watchdog` may not exist on systems without hardware watchdog
-- **Permission Denied**: Watchdog devices typically require root privileges
-- **IOCTL Failures**: Regular files will fail ioctl operations (expected in tests)
-
-### Testing
-
-The package includes comprehensive unit tests that use temporary files to simulate watchdog devices. The ioctl operations will fail on regular files, which is expected and handled gracefully.
+The package includes comprehensive tests:
 
 ```bash
-# Run tests
-go test ./pkg/watchdog
+# Run all watchdog tests
+go test ./pkg/watchdog -v
 
-# Run demo
-go run ./cmd/watchdog-demo/main.go
+# Run softdog integration tests (requires root)
+sudo go test ./pkg/watchdog -v -run TestLoadSoftdogModule_Integration
 ```
+
+## Constants and Configuration
+
+- **Default Softdog Timeout**: 60 seconds
+- **Retry Configuration**: 2 retries with exponential backoff (50ms to 500ms)
+- **Module Load Command**: `modprobe softdog soft_margin=60`
+
+## Platform Support
+
+- **Linux**: Full support with hardware and software watchdog
+- **Other Platforms**: Hardware watchdog support only (no softdog fallback)
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Permission Denied**: Ensure container has `SYS_MODULE` capability
+2. **Module Not Found**: Verify `softdog` module is available in kernel
+3. **modprobe Not Found**: Ensure `util-linux` or equivalent package is installed
+4. **Device Access**: Check `/dev/watchdog` permissions and ownership
+
+### Debug Logging
+
+Enable debug logging to see detailed operation flow:
+
+```go
+logger := logr.New(/* your debug-enabled logger */)
+wd, err := watchdog.NewWithSoftdogFallback("/dev/watchdog", logger)
+```
+
+This will show device scanning, module loading attempts, and fallback decisions.
 
 ## Linux Watchdog IOCTL Commands
 

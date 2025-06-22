@@ -568,8 +568,11 @@ func (r *SBDConfigReconciler) buildDaemonSet(sbdConfig *medik8sv1alpha1.SBDConfi
 								ReadOnlyRootFilesystem:   &[]bool{false}[0],
 								AllowPrivilegeEscalation: &[]bool{true}[0],
 								Capabilities: &corev1.Capabilities{
-									Add:  []corev1.Capability{"SYS_ADMIN"},
-									Drop: []corev1.Capability{},
+									Add: []corev1.Capability{
+										"SYS_ADMIN",
+										"SYS_MODULE", // Required for loading kernel modules like softdog
+									},
+									Drop: []corev1.Capability{"ALL"},
 								},
 								SeccompProfile: &corev1.SeccompProfile{
 									Type: corev1.SeccompProfileTypeUnconfined,

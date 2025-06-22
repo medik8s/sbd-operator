@@ -389,11 +389,12 @@ type SBDAgent struct {
 	retryConfig           retry.Config
 }
 
-// NewSBDAgent creates a new SBD agent with the specified parameters
+// NewSBDAgent creates a new SBD agent with the specified configuration
 func NewSBDAgent(watchdogPath, sbdDevicePath, nodeName string, nodeID uint16, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration, sbdTimeoutSeconds uint, rebootMethod string, metricsPort int) (*SBDAgent, error) {
-	wd, err := watchdog.New(watchdogPath)
+	// Use the new softdog fallback functionality to handle cases where no hardware watchdog exists
+	wd, err := watchdog.NewWithSoftdogFallback(watchdogPath, logger.WithName("watchdog"))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create watchdog: %w", err)
+		return nil, fmt.Errorf("failed to create watchdog with softdog fallback: %w", err)
 	}
 
 	return NewSBDAgentWithWatchdog(wd, sbdDevicePath, nodeName, nodeID, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval, sbdTimeoutSeconds, rebootMethod, metricsPort)
@@ -1312,31 +1313,33 @@ func runPreflightChecks(watchdogPath, sbdDevicePath, nodeName string, nodeID uin
 	return nil
 }
 
-// checkWatchdogDevice verifies the watchdog device exists and can be opened
+// checkWatchdogDevice verifies the watchdog device exists and can be opened, with softdog fallback
 func checkWatchdogDevice(watchdogPath string) error {
 	logger.V(1).Info("Checking watchdog device availability", "watchdogPath", watchdogPath)
 
-	// Check if the watchdog device file exists
-	if _, err := os.Stat(watchdogPath); err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("watchdog device does not exist: %s", watchdogPath)
-		}
-		return fmt.Errorf("failed to stat watchdog device %s: %w", watchdogPath, err)
-	}
-
-	// Try to open the watchdog device to verify access permissions
-	file, err := os.OpenFile(watchdogPath, os.O_WRONLY, 0)
+	// Try to create a watchdog instance using the same logic as the main application
+	// This includes softdog fallback if no hardware watchdog is available
+	wd, err := watchdog.NewWithSoftdogFallback(watchdogPath, logger.WithName("preflight-watchdog"))
 	if err != nil {
-		return fmt.Errorf("failed to open watchdog device %s: %w", watchdogPath, err)
+		return fmt.Errorf("watchdog device pre-flight check failed: %w", err)
 	}
 	defer func() {
-		if closeErr := file.Close(); closeErr != nil {
+		if closeErr := wd.Close(); closeErr != nil {
 			logger.Error(closeErr, "Failed to close watchdog device during pre-flight check",
-				"watchdogPath", watchdogPath)
+				"watchdogPath", wd.Path())
 		}
 	}()
 
-	logger.V(1).Info("Watchdog device successfully opened and closed", "watchdogPath", watchdogPath)
+	if wd.IsSoftdog() {
+		logger.Info("Pre-flight check: using software watchdog (softdog)",
+			"requestedPath", watchdogPath,
+			"actualPath", wd.Path())
+	} else {
+		logger.Info("Pre-flight check: using hardware watchdog device",
+			"watchdogPath", wd.Path())
+	}
+
+	logger.V(1).Info("Watchdog device successfully opened and closed", "watchdogPath", wd.Path())
 	return nil
 }
 

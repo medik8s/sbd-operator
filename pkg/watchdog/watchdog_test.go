@@ -21,6 +21,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/go-logr/logr"
 )
 
 // TestNew tests the New function with various scenarios
@@ -390,4 +392,141 @@ func TestWatchdogLifecycle(t *testing.T) {
 	if err != nil {
 		t.Errorf("Double close should not error: %v", err)
 	}
+}
+
+func TestFindWatchdogDevices(t *testing.T) {
+	devices, err := findWatchdogDevices()
+	if err != nil {
+		t.Fatalf("findWatchdogDevices() failed: %v", err)
+	}
+
+	// Result should be a slice (may be empty on systems without watchdog devices)
+	if devices == nil {
+		t.Error("findWatchdogDevices() returned nil, expected empty slice")
+	}
+
+	// If we found devices, verify they exist and are character devices
+	for _, device := range devices {
+		info, err := os.Stat(device)
+		if err != nil {
+			t.Errorf("Device %s found by findWatchdogDevices() does not exist: %v", device, err)
+			continue
+		}
+
+		if info.Mode()&os.ModeCharDevice == 0 {
+			t.Errorf("Device %s found by findWatchdogDevices() is not a character device", device)
+		}
+	}
+
+	t.Logf("Found %d watchdog devices: %v", len(devices), devices)
+}
+
+func TestIsModuleLoaded(t *testing.T) {
+	// Test with a module that should exist on most Linux systems
+	loaded := isModuleLoaded("kernel") // The kernel itself is not a module, so this should be false
+	t.Logf("Module 'kernel' loaded: %v", loaded)
+
+	// Test with a module that definitely doesn't exist
+	loaded = isModuleLoaded("definitely_nonexistent_module_12345")
+	if loaded {
+		t.Error("isModuleLoaded() returned true for non-existent module")
+	}
+}
+
+func TestNewWithSoftdogFallback_ValidPath(t *testing.T) {
+	// Skip if running in CI/container where modprobe might not be available
+	if os.Getenv("CI") == "true" || os.Getenv("CONTAINER") == "true" {
+		t.Skip("Skipping softdog test in CI/container environment")
+	}
+
+	// Create a temporary directory for testing
+	tempDir := t.TempDir()
+	fakePath := filepath.Join(tempDir, "nonexistent_watchdog")
+
+	logger := logr.Discard()
+
+	// This should fail to open the fake path, but if no other watchdog devices exist,
+	// it might try to load softdog. The behavior depends on the system state.
+	wd, err := NewWithSoftdogFallback(fakePath, logger)
+
+	if err != nil {
+		// This is expected on systems where:
+		// 1. Hardware watchdog devices exist, OR
+		// 2. Softdog loading fails (no modprobe, no privileges, etc.)
+		t.Logf("NewWithSoftdogFallback failed as expected: %v", err)
+		return
+	}
+
+	// If we got here, softdog was loaded successfully
+	defer wd.Close()
+
+	if !wd.IsSoftdog() {
+		t.Error("Expected watchdog to be marked as softdog")
+	}
+
+	if wd.Path() == "" {
+		t.Error("Watchdog path should not be empty")
+	}
+
+	t.Logf("Successfully created softdog watchdog at path: %s", wd.Path())
+}
+
+func TestNewWithSoftdogFallback_EmptyPath(t *testing.T) {
+	logger := logr.Discard()
+
+	_, err := NewWithSoftdogFallback("", logger)
+	if err == nil {
+		t.Error("Expected error for empty path")
+	}
+
+	if !strings.Contains(err.Error(), "empty") {
+		t.Errorf("Expected error message to contain 'empty', got: %v", err)
+	}
+}
+
+func TestWatchdog_IsSoftdog(t *testing.T) {
+	// Test with regular watchdog (should return false)
+	wd := &Watchdog{
+		path:      "/dev/test",
+		isSoftdog: false,
+	}
+
+	if wd.IsSoftdog() {
+		t.Error("Expected IsSoftdog() to return false for hardware watchdog")
+	}
+
+	// Test with softdog (should return true)
+	wd.isSoftdog = true
+	if !wd.IsSoftdog() {
+		t.Error("Expected IsSoftdog() to return true for softdog")
+	}
+}
+
+// TestLoadSoftdogModule_Integration tests the actual softdog loading functionality
+// This test requires root privileges and will be skipped in most environments
+func TestLoadSoftdogModule_Integration(t *testing.T) {
+	// Skip if not running as root or in CI/container
+	if os.Geteuid() != 0 {
+		t.Skip("Skipping softdog module loading test (requires root privileges)")
+	}
+
+	if os.Getenv("CI") == "true" || os.Getenv("CONTAINER") == "true" {
+		t.Skip("Skipping softdog test in CI/container environment")
+	}
+
+	logger := logr.Discard()
+
+	// Try to load softdog module
+	err := loadSoftdogModule(logger)
+	if err != nil {
+		t.Logf("Failed to load softdog module (this may be expected): %v", err)
+		return
+	}
+
+	// Verify the module was loaded
+	if !isModuleLoaded(SoftdogModule) {
+		t.Error("Softdog module should be loaded after loadSoftdogModule() succeeds")
+	}
+
+	t.Log("Successfully loaded softdog module")
 }
