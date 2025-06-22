@@ -624,7 +624,7 @@ func (r *SBDConfigReconciler) buildDaemonSet(sbdConfig *medik8sv1alpha1.SBDConfi
 							LivenessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
 									Exec: &corev1.ExecAction{
-										Command: []string{"/bin/sh", "-c", "pgrep -f sbd-agent > /dev/null"},
+										Command: []string{"/bin/sh", "-c", "grep -l sbd-agent /proc/*/cmdline 2>/dev/null"},
 									},
 								},
 								InitialDelaySeconds: 30,
@@ -636,7 +636,7 @@ func (r *SBDConfigReconciler) buildDaemonSet(sbdConfig *medik8sv1alpha1.SBDConfi
 							ReadinessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
 									Exec: &corev1.ExecAction{
-										Command: []string{"/bin/sh", "-c", fmt.Sprintf("test -c %s && pgrep -f sbd-agent > /dev/null", sbdConfig.Spec.SbdWatchdogPath)},
+										Command: []string{"/bin/sh", "-c", fmt.Sprintf("test -c %s && grep -l sbd-agent /proc/*/cmdline 2>/dev/null", sbdConfig.Spec.SbdWatchdogPath)},
 									},
 								},
 								InitialDelaySeconds: 10,
@@ -648,7 +648,7 @@ func (r *SBDConfigReconciler) buildDaemonSet(sbdConfig *medik8sv1alpha1.SBDConfi
 							StartupProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
 									Exec: &corev1.ExecAction{
-										Command: []string{"/bin/sh", "-c", "pgrep -f sbd-agent > /dev/null"},
+										Command: []string{"/bin/sh", "-c", "grep -l sbd-agent /proc/*/cmdline 2>/dev/null"},
 									},
 								},
 								InitialDelaySeconds: 5,
