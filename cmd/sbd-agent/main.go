@@ -48,13 +48,15 @@ var (
 	watchdogTimeout   = flag.Duration("watchdog-timeout", 30*time.Second, "Watchdog pet interval")
 	sbdDevice         = flag.String("sbd-device", "", "Path to the SBD block device")
 	nodeName          = flag.String("node-name", "", "Name of this Kubernetes node")
-	nodeID            = flag.Uint("node-id", 0, "Unique numeric ID for this node (1-255)")
+	clusterName       = flag.String("cluster-name", "default-cluster", "Name of the cluster for node mapping")
+	nodeID            = flag.Uint("node-id", 0, "Unique numeric ID for this node (1-255) - deprecated, use hash-based mapping")
 	sbdTimeoutSeconds = flag.Uint("sbd-timeout-seconds", 30, "SBD timeout in seconds (determines heartbeat interval)")
 	sbdUpdateInterval = flag.Duration("sbd-update-interval", 5*time.Second, "Interval for updating SBD device with node status")
 	peerCheckInterval = flag.Duration("peer-check-interval", 5*time.Second, "Interval for checking peer heartbeats")
 	logLevel          = flag.String("log-level", "info", "Log level (debug, info, warn, error)")
 	rebootMethod      = flag.String("reboot-method", "panic", "Method to use for self-fencing (panic, systemctl-reboot)")
 	metricsPort       = flag.Int("metrics-port", 8080, "Port for Prometheus metrics endpoint")
+	useHashMapping    = flag.Bool("use-hash-mapping", true, "Use hash-based node-to-slot mapping instead of manual node IDs")
 )
 
 const (
@@ -380,6 +382,11 @@ type SBDAgent struct {
 	metricsPort       int
 	metricsServer     *http.Server
 
+	// Node mapping for hash-based slot assignment
+	nodeManager     *sbdprotocol.NodeManager
+	nodeManagerStop chan struct{}
+	useHashMapping  bool
+
 	// Failure tracking and retry configuration
 	watchdogFailureCount  int
 	sbdFailureCount       int
@@ -390,18 +397,18 @@ type SBDAgent struct {
 }
 
 // NewSBDAgent creates a new SBD agent with the specified configuration
-func NewSBDAgent(watchdogPath, sbdDevicePath, nodeName string, nodeID uint16, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration, sbdTimeoutSeconds uint, rebootMethod string, metricsPort int) (*SBDAgent, error) {
+func NewSBDAgent(watchdogPath, sbdDevicePath, nodeName, clusterName string, nodeID uint16, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration, sbdTimeoutSeconds uint, rebootMethod string, metricsPort int, useHashMapping bool) (*SBDAgent, error) {
 	// Use the new softdog fallback functionality to handle cases where no hardware watchdog exists
 	wd, err := watchdog.NewWithSoftdogFallback(watchdogPath, logger.WithName("watchdog"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create watchdog with softdog fallback: %w", err)
 	}
 
-	return NewSBDAgentWithWatchdog(wd, sbdDevicePath, nodeName, nodeID, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval, sbdTimeoutSeconds, rebootMethod, metricsPort)
+	return NewSBDAgentWithWatchdog(wd, sbdDevicePath, nodeName, clusterName, nodeID, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval, sbdTimeoutSeconds, rebootMethod, metricsPort, useHashMapping)
 }
 
 // NewSBDAgentWithWatchdog creates a new SBD agent with the specified watchdog instance
-func NewSBDAgentWithWatchdog(wd WatchdogInterface, sbdDevicePath, nodeName string, nodeID uint16, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration, sbdTimeoutSeconds uint, rebootMethod string, metricsPort int) (*SBDAgent, error) {
+func NewSBDAgentWithWatchdog(wd WatchdogInterface, sbdDevicePath, nodeName, clusterName string, nodeID uint16, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration, sbdTimeoutSeconds uint, rebootMethod string, metricsPort int, useHashMapping bool) (*SBDAgent, error) {
 	// Validate required parameters
 	if wd == nil {
 		return nil, fmt.Errorf("watchdog interface cannot be nil")
@@ -459,6 +466,7 @@ func NewSBDAgentWithWatchdog(wd WatchdogInterface, sbdDevicePath, nodeName strin
 		peerMonitor:       NewPeerMonitor(sbdTimeoutSeconds, nodeID, logger),
 		selfFenceDetected: false,
 		metricsPort:       metricsPort,
+		useHashMapping:    useHashMapping,
 
 		// Initialize failure tracking
 		watchdogFailureCount:  0,
@@ -478,6 +486,14 @@ func NewSBDAgentWithWatchdog(wd WatchdogInterface, sbdDevicePath, nodeName strin
 		if err := agent.initializeSBDDevice(); err != nil {
 			cancel()
 			return nil, fmt.Errorf("failed to initialize SBD device: %w", err)
+		}
+
+		// Initialize node manager for hash-based mapping if enabled
+		if useHashMapping {
+			if err := agent.initializeNodeManager(clusterName); err != nil {
+				cancel()
+				return nil, fmt.Errorf("failed to initialize node manager: %w", err)
+			}
 		}
 	}
 
@@ -537,6 +553,42 @@ func (s *SBDAgent) initializeSBDDevice() error {
 // setSBDDevice allows setting a custom SBD device (useful for testing)
 func (s *SBDAgent) setSBDDevice(device BlockDevice) {
 	s.sbdDevice = device
+}
+
+// initializeNodeManager initializes the node manager for hash-based slot mapping
+func (s *SBDAgent) initializeNodeManager(clusterName string) error {
+	if s.sbdDevice == nil {
+		return fmt.Errorf("SBD device must be initialized before node manager")
+	}
+
+	config := sbdprotocol.NodeManagerConfig{
+		ClusterName:      clusterName,
+		SyncInterval:     30 * time.Second,
+		StaleNodeTimeout: 10 * time.Minute,
+		Logger:           logger.WithName("node-manager"),
+	}
+
+	nodeManager, err := sbdprotocol.NewNodeManager(s.sbdDevice, config)
+	if err != nil {
+		return fmt.Errorf("failed to create node manager: %w", err)
+	}
+
+	s.nodeManager = nodeManager
+
+	// Get or assign slot for this node
+	slotID, err := s.nodeManager.GetSlotForNode(s.nodeName)
+	if err != nil {
+		return fmt.Errorf("failed to get slot for node %s: %w", s.nodeName, err)
+	}
+
+	// Update the node ID to use the hash-based slot
+	s.nodeID = slotID
+	logger.Info("Node assigned to slot via hash-based mapping",
+		"nodeName", s.nodeName,
+		"slotID", slotID,
+		"clusterName", clusterName)
+
+	return nil
 }
 
 // setSBDHealthy safely updates the SBD health status
@@ -778,7 +830,13 @@ func (s *SBDAgent) Start() error {
 		"petInterval", s.petInterval,
 		"sbdUpdateInterval", s.sbdUpdateInterval,
 		"heartbeatInterval", s.heartbeatInterval,
-		"peerCheckInterval", s.peerCheckInterval)
+		"peerCheckInterval", s.peerCheckInterval,
+		"useHashMapping", s.useHashMapping)
+
+	// Start node manager periodic sync if using hash mapping
+	if s.useHashMapping && s.nodeManager != nil {
+		s.nodeManagerStop = s.nodeManager.StartPeriodicSync()
+	}
 
 	// Start the watchdog monitoring goroutine
 	go s.watchdogLoop()
@@ -800,6 +858,18 @@ func (s *SBDAgent) Stop() error {
 
 	// Cancel context to stop all goroutines
 	s.cancel()
+
+	// Stop node manager if running
+	if s.nodeManagerStop != nil {
+		close(s.nodeManagerStop)
+	}
+
+	// Close node manager
+	if s.nodeManager != nil {
+		if err := s.nodeManager.Close(); err != nil {
+			logger.Error(err, "Error closing node manager")
+		}
+	}
 
 	// Shutdown metrics server
 	if s.metricsServer != nil {
@@ -1587,7 +1657,7 @@ func main() {
 	}
 
 	// Create SBD agent
-	agent, err := NewSBDAgent(*watchdogPath, *sbdDevice, nodeNameValue, nodeIDValue, *watchdogTimeout, *sbdUpdateInterval, heartbeatInterval, *peerCheckInterval, sbdTimeoutValue, rebootMethodValue, *metricsPort)
+	agent, err := NewSBDAgent(*watchdogPath, *sbdDevice, nodeNameValue, *clusterName, nodeIDValue, *watchdogTimeout, *sbdUpdateInterval, heartbeatInterval, *peerCheckInterval, sbdTimeoutValue, rebootMethodValue, *metricsPort, *useHashMapping)
 	if err != nil {
 		logger.Error(err, "Failed to create SBD agent",
 			"watchdogPath", *watchdogPath,
