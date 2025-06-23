@@ -172,6 +172,24 @@ grep "coordinationStrategy" /var/log/sbd-agent.log
 ./sbd-agent --sbd-file-locking=true --sbd-device=/shared/sbd
 ```
 
+**Process Crashes and Lock Recovery:**
+```
+# Symptoms: Concern about deadlocks if SBD agent crashes while holding lock
+# Solution: No action needed - POSIX guarantees automatic lock release
+
+# Verification: Check that new processes can acquire locks after crash
+# Expected: Lock acquisition succeeds within milliseconds of crash
+# If not: Storage system may not support POSIX file locking properly
+```
+
+**Lock Contention During Cluster Events:**
+```
+# Symptoms: Multiple nodes trying to acquire locks simultaneously
+# Expected: One node gets lock immediately, others wait up to 5 seconds
+# If timeouts occur: System falls back to jitter coordination automatically
+# No manual intervention required
+```
+
 ## Migration Guide
 
 ### Upgrading from Previous Versions
@@ -191,6 +209,43 @@ If you prefer the previous jitter-only behavior:
 ./sbd-agent --sbd-file-locking=false --sbd-device=/shared/sbd
 ```
 
+## Frequently Asked Questions
+
+### Q: What happens if the SBD agent crashes while holding a file lock?
+
+**A**: The lock is **automatically released** by the kernel when the process exits or crashes. This is a fundamental POSIX guarantee.
+
+- **No deadlocks possible**: Crashed processes cannot hold locks permanently
+- **Fast recovery**: Other nodes can acquire the lock within milliseconds
+- **No manual intervention**: The kernel handles cleanup automatically
+- **Works for all exit scenarios**: Normal exit, crash, SIGKILL, power failure, etc.
+
+### Q: Can file locks survive system reboots?
+
+**A**: No. File locks are **process-local** and do not persist across system reboots. When a system restarts, all file locks are automatically cleared.
+
+### Q: What if the storage system doesn't support POSIX file locking?
+
+**A**: The system automatically falls back to jitter-based coordination:
+1. File lock acquisition times out after 5 seconds
+2. NodeManager switches to jitter fallback strategy
+3. Operations continue with randomized delays instead of locks
+4. No data loss or corruption occurs
+
+### Q: How can I verify that file locking is working correctly?
+
+**A**: Check the coordination strategy in the logs:
+```bash
+# Look for coordination strategy messages
+grep "coordinationStrategy" /var/log/sbd-agent.log
+
+# Expected output for working file locking:
+# "coordinationStrategy=file-locking"
+
+# Expected output for fallback:
+# "coordinationStrategy=jitter-fallback" or "coordinationStrategy=jitter-only"
+```
+
 ## Technical Details
 
 ### File Locking Implementation
@@ -199,6 +254,30 @@ If you prefer the previous jitter-only behavior:
 - **Timeout**: 5 seconds maximum wait
 - **Retry**: No retries on lock timeout (falls back to jitter)
 - **Cleanup**: Automatic on process termination or file close
+
+#### Crash Recovery Behavior
+
+**Critical Feature**: POSIX file locks (`flock()`) are **automatically released** when the holding process crashes or exits, preventing permanent deadlocks.
+
+**What happens on process crash/exit:**
+1. **Normal Exit**: `defer` cleanup explicitly releases lock
+2. **Process Crash**: Kernel automatically releases all `flock()` locks held by crashed process
+3. **SIGKILL**: Kernel cleanup releases locks immediately
+4. **System Reboot**: File locks don't persist across reboots
+
+**Recovery Time**: Other processes can acquire the lock within **milliseconds** of the crashed process exiting.
+
+**Example scenario:**
+```
+Timeline:
+T0: Process A acquires lock, starts write operation
+T1: Process A crashes during write (power failure, OOM kill, etc.)
+T2: Kernel automatically releases Process A's lock
+T3: Process B immediately acquires lock and continues operations
+Total downtime: < 1 second
+```
+
+This automatic cleanup is a fundamental POSIX guarantee that makes file locking safe for critical operations like SBD coordination.
 
 ### Jitter Implementation
 
