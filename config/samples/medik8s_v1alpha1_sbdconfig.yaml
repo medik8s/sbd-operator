@@ -1,3 +1,11 @@
+# SBDConfig Sample Configuration
+#
+# This is a sample configuration for the SBD (STONITH Block Device) operator.
+# The SBD operator provides watchdog-based fencing for Kubernetes clusters
+# to ensure high availability through automatic node remediation.
+#
+# For comprehensive documentation, see: docs/sbdconfig-user-guide.md
+
 apiVersion: medik8s.medik8s.io/v1alpha1
 kind: SBDConfig
 metadata:
@@ -6,17 +14,94 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: sbdconfig-sample
 spec:
-  # Path to the watchdog device on the host nodes
-  # If not specified, defaults to "/dev/watchdog"
+  # ========================================================================
+  # WATCHDOG CONFIGURATION
+  # ========================================================================
+  
+  # Path to the watchdog device on cluster nodes
+  # - Default: "/dev/watchdog"
+  # - Common alternatives: "/dev/watchdog0", "/dev/watchdog1"
+  # - If hardware watchdog is not available, softdog will be used automatically
+  # - All nodes should have the same watchdog device path
   # sbdWatchdogPath: "/dev/watchdog"
   
+  # ========================================================================
+  # CONTAINER IMAGE CONFIGURATION
+  # ========================================================================
+  
   # Container image for the SBD Agent DaemonSet
+  # - Use specific version tags for production deployments
+  # - Available images: quay.io/medik8s/sbd-agent:<version>
+  # - For development: use "latest" tag
+  # - For production: use specific version like "v1.0.0"
   image: "quay.io/medik8s/sbd-agent:latest"
   
+  # ========================================================================
+  # DEPLOYMENT CONFIGURATION
+  # ========================================================================
+  
   # Namespace where the SBD Agent DaemonSet will be deployed
+  # - Default: "sbd-system"
+  # - Namespace will be created if it doesn't exist
+  # - Use different namespaces for multi-cluster environments
   namespace: "sbd-system"
   
-  # Timeout for considering nodes stale and removing them from slot mapping
-  # Nodes that don't send heartbeats within this duration will have their slots freed
-  # for reuse by new nodes. Default is 10m (10 minutes). Minimum is 1m.
-  staleNodeTimeout: "15m"
+  # ========================================================================
+  # NODE LIFECYCLE CONFIGURATION
+  # ========================================================================
+  
+  # Timeout for considering nodes stale and cleaning up their slot assignments
+  # - Default: "1h" (1 hour)
+  # - Range: "1m" to "24h"
+  # - Format: Go duration (e.g., "30m", "2h", "90s")
+  # - Shorter timeouts: faster slot cleanup, more aggressive
+  # - Longer timeouts: more conservative, handles temporary network issues
+  # 
+  # Recommended values:
+  # - Development/Testing: "5m" - "15m"
+  # - Production (stable): "30m" - "2h"  
+  # - Production (critical): "2h" - "6h"
+  staleNodeTimeout: "1h"
+
+# ========================================================================
+# CONFIGURATION EXAMPLES
+# ========================================================================
+#
+# Basic Production Configuration:
+# --------------------------------
+# spec:
+#   image: "quay.io/medik8s/sbd-agent:v1.0.0"
+#   namespace: "sbd-system"
+#   staleNodeTimeout: "30m"
+#
+# High-Availability Configuration:
+# --------------------------------
+# spec:
+#   image: "quay.io/medik8s/sbd-agent:v1.0.0"
+#   sbdWatchdogPath: "/dev/watchdog1"
+#   namespace: "high-availability"
+#   staleNodeTimeout: "2h"
+#
+# Development/Testing Configuration:
+# ----------------------------------
+# spec:
+#   image: "quay.io/medik8s/sbd-agent:latest"
+#   namespace: "sbd-dev"
+#   staleNodeTimeout: "5m"
+#
+# ========================================================================
+# DEPLOYMENT COMMANDS
+# ========================================================================
+#
+# Apply configuration:
+#   kubectl apply -f medik8s_v1alpha1_sbdconfig.yaml
+#
+# Check status:
+#   kubectl get sbdconfig
+#   kubectl describe sbdconfig sbdconfig-sample
+#
+# Monitor deployment:
+#   kubectl get pods -n sbd-system
+#   kubectl logs -n sbd-system -l app=sbd-agent
+#
+# ========================================================================

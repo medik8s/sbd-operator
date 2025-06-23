@@ -1,4 +1,18 @@
-# sod-operator
+# SBD Operator
+
+The SBD (STONITH Block Device) operator provides watchdog-based fencing for Kubernetes clusters to ensure high availability through automatic node remediation.
+
+## Documentation
+
+### User Documentation
+- **[SBDConfig User Guide](docs/sbdconfig-user-guide.md)** - Complete configuration reference and examples
+- **[Quick Reference](docs/sbdconfig-quick-reference.md)** - Essential commands and common configurations
+- **[Sample Configuration](config/samples/medik8s_v1alpha1_sbdconfig.yaml)** - Annotated configuration examples
+
+### Technical Documentation
+- **[Coordination Strategies](docs/sbd-coordination-strategies.md)** - File locking and coordination mechanisms
+- **[Design Documentation](docs/design.md)** - Architecture and design decisions
+- **[Concurrent Writes Analysis](docs/concurrent-writes-analysis.md)** - Storage coordination analysis
 
 ## Installation
 
