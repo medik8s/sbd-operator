@@ -191,3 +191,97 @@ When running on OpenShift (CRC), the tests automatically handle:
 The tests use the OpenShift-specific installer (`build-openshift-installer`) which includes all necessary SecurityContextConstraints for SBD Agent pods to run with required privileges.
 
 The tests are backward compatible with Kind/Kubernetes for development environments.
+
+## AWS OpenShift Cluster Provisioning
+
+For testing on real OpenShift clusters, the SBD operator includes automated provisioning scripts for AWS:
+
+### Automatic Tool Installation
+
+The provisioning script automatically downloads and installs required tools if they're missing:
+
+- **AWS CLI v2** (with platform-specific installation)
+- **openshift-install** (configurable version)
+- **oc CLI** (includes kubectl)
+- **jq** (latest version)
+
+Tools are installed to `.tools/bin` directory and automatically added to PATH.
+
+### Quick Start
+
+```bash
+# Provision cluster with defaults (auto-installs missing tools)
+make provision-ocp-aws
+
+# Provision cluster with custom configuration
+make provision-ocp-aws OCP_CLUSTER_NAME=my-test-cluster OCP_WORKER_COUNT=5
+
+# Run multi-node e2e tests on existing cluster
+make test-e2e-multinode
+
+# Full workflow: provision cluster and run tests
+make provision-and-test-multinode
+```
+
+### Prerequisites
+
+1. **AWS Credentials**: Configure AWS credentials (script will prompt to run `aws configure`)
+2. **Red Hat Pull Secret**: Download from [Red Hat Console](https://console.redhat.com/openshift/install/pull-secret)
+   - Save as `~/.docker/config.json` or `~/.config/containers/auth.json`
+
+### Configuration Variables
+
+```bash
+# Cluster configuration
+OCP_CLUSTER_NAME=sbd-operator-test    # Cluster name
+AWS_REGION=us-east-1                  # AWS region
+OCP_WORKER_COUNT=4                    # Number of worker nodes (minimum 3)
+OCP_INSTANCE_TYPE=m5.large           # EC2 instance type
+OCP_VERSION=4.18                     # OpenShift version
+
+# Example: Provision 5-node cluster in us-west-2
+make provision-ocp-aws \
+  OCP_CLUSTER_NAME=sbd-west-test \
+  AWS_REGION=us-west-2 \
+  OCP_WORKER_COUNT=5 \
+  OCP_INSTANCE_TYPE=m5.xlarge
+```
+
+### Advanced Usage
+
+```bash
+# Skip automatic tool installation (use existing tools)
+scripts/provision-ocp-aws.sh --skip-tool-install
+
+# Clean up existing cluster directory before provisioning
+scripts/provision-ocp-aws.sh --cleanup --cluster-name my-cluster
+
+# Get help and see all options
+scripts/provision-ocp-aws.sh --help
+```
+
+### Multi-Node E2E Testing
+
+The multi-node e2e tests automatically adapt to your cluster size:
+
+```bash
+# Run on existing OpenShift cluster (discovers topology automatically)
+make test-e2e-multinode
+
+# Tests adapt based on available worker nodes:
+# - 3 nodes: Basic SBD configuration tests
+# - 4+ nodes: Node failure simulation tests  
+# - 5+ nodes: Large cluster coordination tests
+```
+
+### Cleanup
+
+```bash
+# Destroy the cluster
+make destroy-ocp-aws OCP_CLUSTER_NAME=my-test-cluster
+
+# Or use openshift-install directly
+openshift-install destroy cluster --dir cluster/my-test-cluster
+```
+
+The provisioning creates a `cluster/` directory with all cluster artifacts, kubeconfig, and connection information.
