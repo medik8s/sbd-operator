@@ -104,6 +104,24 @@ type Watchdog struct {
 //
 // This is the recommended function for production use as it provides the best reliability.
 func NewWithSoftdogFallback(path string, logger logr.Logger) (*Watchdog, error) {
+	return NewWithSoftdogFallbackAndTestMode(path, false, logger)
+}
+
+// NewWithSoftdogFallbackAndTestMode creates a new Watchdog instance with optional test mode support.
+// This is similar to NewWithSoftdogFallback but allows enabling test mode for the softdog module.
+//
+// Parameters:
+//   - path: The preferred filesystem path to the watchdog device (e.g., "/dev/watchdog")
+//   - testMode: If true, enables soft_noboot=1 for softdog (prevents actual reboots during testing)
+//   - logger: Logger for debugging and error reporting
+//
+// Returns:
+//   - *Watchdog: A new Watchdog instance if successful
+//   - error: An error if neither hardware nor software watchdog can be initialized
+//
+// Test mode is useful for development and testing environments where you want to test
+// watchdog functionality without triggering actual system reboots.
+func NewWithSoftdogFallbackAndTestMode(path string, testMode bool, logger logr.Logger) (*Watchdog, error) {
 	if path == "" {
 		return nil, fmt.Errorf("watchdog device path cannot be empty")
 	}
@@ -132,8 +150,8 @@ func NewWithSoftdogFallback(path string, logger logr.Logger) (*Watchdog, error) 
 	}
 
 	// No watchdog devices found, try to load softdog
-	logger.Info("No watchdog devices found, attempting to load softdog module")
-	if err := loadSoftdogModule(logger); err != nil {
+	logger.Info("No watchdog devices found, attempting to load softdog module", "testMode", testMode)
+	if err := loadSoftdogModule(testMode, logger); err != nil {
 		return nil, fmt.Errorf("failed to load softdog module after watchdog device failure: %w", err)
 	}
 
@@ -150,7 +168,7 @@ func NewWithSoftdogFallback(path string, logger logr.Logger) (*Watchdog, error) 
 	// Mark this watchdog as using softdog
 	wd.isSoftdog = true
 	logger.Info("Successfully loaded and opened softdog watchdog device",
-		"originalPath", path, "softdogPath", softdogPath)
+		"originalPath", path, "softdogPath", softdogPath, "testMode", testMode)
 
 	return wd, nil
 }
@@ -191,20 +209,30 @@ func findWatchdogDevices() ([]string, error) {
 }
 
 // loadSoftdogModule attempts to load the Linux softdog kernel module
-func loadSoftdogModule(logger logr.Logger) error {
+func loadSoftdogModule(testMode bool, logger logr.Logger) error {
 	// Check if softdog module is already loaded
 	if isModuleLoaded(SoftdogModule) {
 		logger.Info("Softdog module is already loaded")
 		return nil
 	}
 
-	// Try to load the softdog module with a default timeout
-	cmd := exec.Command(SoftdogModprobe, SoftdogModule,
-		fmt.Sprintf("soft_margin=%d", DefaultSoftdogTimeout))
+	// Build the modprobe command with parameters
+	args := []string{
+		SoftdogModule,
+		fmt.Sprintf("soft_margin=%d", DefaultSoftdogTimeout),
+	}
+
+	// Add soft_noboot parameter if test mode is enabled
+	if testMode {
+		args = append(args, "soft_noboot=1")
+	}
+
+	cmd := exec.Command(SoftdogModprobe, args...)
 
 	logger.Info("Loading softdog module",
 		"command", cmd.String(),
-		"timeout", DefaultSoftdogTimeout)
+		"timeout", DefaultSoftdogTimeout,
+		"testMode", testMode)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -216,7 +244,11 @@ func loadSoftdogModule(logger logr.Logger) error {
 		return fmt.Errorf("softdog module not loaded after modprobe command")
 	}
 
-	logger.Info("Successfully loaded softdog module")
+	if testMode {
+		logger.Info("Successfully loaded softdog module in test mode (soft_noboot=1)")
+	} else {
+		logger.Info("Successfully loaded softdog module")
+	}
 	return nil
 }
 

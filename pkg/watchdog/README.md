@@ -63,6 +63,31 @@ if err != nil {
 defer wd.Close()
 ```
 
+### Test Mode Usage
+
+For development and testing environments, you can enable test mode to prevent actual system reboots:
+
+```go
+// Enable test mode - softdog will use soft_noboot=1 parameter
+wd, err := watchdog.NewWithSoftdogFallbackAndTestMode("/dev/watchdog", true, logger)
+if err != nil {
+    panic(err)
+}
+defer wd.Close()
+
+// In test mode, watchdog timeouts won't cause system reboot
+if wd.IsSoftdog() {
+    logger.Info("Using software watchdog in test mode (no reboots)")
+}
+```
+
+Test mode is useful for:
+- **Development**: Testing watchdog logic without system resets
+- **CI/CD**: Running tests that involve watchdog functionality
+- **Debugging**: Observing watchdog behavior without consequences
+
+**Note**: Test mode only affects the `softdog` module. Hardware watchdogs will still cause system resets regardless of the test mode setting.
+
 ## Softdog Fallback Behavior
 
 The `NewWithSoftdogFallback` function implements intelligent fallback logic:
@@ -70,8 +95,12 @@ The `NewWithSoftdogFallback` function implements intelligent fallback logic:
 1. **Primary Attempt**: Try to open the specified watchdog device path
 2. **Device Scan**: If that fails, scan for other existing watchdog devices
 3. **Fallback Decision**: Only attempt softdog loading if no hardware watchdog devices exist
-4. **Module Loading**: Load the `softdog` kernel module with appropriate timeout
+4. **Module Loading**: Load the `softdog` kernel module with appropriate timeout and optional test mode
 5. **Device Creation**: Wait for `/dev/watchdog` to appear and open it
+
+The `NewWithSoftdogFallbackAndTestMode` function extends this behavior with test mode support:
+- **Test Mode Disabled** (default): `modprobe softdog soft_margin=60`
+- **Test Mode Enabled**: `modprobe softdog soft_margin=60 soft_noboot=1`
 
 ### System Requirements for Softdog
 
@@ -167,7 +196,9 @@ sudo go test ./pkg/watchdog -v -run TestLoadSoftdogModule_Integration
 
 - **Default Softdog Timeout**: 60 seconds
 - **Retry Configuration**: 2 retries with exponential backoff (50ms to 500ms)
-- **Module Load Command**: `modprobe softdog soft_margin=60`
+- **Module Load Command**: 
+  - Normal mode: `modprobe softdog soft_margin=60`
+  - Test mode: `modprobe softdog soft_margin=60 soft_noboot=1`
 
 ## Platform Support
 

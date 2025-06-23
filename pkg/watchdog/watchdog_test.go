@@ -516,8 +516,8 @@ func TestLoadSoftdogModule_Integration(t *testing.T) {
 
 	logger := logr.Discard()
 
-	// Try to load softdog module
-	err := loadSoftdogModule(logger)
+	// Try to load softdog module in normal mode
+	err := loadSoftdogModule(false, logger)
 	if err != nil {
 		t.Logf("Failed to load softdog module (this may be expected): %v", err)
 		return
@@ -529,4 +529,70 @@ func TestLoadSoftdogModule_Integration(t *testing.T) {
 	}
 
 	t.Log("Successfully loaded softdog module")
+}
+
+// TestLoadSoftdogModule_TestMode tests the softdog loading with test mode enabled
+func TestLoadSoftdogModule_TestMode(t *testing.T) {
+	// Skip if not running as root or in CI/container
+	if os.Geteuid() != 0 {
+		t.Skip("Skipping softdog module loading test (requires root privileges)")
+	}
+
+	if os.Getenv("CI") == "true" || os.Getenv("CONTAINER") == "true" {
+		t.Skip("Skipping softdog test in CI/container environment")
+	}
+
+	logger := logr.Discard()
+
+	// Try to load softdog module in test mode
+	err := loadSoftdogModule(true, logger)
+	if err != nil {
+		t.Logf("Failed to load softdog module in test mode (this may be expected): %v", err)
+		return
+	}
+
+	// Verify the module was loaded
+	if !isModuleLoaded(SoftdogModule) {
+		t.Error("Softdog module should be loaded after loadSoftdogModule() succeeds")
+	}
+
+	t.Log("Successfully loaded softdog module in test mode")
+}
+
+// TestNewWithSoftdogFallbackAndTestMode tests the test mode functionality
+func TestNewWithSoftdogFallbackAndTestMode(t *testing.T) {
+	// Skip if running in CI/container where modprobe might not be available
+	if os.Getenv("CI") == "true" || os.Getenv("CONTAINER") == "true" {
+		t.Skip("Skipping softdog test in CI/container environment")
+	}
+
+	// Create a temporary directory for testing
+	tempDir := t.TempDir()
+	fakePath := filepath.Join(tempDir, "nonexistent_watchdog")
+
+	logger := logr.Discard()
+
+	// Test with test mode enabled
+	wd, err := NewWithSoftdogFallbackAndTestMode(fakePath, true, logger)
+
+	if err != nil {
+		// This is expected on systems where:
+		// 1. Hardware watchdog devices exist, OR
+		// 2. Softdog loading fails (no modprobe, no privileges, etc.)
+		t.Logf("NewWithSoftdogFallbackAndTestMode failed as expected: %v", err)
+		return
+	}
+
+	// If we got here, softdog was loaded successfully
+	defer wd.Close()
+
+	if !wd.IsSoftdog() {
+		t.Error("Expected watchdog to be marked as softdog")
+	}
+
+	if wd.Path() == "" {
+		t.Error("Watchdog path should not be empty")
+	}
+
+	t.Logf("Successfully created softdog watchdog in test mode at path: %s", wd.Path())
 }

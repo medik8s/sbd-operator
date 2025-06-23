@@ -46,6 +46,7 @@ import (
 var (
 	watchdogPath      = flag.String("watchdog-path", "/dev/watchdog", "Path to the watchdog device")
 	watchdogTimeout   = flag.Duration("watchdog-timeout", 30*time.Second, "Watchdog pet interval")
+	watchdogTestMode  = flag.Bool("watchdog-test-mode", false, "Enable watchdog test mode (soft_noboot=1 for softdog, prevents actual reboots)")
 	sbdDevice         = flag.String("sbd-device", "", "Path to the SBD block device")
 	nodeName          = flag.String("node-name", "", "Name of this Kubernetes node")
 	clusterName       = flag.String("cluster-name", "default-cluster", "Name of the cluster for node mapping")
@@ -397,9 +398,9 @@ type SBDAgent struct {
 }
 
 // NewSBDAgent creates a new SBD agent with the specified configuration
-func NewSBDAgent(watchdogPath, sbdDevicePath, nodeName, clusterName string, nodeID uint16, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration, sbdTimeoutSeconds uint, rebootMethod string, metricsPort int, staleNodeTimeout time.Duration) (*SBDAgent, error) {
+func NewSBDAgent(watchdogPath, sbdDevicePath, nodeName, clusterName string, nodeID uint16, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration, sbdTimeoutSeconds uint, rebootMethod string, metricsPort int, staleNodeTimeout time.Duration, watchdogTestMode bool) (*SBDAgent, error) {
 	// Use the new softdog fallback functionality to handle cases where no hardware watchdog exists
-	wd, err := watchdog.NewWithSoftdogFallback(watchdogPath, logger.WithName("watchdog"))
+	wd, err := watchdog.NewWithSoftdogFallbackAndTestMode(watchdogPath, watchdogTestMode, logger.WithName("watchdog"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create watchdog with softdog fallback: %w", err)
 	}
@@ -1343,15 +1344,16 @@ func (s *SBDAgent) readOwnSlotForFenceMessage() error {
 }
 
 // runPreflightChecks performs critical startup validation before entering main event loops
-func runPreflightChecks(watchdogPath, sbdDevicePath, nodeName string, nodeID uint16) error {
+func runPreflightChecks(watchdogPath, sbdDevicePath, nodeName string, nodeID uint16, watchdogTestMode bool) error {
 	logger.Info("Running pre-flight checks",
 		"watchdogPath", watchdogPath,
 		"sbdDevicePath", sbdDevicePath,
 		"nodeName", nodeName,
-		"nodeID", nodeID)
+		"nodeID", nodeID,
+		"watchdogTestMode", watchdogTestMode)
 
 	// 1. Watchdog Device Availability Check
-	if err := checkWatchdogDevice(watchdogPath); err != nil {
+	if err := checkWatchdogDevice(watchdogPath, watchdogTestMode); err != nil {
 		return fmt.Errorf("watchdog device pre-flight check failed: %w", err)
 	}
 	logger.Info("Pre-flight check passed: watchdog device accessible", "watchdogPath", watchdogPath)
@@ -1381,12 +1383,12 @@ func runPreflightChecks(watchdogPath, sbdDevicePath, nodeName string, nodeID uin
 }
 
 // checkWatchdogDevice verifies the watchdog device exists and can be opened, with softdog fallback
-func checkWatchdogDevice(watchdogPath string) error {
-	logger.V(1).Info("Checking watchdog device availability", "watchdogPath", watchdogPath)
+func checkWatchdogDevice(watchdogPath string, watchdogTestMode bool) error {
+	logger.V(1).Info("Checking watchdog device availability", "watchdogPath", watchdogPath, "testMode", watchdogTestMode)
 
 	// Try to create a watchdog instance using the same logic as the main application
 	// This includes softdog fallback if no hardware watchdog is available
-	wd, err := watchdog.NewWithSoftdogFallback(watchdogPath, logger.WithName("preflight-watchdog"))
+	wd, err := watchdog.NewWithSoftdogFallbackAndTestMode(watchdogPath, watchdogTestMode, logger.WithName("preflight-watchdog"))
 	if err != nil {
 		return fmt.Errorf("watchdog device pre-flight check failed: %w", err)
 	}
@@ -1398,9 +1400,15 @@ func checkWatchdogDevice(watchdogPath string) error {
 	}()
 
 	if wd.IsSoftdog() {
-		logger.Info("Pre-flight check: using software watchdog (softdog)",
-			"requestedPath", watchdogPath,
-			"actualPath", wd.Path())
+		if watchdogTestMode {
+			logger.Info("Pre-flight check: using software watchdog (softdog) in test mode",
+				"requestedPath", watchdogPath,
+				"actualPath", wd.Path())
+		} else {
+			logger.Info("Pre-flight check: using software watchdog (softdog)",
+				"requestedPath", watchdogPath,
+				"actualPath", wd.Path())
+		}
 	} else {
 		logger.Info("Pre-flight check: using hardware watchdog device",
 			"watchdogPath", wd.Path())
@@ -1648,13 +1656,13 @@ func main() {
 	}
 
 	// Run pre-flight checks before creating the agent
-	if err := runPreflightChecks(*watchdogPath, *sbdDevice, nodeNameValue, nodeIDValue); err != nil {
+	if err := runPreflightChecks(*watchdogPath, *sbdDevice, nodeNameValue, nodeIDValue, *watchdogTestMode); err != nil {
 		logger.Error(err, "Pre-flight checks failed")
 		os.Exit(1)
 	}
 
 	// Create SBD agent (hash mapping is always enabled)
-	agent, err := NewSBDAgent(*watchdogPath, *sbdDevice, nodeNameValue, *clusterName, nodeIDValue, *watchdogTimeout, *sbdUpdateInterval, heartbeatInterval, *peerCheckInterval, sbdTimeoutValue, rebootMethodValue, *metricsPort, *staleNodeTimeout)
+	agent, err := NewSBDAgent(*watchdogPath, *sbdDevice, nodeNameValue, *clusterName, nodeIDValue, *watchdogTimeout, *sbdUpdateInterval, heartbeatInterval, *peerCheckInterval, sbdTimeoutValue, rebootMethodValue, *metricsPort, *staleNodeTimeout, *watchdogTestMode)
 	if err != nil {
 		logger.Error(err, "Failed to create SBD agent",
 			"watchdogPath", *watchdogPath,
