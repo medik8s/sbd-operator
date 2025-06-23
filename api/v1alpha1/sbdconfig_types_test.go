@@ -122,8 +122,8 @@ func TestSBDConfigSpec_ValidateStaleNodeTimeout(t *testing.T) {
 
 func TestConstants(t *testing.T) {
 	// Verify that constants have expected values
-	if DefaultStaleNodeTimeout != 10*time.Minute {
-		t.Errorf("DefaultStaleNodeTimeout = %v, expected 10m", DefaultStaleNodeTimeout)
+	if DefaultStaleNodeTimeout != 1*time.Hour {
+		t.Errorf("DefaultStaleNodeTimeout = %v, expected 1h", DefaultStaleNodeTimeout)
 	}
 
 	if MinStaleNodeTimeout != 1*time.Minute {

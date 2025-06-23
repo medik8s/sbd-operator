@@ -1484,59 +1484,79 @@ func containsSubstring(s, substr string) bool {
 	return false
 }
 
-func TestSBDAgent_FileLocking(t *testing.T) {
+func TestSBDAgent_FileLockingConfiguration(t *testing.T) {
 	mockWatchdog := NewMockWatchdog("/dev/watchdog")
 
 	// Test with file locking enabled
 	t.Run("FileLockingEnabled", func(t *testing.T) {
-		agent, err := NewSBDAgentWithWatchdog(mockWatchdog, "", "test-node", "test-cluster", 1,
+		// Create a temporary SBD device file
+		tmpDir := t.TempDir()
+		sbdPath := tmpDir + "/test-sbd"
+
+		// Create the file with some initial data
+		if err := os.WriteFile(sbdPath, make([]byte, 1024*1024), 0644); err != nil {
+			t.Fatalf("Failed to create test SBD device: %v", err)
+		}
+
+		agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
 			1*time.Second, 1*time.Second, 1*time.Second, 1*time.Second, 30, "panic", 8200, 10*time.Minute, true)
 		if err != nil {
 			t.Fatalf("Failed to create SBD agent: %v", err)
 		}
 		defer agent.Stop()
 
-		// Verify file locking is enabled
-		if !agent.fileLockingEnabled {
+		// Verify file locking is enabled via NodeManager
+		if agent.nodeManager == nil {
+			t.Error("Expected NodeManager to be initialized")
+		} else if !agent.nodeManager.IsFileLockingEnabled() {
 			t.Error("Expected file locking to be enabled")
 		}
 
-		// Test acquiring lock with no SBD device (should return nil, nil)
-		lockFile, err := agent.acquireFileLock()
-		if err != nil {
-			t.Errorf("Expected no error when acquiring lock with no SBD device, got: %v", err)
-		}
-		if lockFile != nil {
-			t.Error("Expected no lock file when no SBD device is configured")
+		// Verify coordination strategy
+		if agent.nodeManager != nil {
+			strategy := agent.nodeManager.GetCoordinationStrategy()
+			if strategy != "file-locking" && strategy != "jitter-fallback" {
+				t.Errorf("Expected file-locking or jitter-fallback strategy, got: %s", strategy)
+			}
 		}
 	})
 
 	// Test with file locking disabled
 	t.Run("FileLockingDisabled", func(t *testing.T) {
-		agent, err := NewSBDAgentWithWatchdog(mockWatchdog, "", "test-node", "test-cluster", 1,
+		// Create a temporary SBD device file
+		tmpDir := t.TempDir()
+		sbdPath := tmpDir + "/test-sbd"
+
+		// Create the file with some initial data
+		if err := os.WriteFile(sbdPath, make([]byte, 1024*1024), 0644); err != nil {
+			t.Fatalf("Failed to create test SBD device: %v", err)
+		}
+
+		agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
 			1*time.Second, 1*time.Second, 1*time.Second, 1*time.Second, 30, "panic", 8201, 10*time.Minute, false)
 		if err != nil {
 			t.Fatalf("Failed to create SBD agent: %v", err)
 		}
 		defer agent.Stop()
 
-		// Verify file locking is disabled
-		if agent.fileLockingEnabled {
+		// Verify file locking is disabled via NodeManager
+		if agent.nodeManager == nil {
+			t.Error("Expected NodeManager to be initialized")
+		} else if agent.nodeManager.IsFileLockingEnabled() {
 			t.Error("Expected file locking to be disabled")
 		}
 
-		// Test acquiring lock when disabled (should return nil, nil)
-		lockFile, err := agent.acquireFileLock()
-		if err != nil {
-			t.Errorf("Expected no error when acquiring lock with locking disabled, got: %v", err)
-		}
-		if lockFile != nil {
-			t.Error("Expected no lock file when file locking is disabled")
+		// Verify coordination strategy
+		if agent.nodeManager != nil {
+			strategy := agent.nodeManager.GetCoordinationStrategy()
+			if strategy != "jitter-only" {
+				t.Errorf("Expected jitter-only strategy, got: %s", strategy)
+			}
 		}
 	})
 
-	// Test withFileLock wrapper function
-	t.Run("WithFileLockWrapper", func(t *testing.T) {
+	// Test watchdog-only mode (no SBD device)
+	t.Run("WatchdogOnlyMode", func(t *testing.T) {
 		agent, err := NewSBDAgentWithWatchdog(mockWatchdog, "", "test-node", "test-cluster", 1,
 			1*time.Second, 1*time.Second, 1*time.Second, 1*time.Second, 30, "panic", 8202, 10*time.Minute, false)
 		if err != nil {
@@ -1544,18 +1564,9 @@ func TestSBDAgent_FileLocking(t *testing.T) {
 		}
 		defer agent.Stop()
 
-		// Test the wrapper function executes correctly
-		executed := false
-		err = agent.withFileLock("test operation", func() error {
-			executed = true
-			return nil
-		})
-
-		if err != nil {
-			t.Errorf("Expected no error from withFileLock, got: %v", err)
-		}
-		if !executed {
-			t.Error("Expected function to be executed by withFileLock")
+		// In watchdog-only mode, NodeManager should not be initialized
+		if agent.nodeManager != nil {
+			t.Error("Expected NodeManager to be nil in watchdog-only mode")
 		}
 	})
 }
