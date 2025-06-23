@@ -17,6 +17,10 @@ Uses POSIX file locking (`flock()`) to serialize write operations across nodes.
 
 **How It Works:**
 ```go
+// Add jitter to reduce contention during cluster events
+jitter := time.Duration(rand.Intn(50)) * time.Millisecond
+time.Sleep(jitter)
+
 // Acquire exclusive lock on SBD device
 lockFile, err := os.OpenFile(devicePath, os.O_RDWR, 0)
 err = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX)
@@ -279,6 +283,7 @@ grep "coordinationStrategy" /var/log/sbd-agent.log
 ### File Locking Implementation
 
 - **Lock Type**: Exclusive (`LOCK_EX`)
+- **Pre-acquisition Jitter**: 0-50ms random delay to reduce contention
 - **Timeout**: 5 seconds maximum wait
 - **Retry**: No retries on lock timeout (falls back to jitter)
 - **Cleanup**: Automatic on process termination or file close
@@ -338,10 +343,11 @@ This automatic cleanup is a fundamental POSIX guarantee that makes file locking 
 ### Performance Characteristics
 
 **File Locking:**
-- **Latency**: 0-5000ms (depending on lock contention)
+- **Latency**: 0-5050ms (0-50ms jitter + 0-5000ms lock wait)
 - **Throughput**: Serialized writes (one at a time)
 - **CPU**: Low overhead
 - **Memory**: One file handle per operation
+- **Contention Reduction**: Pre-acquisition jitter spreads lock attempts
 
 **Jitter Fallback:**
 - **Latency**: 0-100ms random delay

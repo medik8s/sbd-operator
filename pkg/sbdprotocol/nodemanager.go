@@ -673,32 +673,34 @@ func (nm *NodeManager) atomicSyncToDevice(expectedVersion uint64) error {
 	return nil
 }
 
+// applyJitterDelay applies a randomized delay with the specified maximum duration and logs the action
+func (nm *NodeManager) applyJitterDelay(maxDelayMs int, reason string) {
+	jitter := time.Duration(rand.Intn(maxDelayMs)) * time.Millisecond
+	time.Sleep(jitter)
+	nm.logger.V(2).Info("Applied jitter delay for coordination",
+		"jitter", jitter,
+		"reason", reason)
+}
+
 // acquireDeviceLock attempts to acquire an exclusive file lock on the SBD device
 // This prevents concurrent writes to the same physical block which can cause corruption
 func (nm *NodeManager) acquireDeviceLock() (*os.File, error) {
+	// Check if file locking is disabled - use jitter-only coordination
 	if !nm.fileLockingEnabled {
-		// When file locking is disabled, use randomized delay approach to reduce contention
-		// This is simpler and more reliable than file locking across nodes on storage systems
-		// that don't support POSIX file locking properly
-
-		// Add random jitter to reduce thundering herd when multiple nodes start
-		jitter := time.Duration(rand.Intn(100)) * time.Millisecond
-		time.Sleep(jitter)
-
-		nm.logger.V(2).Info("Using randomized delay to reduce write contention",
-			"jitter", jitter,
-			"fileLockingEnabled", false)
-		return nil, nil // No lock file when using jitter approach
+		nm.applyJitterDelay(100, "file locking disabled")
+		return nil, nil // No lock file when using jitter-only approach
 	}
 
+	// Check if device path is available - fall back to jitter if not
 	devicePath := nm.device.Path()
 	if devicePath == "" {
-		// No device path available, fall back to jitter approach
-		jitter := time.Duration(rand.Intn(100)) * time.Millisecond
-		time.Sleep(jitter)
-		nm.logger.V(2).Info("No device path available, using randomized delay", "jitter", jitter)
-		return nil, nil
+		nm.applyJitterDelay(100, "no device path available")
+		return nil, nil // No lock file when using jitter fallback
 	}
+
+	// File locking is enabled and device path is available - proceed with file locking
+	// Add small jitter before lock acquisition to reduce contention during cluster events
+	nm.applyJitterDelay(50, "reducing file lock contention")
 
 	nm.logger.V(1).Info("Attempting to acquire file lock on SBD device", "devicePath", devicePath)
 
