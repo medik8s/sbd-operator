@@ -29,7 +29,7 @@ import (
 // Constants for SBDConfig validation and defaults
 const (
 	// DefaultStaleNodeTimeout is the default timeout for considering nodes stale
-	DefaultStaleNodeTimeout = 10 * time.Minute
+	DefaultStaleNodeTimeout = 1 * time.Hour
 	// MinStaleNodeTimeout is the minimum allowed stale node timeout
 	MinStaleNodeTimeout = 1 * time.Minute
 	// MaxStaleNodeTimeout is the maximum allowed stale node timeout
@@ -63,7 +63,7 @@ type SBDConfigSpec struct {
 	// will be freed for reuse by new nodes. The value must be at least 1 minute.
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
-	// +kubebuilder:default="10m"
+	// +kubebuilder:default="1h"
 	// +optional
 	StaleNodeTimeout *metav1.Duration `json:"staleNodeTimeout,omitempty"`
 }

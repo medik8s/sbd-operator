@@ -56,7 +56,7 @@ var (
 	logLevel          = flag.String("log-level", "info", "Log level (debug, info, warn, error)")
 	rebootMethod      = flag.String("reboot-method", "panic", "Method to use for self-fencing (panic, systemctl-reboot)")
 	metricsPort       = flag.Int("metrics-port", 8080, "Port for Prometheus metrics endpoint")
-	staleNodeTimeout  = flag.Duration("stale-node-timeout", 10*time.Minute, "Timeout for considering nodes stale and removing them from slot mapping")
+	staleNodeTimeout  = flag.Duration("stale-node-timeout", 1*time.Hour, "Timeout for considering nodes stale and removing them from slot mapping")
 )
 
 const (
