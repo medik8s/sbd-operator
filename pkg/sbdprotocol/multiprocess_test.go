@@ -61,6 +61,18 @@ type MultiProcessTestResult struct {
 
 // TestMultiProcessHeartbeatCoordination tests heartbeat coordination across multiple processes
 func TestMultiProcessHeartbeatCoordination(t *testing.T) {
+	// Check if we're running as a subprocess
+	if os.Getenv("SBD_MULTIPROCESS_TEST") == "true" {
+		// We're running as a subprocess - run the node process
+		config := MultiProcessTestConfig{}
+		result, err := runNodeProcess(config)
+		if err != nil {
+			t.Fatalf("Node process failed: %v", err)
+		}
+		t.Logf("Node process completed: %+v", result)
+		return
+	}
+
 	if testing.Short() {
 		t.Skip("Skipping multi-process test in short mode")
 	}
@@ -129,6 +141,18 @@ func TestMultiProcessHeartbeatCoordination(t *testing.T) {
 
 // TestMultiProcessFileLockingContention tests file locking under contention
 func TestMultiProcessFileLockingContention(t *testing.T) {
+	// Check if we're running as a subprocess
+	if os.Getenv("SBD_MULTIPROCESS_TEST") == "true" {
+		// We're running as a subprocess - run the node process
+		config := MultiProcessTestConfig{}
+		result, err := runNodeProcess(config)
+		if err != nil {
+			t.Fatalf("Node process failed: %v", err)
+		}
+		t.Logf("Node process completed: %+v", result)
+		return
+	}
+
 	if testing.Short() {
 		t.Skip("Skipping multi-process test in short mode")
 	}
@@ -161,6 +185,18 @@ func TestMultiProcessFileLockingContention(t *testing.T) {
 
 // TestMultiProcessMessageProtocol tests SBD message protocol across processes
 func TestMultiProcessMessageProtocol(t *testing.T) {
+	// Check if we're running as a subprocess
+	if os.Getenv("SBD_MULTIPROCESS_TEST") == "true" {
+		// We're running as a subprocess - run the node process
+		config := MultiProcessTestConfig{}
+		result, err := runNodeProcess(config)
+		if err != nil {
+			t.Fatalf("Node process failed: %v", err)
+		}
+		t.Logf("Node process completed: %+v", result)
+		return
+	}
+
 	if testing.Short() {
 		t.Skip("Skipping multi-process test in short mode")
 	}
@@ -193,6 +229,18 @@ func TestMultiProcessMessageProtocol(t *testing.T) {
 
 // TestMultiProcessNodeSlotAssignment tests hash-based node slot assignment
 func TestMultiProcessNodeSlotAssignment(t *testing.T) {
+	// Check if we're running as a subprocess
+	if os.Getenv("SBD_MULTIPROCESS_TEST") == "true" {
+		// We're running as a subprocess - run the node process
+		config := MultiProcessTestConfig{}
+		result, err := runNodeProcess(config)
+		if err != nil {
+			t.Fatalf("Node process failed: %v", err)
+		}
+		t.Logf("Node process completed: %+v", result)
+		return
+	}
+
 	if testing.Short() {
 		t.Skip("Skipping multi-process test in short mode")
 	}

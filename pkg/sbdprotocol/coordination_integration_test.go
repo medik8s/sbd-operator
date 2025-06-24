@@ -28,6 +28,31 @@ import (
 	"github.com/go-logr/logr"
 )
 
+// SharedMockDevice allows multiple nodes to share the same device data
+var sharedDevices = make(map[string]*MockSBDDevice)
+var sharedDeviceMutex sync.Mutex
+
+// getSharedMockDevice returns a shared mock device for the given path
+func getSharedMockDevice(path string, size int) *MockSBDDevice {
+	sharedDeviceMutex.Lock()
+	defer sharedDeviceMutex.Unlock()
+
+	if device, exists := sharedDevices[path]; exists {
+		return device
+	}
+
+	device := NewMockSBDDevice(path, size)
+	sharedDevices[path] = device
+	return device
+}
+
+// clearSharedMockDevices clears all shared devices (for test cleanup)
+func clearSharedMockDevices() {
+	sharedDeviceMutex.Lock()
+	defer sharedDeviceMutex.Unlock()
+	sharedDevices = make(map[string]*MockSBDDevice)
+}
+
 // TestConcurrentNodeManagers tests multiple NodeManagers working on the same device
 func TestConcurrentNodeManagers(t *testing.T) {
 	// Create temporary shared device file
@@ -68,6 +93,9 @@ func TestConcurrentNodeManagers(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Clear shared devices for each test
+			clearSharedMockDevices()
+
 			// Reset device for each test
 			if err := createTestDevice(sharedDevice, deviceSize); err != nil {
 				t.Fatalf("Failed to reset test device: %v", err)
@@ -112,10 +140,9 @@ func runConcurrentNodeTest(t *testing.T, devicePath string, numNodes int, fileLo
 
 // runSingleConcurrentNode runs a single node for the concurrent test
 func runSingleConcurrentNode(t *testing.T, devicePath, nodeName string, fileLockingEnabled bool, duration time.Duration) *NodeTestResult {
-	// Open device - use mock device with empty path to disable file locking
-	// Make device large enough for max node IDs (255 * 512 = 130KB)
+	// Use shared mock device so all nodes can see each other's heartbeats
 	deviceSize := int(SBD_SLOT_SIZE * (SBD_MAX_NODES + 1))
-	device := NewMockSBDDevice("", deviceSize)
+	device := getSharedMockDevice(devicePath, deviceSize)
 
 	// Create NodeManager - always disable file locking for mock devices
 	config := NodeManagerConfig{
@@ -180,7 +207,7 @@ func runSingleConcurrentNode(t *testing.T, devicePath, nodeName string, fileLock
 			}
 
 			// Read peer heartbeats
-			for peerSlot := uint16(1); peerSlot <= 10; peerSlot++ {
+			for peerSlot := uint16(1); peerSlot <= SBD_MAX_NODES; peerSlot++ {
 				if peerSlot == slotID {
 					continue
 				}
