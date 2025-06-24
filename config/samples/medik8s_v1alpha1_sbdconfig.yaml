@@ -70,14 +70,14 @@ spec:
 # Basic Production Configuration:
 # --------------------------------
 # spec:
-#   image: "quay.io/medik8s/sbd-agent:v1.0.0"
+#   image: "quay.io/medik8s/sbd-agent:latest"
 #   namespace: "sbd-system"
 #   staleNodeTimeout: "30m"
 #
 # High-Availability Configuration:
 # --------------------------------
 # spec:
-#   image: "quay.io/medik8s/sbd-agent:v1.0.0"
+#   image: "quay.io/medik8s/sbd-agent:latest"
 #   sbdWatchdogPath: "/dev/watchdog1"
 #   namespace: "high-availability"
 #   staleNodeTimeout: "2h"

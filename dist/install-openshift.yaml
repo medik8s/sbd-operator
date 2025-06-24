@@ -58,11 +58,19 @@ spec:
                 type: string
               sbdWatchdogPath:
                 default: /dev/watchdog
-                description: SbdWatchdogPath is the path to the watchdog device on
-                  the host
+                description: |-
+                  SbdWatchdogPath is the path to the watchdog device on the host
+                  If not specified, defaults to "/dev/watchdog"
                 type: string
-            required:
-            - sbdWatchdogPath
+              staleNodeTimeout:
+                default: 1h
+                description: |-
+                  StaleNodeTimeout defines how long to wait before considering a node stale and removing it from slot mapping
+                  This timeout determines when inactive nodes are cleaned up from the shared SBD device slot assignments.
+                  Nodes that haven't updated their heartbeat within this duration will be considered stale and their slots
+                  will be freed for reuse by new nodes. The value must be at least 1 minute.
+                pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                type: string
             type: object
           status:
             description: SBDConfigStatus defines the observed state of SBDConfig.
@@ -1038,6 +1046,7 @@ allowHostPorts: false
 allowPrivilegedContainer: true
 allowedCapabilities:
 - SYS_ADMIN
+- SYS_MODULE
 apiVersion: security.openshift.io/v1
 defaultAddCapabilities: null
 fsGroup:

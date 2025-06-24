@@ -120,7 +120,7 @@ setup-test-smoke: ## Set up CRC environment for smoke tests (start CRC only if n
 		exit 1; \
 	}
 	@echo "Building and loading container images..."
-	#TODO:$@(MAKE) build-images
+	@$(MAKE) build-images
 	@$(MAKE) load-images
 	@echo "Building OpenShift installer with SecurityContextConstraints..."
 	@$(MAKE) build-openshift-installer
