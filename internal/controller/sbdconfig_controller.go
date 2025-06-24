@@ -614,7 +614,7 @@ func (r *SBDConfigReconciler) buildDaemonSet(sbdConfig *medik8sv1alpha1.SBDConfi
 							},
 							Args: []string{
 								fmt.Sprintf("--watchdog-path=%s", sbdConfig.Spec.GetSbdWatchdogPath()),
-								"--watchdog-timeout=30s",
+								"--watchdog-timeout=15s",
 								"--log-level=info",
 								fmt.Sprintf("--stale-node-timeout=%s", sbdConfig.Spec.GetStaleNodeTimeout().String()),
 							},

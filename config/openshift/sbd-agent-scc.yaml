@@ -19,6 +19,7 @@ allowHostPorts: false
 allowPrivilegedContainer: true
 allowedCapabilities:
 - SYS_ADMIN
+- SYS_MODULE
 defaultAddCapabilities: null
 fsGroup:
   type: RunAsAny
