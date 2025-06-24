@@ -37,3 +37,8 @@ cluster/
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Generated manifests and test-specific configurations
+dist/
+config/manager/kustomization.yaml
+deploy/sbd-agent-daemonset-*.yaml

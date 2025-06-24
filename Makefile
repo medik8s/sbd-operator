@@ -180,7 +180,8 @@ OCP_CLUSTER_NAME ?= sbd-operator-test
 AWS_REGION ?= us-east-1
 OCP_WORKER_COUNT ?= 4
 OCP_INSTANCE_TYPE ?= m5.large
-OCP_VERSION ?= 4.18
+OCP_VERSION ?= 4.18.18
+OCP_BASE_DOMAIN ?= aws.validatedpatterns.io
 
 .PHONY: provision-ocp-aws
 provision-ocp-aws: ## Provision OpenShift cluster on AWS (auto-installs required tools)
@@ -191,7 +192,9 @@ provision-ocp-aws: ## Provision OpenShift cluster on AWS (auto-installs required
 		--region $(AWS_REGION) \
 		--workers $(OCP_WORKER_COUNT) \
 		--instance-type $(OCP_INSTANCE_TYPE) \
-		--ocp-version $(OCP_VERSION)
+		--ocp-version $(OCP_VERSION) \
+		--base-domain $(OCP_BASE_DOMAIN) \
+		--cleanup
 
 .PHONY: destroy-ocp-aws
 destroy-ocp-aws: ## Destroy OpenShift cluster on AWS

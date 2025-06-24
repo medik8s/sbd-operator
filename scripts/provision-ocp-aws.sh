@@ -19,6 +19,7 @@ DEFAULT_REGION="us-east-1"
 DEFAULT_WORKER_COUNT=3
 DEFAULT_INSTANCE_TYPE="m5.large"
 DEFAULT_OCP_VERSION="4.18"
+DEFAULT_BASE_DOMAIN="aws.validatedpatterns.io"
 
 # Tool versions
 OPENSHIFT_INSTALL_VERSION="4.18.0"
@@ -284,6 +285,7 @@ OPTIONS:
     -w, --workers COUNT         Number of worker nodes (minimum 3, default: ${DEFAULT_WORKER_COUNT})
     -t, --instance-type TYPE    EC2 instance type (default: ${DEFAULT_INSTANCE_TYPE})
     -v, --ocp-version VERSION   OpenShift version (default: ${DEFAULT_OCP_VERSION})
+    -b, --base-domain DOMAIN    Base domain for cluster (default: ${DEFAULT_BASE_DOMAIN})
     -c, --cleanup              Clean up existing cluster directory
     --skip-tool-install        Skip automatic tool installation
     -h, --help                 Show this help message
@@ -297,6 +299,9 @@ EXAMPLES:
 
     # Provision cluster in different region
     $0 --region us-west-2 --workers 4
+
+    # Provision cluster with custom domain
+    $0 --base-domain my-domain.com
 
     # Clean up and provision new cluster
     $0 --cleanup --cluster-name my-test-cluster
@@ -325,6 +330,7 @@ parse_args() {
     WORKER_COUNT="${DEFAULT_WORKER_COUNT}"
     INSTANCE_TYPE="${DEFAULT_INSTANCE_TYPE}"
     OCP_VERSION="${DEFAULT_OCP_VERSION}"
+    BASE_DOMAIN="${DEFAULT_BASE_DOMAIN}"
     CLEANUP=false
     SKIP_TOOL_INSTALL=false
 
@@ -351,6 +357,10 @@ parse_args() {
                 # Update tool versions to match
                 OPENSHIFT_INSTALL_VERSION="$2"
                 OC_CLI_VERSION="$2"
+                shift 2
+                ;;
+            -b|--base-domain)
+                BASE_DOMAIN="$2"
                 shift 2
                 ;;
             -c|--cleanup)
@@ -493,10 +503,10 @@ check_prerequisites() {
     fi
 
     # Check Red Hat pull secret
-    if [[ ! -f "${HOME}/.docker/config.json" ]] && [[ ! -f "${HOME}/.config/containers/auth.json" ]]; then
+    if [[ ! -f "${HOME}/.dockerconfigjson" ]] && [[ ! -f "${HOME}/.docker/config.json" ]] && [[ ! -f "${HOME}/.config/containers/auth.json" ]]; then
         log_warn "Red Hat pull secret not found in standard locations"
         log_info "Download your pull secret from https://console.redhat.com/openshift/install/pull-secret"
-        log_info "Save it as ${HOME}/.docker/config.json or ${HOME}/.config/containers/auth.json"
+        log_info "Save it as ${HOME}/.dockerconfigjson, ${HOME}/.docker/config.json or ${HOME}/.config/containers/auth.json"
     fi
 
     log_success "Prerequisites check passed"
@@ -542,13 +552,16 @@ get_pull_secret() {
     log_info "Getting Red Hat pull secret..."
     
     PULL_SECRET_FILE=""
-    if [[ -f "${HOME}/.docker/config.json" ]]; then
+    if [[ -f "${HOME}/.dockerconfigjson" ]]; then
+        PULL_SECRET_FILE="${HOME}/.dockerconfigjson"
+    elif [[ -f "${HOME}/.docker/config.json" ]]; then
         PULL_SECRET_FILE="${HOME}/.docker/config.json"
     elif [[ -f "${HOME}/.config/containers/auth.json" ]]; then
         PULL_SECRET_FILE="${HOME}/.config/containers/auth.json"
     else
         log_error "Pull secret not found. Please download from https://console.redhat.com/openshift/install/pull-secret"
         log_info "Save the pull secret as one of:"
+        log_info "  ${HOME}/.dockerconfigjson"
         log_info "  ${HOME}/.docker/config.json"
         log_info "  ${HOME}/.config/containers/auth.json"
         exit 1
@@ -561,25 +574,41 @@ get_pull_secret() {
         log_error "Pull secret does not contain registry.redhat.io authentication"
         log_info "Please download a complete pull secret from https://console.redhat.com/openshift/install/pull-secret"
         log_info "The pull secret should include authentication for registry.redhat.io"
+        log_info "Current pull secret file: ${PULL_SECRET_FILE}"
         exit 1
     fi
+    
+    log_info "Using pull secret from: ${PULL_SECRET_FILE}"
 }
 
 # Determine base domain
 get_base_domain() {
     log_info "Determining base domain..."
     
-    # Try to get a Route53 hosted zone
+    # If base domain was provided via command line, use it
+    if [[ "${BASE_DOMAIN}" != "${DEFAULT_BASE_DOMAIN}" ]]; then
+        log_info "Using provided base domain: ${BASE_DOMAIN}"
+        return
+    fi
+    
+    # Check if the default domain exists in Route53
+    if aws route53 list-hosted-zones --query "HostedZones[?Name=='${DEFAULT_BASE_DOMAIN}.'].Name" --output text | grep -q "${DEFAULT_BASE_DOMAIN}"; then
+        log_info "Using default base domain (found in Route53): ${BASE_DOMAIN}"
+        return
+    fi
+    
+    # Try to get any Route53 hosted zone as fallback
     HOSTED_ZONES=$(aws route53 list-hosted-zones --query 'HostedZones[?Config.PrivateZone==`false`].Name' --output text)
     
     if [[ -n "${HOSTED_ZONES}" ]]; then
         # Take the first domain and clean it up
-        BASE_DOMAIN=$(echo "${HOSTED_ZONES}" | awk '{print $1}' | sed 's/\.$//')
-        log_info "Using existing Route53 domain: ${BASE_DOMAIN}"
+        FALLBACK_DOMAIN=$(echo "${HOSTED_ZONES}" | awk '{print $1}' | sed 's/\.$//')
+        log_warn "Default domain ${DEFAULT_BASE_DOMAIN} not found in Route53"
+        log_info "Using existing Route53 domain: ${FALLBACK_DOMAIN}"
+        BASE_DOMAIN="${FALLBACK_DOMAIN}"
     else
-        # Use a default domain that OpenShift can create
-        BASE_DOMAIN="aws.example.com"
-        log_warn "No Route53 hosted zone found, using default: ${BASE_DOMAIN}"
+        # Keep the default domain - OpenShift will create necessary DNS records
+        log_warn "No Route53 hosted zones found, using default: ${BASE_DOMAIN}"
         log_info "OpenShift will create necessary DNS records"
     fi
 }
