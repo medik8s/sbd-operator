@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package e2e
+package smoke
 
 import (
 	"fmt"
@@ -58,7 +58,7 @@ func getProjectImage() string {
 
 	version := os.Getenv("VERSION")
 	if version == "" {
-		version = "e2e-test"
+		version = "smoke-test"
 	}
 
 	// Allow complete override via TEST_IMG environment variable
@@ -69,19 +69,19 @@ func getProjectImage() string {
 	return fmt.Sprintf("%s/%s/sbd-operator:%s", registry, org, version)
 }
 
-// TestE2E runs the multinode test suite for the project. These tests execute in an isolated,
-// temporary environment to validate project changes with the purposed to be used in CI jobs.
-// The default setup requires Kind, builds/loads the Manager Docker image locally, and installs
+// TestSmoke runs the smoke test suite for the project. These tests execute in an isolated,
+// temporary environment to validate basic functionality with the purpose to be used in CI jobs.
+// The default setup requires CRC, builds/loads the Manager Docker image locally, and installs
 // CertManager.
-func TestE2E(t *testing.T) {
+func TestSmoke(t *testing.T) {
 	RegisterFailHandler(Fail)
-	_, _ = fmt.Fprintf(GinkgoWriter, "Starting sbd-operator multinode test suite\n")
-	RunSpecs(t, "multinode suite")
+	_, _ = fmt.Fprintf(GinkgoWriter, "Starting sbd-operator smoke test suite\n")
+	RunSpecs(t, "smoke suite")
 }
 
 var _ = BeforeSuite(func() {
-	By("verifying multinode test environment setup")
-	_, _ = fmt.Fprintf(GinkgoWriter, "Multinode test environment setup completed by Makefile\n")
+	By("verifying smoke test environment setup")
+	_, _ = fmt.Fprintf(GinkgoWriter, "Smoke test environment setup completed by Makefile\n")
 	_, _ = fmt.Fprintf(GinkgoWriter, "Project image: %s\n", projectImage)
 
 	// Verify we can connect to the cluster
@@ -90,7 +90,7 @@ var _ = BeforeSuite(func() {
 	_, err := utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to connect to cluster")
 
-	// The multinode tests are intended to run on an existing cluster that supports multi-node testing.
+	// The smoke tests are intended to run on a temporary cluster that is created and destroyed for testing.
 	// To prevent errors when tests run in environments with CertManager already installed,
 	// we check for its presence before execution.
 	// Setup CertManager before the suite if not skipped and if not already installed

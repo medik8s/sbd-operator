@@ -142,7 +142,7 @@ test-smoke: setup-test-smoke ## Run the smoke tests on CRC OpenShift cluster (se
 	@echo "Running smoke tests on CRC OpenShift cluster..."
 	@eval $$(crc oc-env) && \
 	QUAY_REGISTRY=$(QUAY_REGISTRY) QUAY_ORG=$(QUAY_ORG) VERSION=$(VERSION) \
-	go test ./test/e2e/ -v -ginkgo.v -ginkgo.focus="Smoke"; \
+	go test ./test/smoke/ -v -ginkgo.v; \
 	TEST_EXIT_CODE=$$?; \
 	if [ "$(SMOKE_CLEANUP_SKIP)" != "true" ]; then \
 		echo "Cleaning up smoke test environment (set SMOKE_CLEANUP_SKIP=true to skip)..."; \
@@ -170,7 +170,7 @@ test-smoke-kind: ## Run smoke tests on Kind Kubernetes cluster (legacy support)
 	fi && \
 	KIND_CLUSTER=$(CRC_CLUSTER) \
 	QUAY_REGISTRY=$(QUAY_REGISTRY) QUAY_ORG=$(QUAY_ORG) VERSION=$(VERSION) \
-	go test ./test/e2e/ -v -ginkgo.v -ginkgo.focus="Smoke" && \
+	go test ./test/smoke/ -v -ginkgo.v && \
 	kind delete cluster --name $(CRC_CLUSTER)
 
 ##@ OpenShift on AWS
