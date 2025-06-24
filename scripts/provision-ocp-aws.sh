@@ -548,10 +548,21 @@ get_pull_secret() {
         PULL_SECRET_FILE="${HOME}/.config/containers/auth.json"
     else
         log_error "Pull secret not found. Please download from https://console.redhat.com/openshift/install/pull-secret"
+        log_info "Save the pull secret as one of:"
+        log_info "  ${HOME}/.docker/config.json"
+        log_info "  ${HOME}/.config/containers/auth.json"
         exit 1
     fi
     
     PULL_SECRET=$(cat "${PULL_SECRET_FILE}" | jq -c .)
+    
+    # Validate pull secret has required registries
+    if ! echo "${PULL_SECRET}" | jq -e '.auths["registry.redhat.io"]' &> /dev/null; then
+        log_error "Pull secret does not contain registry.redhat.io authentication"
+        log_info "Please download a complete pull secret from https://console.redhat.com/openshift/install/pull-secret"
+        log_info "The pull secret should include authentication for registry.redhat.io"
+        exit 1
+    fi
 }
 
 # Determine base domain
@@ -562,7 +573,8 @@ get_base_domain() {
     HOSTED_ZONES=$(aws route53 list-hosted-zones --query 'HostedZones[?Config.PrivateZone==`false`].Name' --output text)
     
     if [[ -n "${HOSTED_ZONES}" ]]; then
-        BASE_DOMAIN=$(echo "${HOSTED_ZONES}" | head -n1 | sed 's/\.$//')
+        # Take the first domain and clean it up
+        BASE_DOMAIN=$(echo "${HOSTED_ZONES}" | awk '{print $1}' | sed 's/\.$//')
         log_info "Using existing Route53 domain: ${BASE_DOMAIN}"
     else
         # Use a default domain that OpenShift can create
