@@ -126,9 +126,7 @@ setup-test-smoke: ## Set up CRC environment for smoke tests (start CRC only if n
 test-smoke-fresh: destroy-crc setup-test-smoke build-images load-images test-smoke
 
 .PHONY: test-smoke
-test-smoke: setup-test-smoke load-images ## Run the smoke tests on CRC OpenShift cluster (setup handled in setup-test-smoke).
-	@echo "Cleaning up previous run..."
-	$(MAKE) cleanup-test-smoke
+test-smoke: setup-test-smoke cleanup-test-smoke load-images ## Run the smoke tests on CRC OpenShift cluster (setup handled in setup-test-smoke).
 	@echo "Building OpenShift installer with SecurityContextConstraints..."
 	@$(MAKE) build-openshift-installer
 	@echo "Deploying operator to CRC with OpenShift support..."
@@ -144,11 +142,10 @@ test-smoke: setup-test-smoke load-images ## Run the smoke tests on CRC OpenShift
 	QUAY_REGISTRY=$(QUAY_REGISTRY) QUAY_ORG=$(QUAY_ORG) VERSION=$(VERSION) \
 	go test ./test/smoke/ -v -ginkgo.v; \
 	TEST_EXIT_CODE=$$?; \
-	if [ "$(SMOKE_CLEANUP_SKIP)" != "true" ]; then \
-		echo "Cleaning up smoke test environment (set SMOKE_CLEANUP_SKIP=true to skip)..."; \
+	if [ "$$TEST_EXIT_CODE" = "0" ]; then \
 		$(MAKE) cleanup-test-smoke; \
 	else \
-		echo "Skipping cleanup (SMOKE_CLEANUP_SKIP=true)"; \
+		echo "Skipping cleanup after failed test"; \
 	fi; \
 	exit $$TEST_EXIT_CODE
 
