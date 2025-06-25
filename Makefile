@@ -80,13 +80,14 @@ test-all: test test-smoke test-e2e ## Run all tests: unit tests, smoke tests, an
 # Environment Variables:
 # - SMOKE_CLEANUP_SKIP=true: Skip cleanup after tests (useful for debugging)
 # - CERT_MANAGER_INSTALL_SKIP=true: Skip CertManager installation
+# - IMAGE_BUILD_SKIP=true: Skip building images if they are already available in CRC
 # - QUAY_REGISTRY: Container registry (default: quay.io)
 # - QUAY_ORG: Container organization (default: medik8s)
 # - VERSION: Image version tag (default: latest)
 #
 # The setup-test-smoke target handles:
 # 1. Starting CRC cluster (only if not already running)
-# 2. Building and loading container images
+# 2. Building and loading container images (unless IMAGE_BUILD_SKIP=true)
 # 3. Installing CRDs
 # 4. Deploying the operator
 # 5. Waiting for operator readiness
@@ -119,9 +120,18 @@ setup-test-smoke: ## Set up CRC environment for smoke tests (start CRC only if n
 		echo "Failed to authenticate with CRC cluster"; \
 		exit 1; \
 	}
-	@echo "Building and loading container images..."
-	@$(MAKE) build-images
-	@$(MAKE) load-images
+	@if [ "$(IMAGE_BUILD_SKIP)" = "true" ]; then \
+		echo "Skipping image building (IMAGE_BUILD_SKIP=true)..."; \
+		echo "Attempting to load existing images into CRC..."; \
+		$(MAKE) load-images || { \
+			echo "Warning: Failed to load images. You may need to build them first with 'make build-images'"; \
+			echo "Or run without IMAGE_BUILD_SKIP=true to build images automatically"; \
+		}; \
+	else \
+		echo "Building and loading container images..."; \
+		$(MAKE) build-images; \
+		$(MAKE) load-images; \
+	fi
 	@echo "Building OpenShift installer with SecurityContextConstraints..."
 	@$(MAKE) build-openshift-installer
 	@echo "Deploying operator to CRC with OpenShift support..."
