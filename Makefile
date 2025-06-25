@@ -120,18 +120,15 @@ setup-test-smoke: ## Set up CRC environment for smoke tests (start CRC only if n
 		echo "Failed to authenticate with CRC cluster"; \
 		exit 1; \
 	}
-	@if [ "$(IMAGE_BUILD_SKIP)" = "true" ]; then \
-		echo "Skipping image building (IMAGE_BUILD_SKIP=true)..."; \
-		echo "Attempting to load existing images into CRC..."; \
-		$(MAKE) load-images || { \
-			echo "Warning: Failed to load images. You may need to build them first with 'make build-images'"; \
-			echo "Or run without IMAGE_BUILD_SKIP=true to build images automatically"; \
-		}; \
-	else \
-		echo "Building and loading container images..."; \
-		$(MAKE) build-images; \
-		$(MAKE) load-images; \
-	fi
+	@echo "Smoke test environment setup complete!"
+
+.PHONY: test-smoke-fresh
+test-smoke-fresh: destroy-crc setup-test-smoke build-images load-images test-smoke
+
+.PHONY: test-smoke
+test-smoke: setup-test-smoke load-images ## Run the smoke tests on CRC OpenShift cluster (setup handled in setup-test-smoke).
+	@echo "Cleaning up previous run..."
+	$(MAKE) cleanup-test-smoke
 	@echo "Building OpenShift installer with SecurityContextConstraints..."
 	@$(MAKE) build-openshift-installer
 	@echo "Deploying operator to CRC with OpenShift support..."
@@ -142,13 +139,6 @@ setup-test-smoke: ## Set up CRC environment for smoke tests (start CRC only if n
 		kubectl logs -n sbd-operator-system -l control-plane=controller-manager --tail=20 || true; \
 		exit 1; \
 	}
-	@echo "Smoke test environment setup complete!"
-
-.PHONY: test-smoke-fresh
-test-smoke-fresh: destroy-crc setup-test-smoke test-smoke
-
-.PHONY: test-smoke
-test-smoke: setup-test-smoke ## Run the smoke tests on CRC OpenShift cluster (setup handled in setup-test-smoke).
 	@echo "Running smoke tests on CRC OpenShift cluster..."
 	@eval $$(crc oc-env) && \
 	QUAY_REGISTRY=$(QUAY_REGISTRY) QUAY_ORG=$(QUAY_ORG) VERSION=$(VERSION) \
@@ -206,8 +196,7 @@ provision-ocp-aws: ## Provision OpenShift cluster on AWS (auto-installs required
 		--workers $(OCP_WORKER_COUNT) \
 		--instance-type $(OCP_INSTANCE_TYPE) \
 		--ocp-version $(OCP_VERSION) \
-		--base-domain $(OCP_BASE_DOMAIN) \
-		--cleanup
+		--base-domain $(OCP_BASE_DOMAIN)
 
 .PHONY: destroy-ocp-aws
 destroy-ocp-aws: ## Destroy OpenShift cluster on AWS
