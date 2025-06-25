@@ -25,6 +25,35 @@ spec:
   # - All nodes should have the same watchdog device path
   # sbdWatchdogPath: "/dev/watchdog"
   
+  # Watchdog timeout configuration for hardware/software watchdog device
+  # - Default: "60s" (60 seconds)
+  # - Range: "10s" to "300s" (5 minutes)
+  # - Format: Go duration (e.g., "30s", "90s", "2m")
+  # - This determines how long the system waits before triggering a reboot
+  # - Hardware watchdogs may have device-specific limits
+  # - Shorter timeouts: faster failure detection, more aggressive
+  # - Longer timeouts: more conservative, handles temporary delays
+  # 
+  # Recommended values:
+  # - Development/Testing: "30s" - "60s"
+  # - Production (fast response): "60s" - "120s"
+  # - Production (conservative): "120s" - "180s"
+  watchdogTimeout: "60s"
+  
+  # Pet interval multiple for calculating watchdog pet frequency
+  # - Default: 4 (pet interval = watchdog timeout / 4)
+  # - Range: 3 to 20
+  # - Higher values: less frequent petting, lower overhead
+  # - Lower values: more frequent petting, higher safety margin
+  # - Pet interval must be at least 3x shorter than watchdog timeout
+  # 
+  # With default 60s watchdog timeout:
+  # - Multiple 3: pet every 20s (minimum safe)
+  # - Multiple 4: pet every 15s (recommended)
+  # - Multiple 6: pet every 10s (conservative)
+  # - Multiple 10: pet every 6s (very conservative)
+  petIntervalMultiple: 4
+  
   # ========================================================================
   # CONTAINER IMAGE CONFIGURATION
   # ========================================================================

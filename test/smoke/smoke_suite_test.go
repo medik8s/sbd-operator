@@ -83,7 +83,11 @@ func getAgentImage() string {
 		org = "sbd-operator"
 	}
 
-	version := os.Getenv("VERSION")
+	// Check for AGENT_VERSION first (for SHA-based testing), then VERSION
+	version := os.Getenv("AGENT_VERSION")
+	if version == "" {
+		version = os.Getenv("VERSION")
+	}
 	if version == "" {
 		version = "smoke-test"
 	}

@@ -73,10 +73,12 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 .PHONY: test-all
 test-all: test test-smoke test-e2e ## Run all tests: unit tests, smoke tests, and e2e tests
 
-# Smoke Test Configuration
-# The smoke tests can either reuse an existing CRC environment or recreate it from scratch.
+# Smoke Test Targets:
+# - test-smoke: Standard smoke tests using VERSION tags
+# - test-smoke-fresh: Clean environment + smoke tests with SHA-based images for deterministic testing
 # Use 'test-smoke' to reuse existing CRC (faster) or 'test-smoke-fresh' for clean environment.
-#
+# The SHA-based tests ensure reproducible results by pinning exact image digests.
+
 # Environment Variables:
 # - SMOKE_CLEANUP_SKIP=true: Skip cleanup after tests (useful for debugging)
 # - CERT_MANAGER_INSTALL_SKIP=true: Skip CertManager installation
@@ -139,7 +141,7 @@ test-smoke: setup-test-smoke cleanup-test-smoke load-images ## Run the smoke tes
 	}
 	@echo "Running smoke tests on CRC OpenShift cluster..."
 	@eval $$(crc oc-env) && \
-	QUAY_REGISTRY=$(QUAY_REGISTRY) QUAY_ORG=$(QUAY_ORG) VERSION=$(VERSION) \
+	QUAY_REGISTRY=$(QUAY_REGISTRY) QUAY_ORG=$(QUAY_ORG) VERSION=$$(podman inspect $(QUAY_OPERATOR_IMG):$(VERSION) --format "{{.ID}}" ) AGENT_VERSION=$$(podman inspect $(QUAY_AGENT_IMG):$(VERSION) --format "{{.ID}}" ) \
 	go test ./test/smoke/ -v -ginkgo.v; \
 	TEST_EXIT_CODE=$$?; \
 	if [ "$$TEST_EXIT_CODE" = "0" ]; then \
@@ -239,16 +241,17 @@ provision-and-test-e2e: ## Provision AWS cluster and run e2e tests
 .PHONY: cleanup-test-smoke
 cleanup-test-smoke: ## Clean up smoke test environment and stop CRC cluster
 	@echo "Cleaning up smoke test environment..."
-	@eval $$(crc oc-env) && kubectl delete ns sbd-operator-system --ignore-not-found=true || true
-	@eval $$(crc oc-env) && kubectl delete ns sbd-system --ignore-not-found=true || true
 	@eval $$(crc oc-env) && kubectl delete sbdconfig --all --ignore-not-found=true || true
+	@eval $$(crc oc-env) && kubectl delete daemonset sbd-agent-test-sbdconfig -n sbd-system  --ignore-not-found=true || true
 	@eval $$(crc oc-env) && kubectl delete clusterrolebinding -l app.kubernetes.io/managed-by=sbd-operator --ignore-not-found=true || true
 	@eval $$(crc oc-env) && kubectl delete clusterrole -l app.kubernetes.io/managed-by=sbd-operator --ignore-not-found=true || true
+	@eval $$(crc oc-env) && kubectl delete ns sbd-operator-system --ignore-not-found=true || true
+	@eval $$(crc oc-env) && kubectl delete ns sbd-system --ignore-not-found=true || true
 	@echo "Cleaning up OpenShift-specific resources..."
 	@eval $$(crc oc-env) && kubectl delete scc sbd-operator-sbd-agent-privileged --ignore-not-found=true || true
 	@eval $$(crc oc-env) && kubectl delete clusterrolebinding sbd-operator-sbd-agent-scc-user --ignore-not-found=true || true
 	@eval $$(crc oc-env) && kubectl delete clusterrole sbd-operator-sbd-agent-scc-user --ignore-not-found=true || true
-	@$(MAKE) uninstall || true
+	@$(KUSTOMIZE) build config/crd | eval $$(crc oc-env) && $(KUBECTL) delete --ignore-not-found=true -f - || true
 
 destroy-crc:
 	@echo "Deleting CRC cluster..."
@@ -309,6 +312,11 @@ build-images: build-operator-image build-agent-image ## Build both operator and 
 	@echo "Built SBD Operator images..."
 	@echo "Operator: $(QUAY_OPERATOR_IMG):$(VERSION)"
 	@echo "Agent: $(QUAY_AGENT_IMG):$(VERSION)"
+	@echo "Capturing image SHAs for smoke tests..."
+	@$(CONTAINER_TOOL) inspect $(QUAY_OPERATOR_IMG):$(VERSION) --format '{{.Id}}' | cut -d: -f2 | head -c 12 > bin/operator-sha.txt
+	@$(CONTAINER_TOOL) inspect $(QUAY_AGENT_IMG):$(VERSION) --format '{{.Id}}' | cut -d: -f2 | head -c 12 > bin/agent-sha.txt
+	@echo "Operator SHA: $$(cat bin/operator-sha.txt)"
+	@echo "Agent SHA: $$(cat bin/agent-sha.txt)"
 
 .PHONY: push-operator-image
 push-operator-image: ## Push operator container image to registry.
@@ -506,3 +514,21 @@ mv $(1) $(1)-$(3) ;\
 } ;\
 ln -sf $(1)-$(3) $(1)
 endef
+
+.PHONY: load-images-with-sha
+load-images-with-sha: ## Load images into CRC with SHA-based tagging for smoke tests
+	@echo "Loading images into CRC with SHA-based tags..."
+	@if [ ! -f bin/operator-sha.txt ] || [ ! -f bin/agent-sha.txt ]; then \
+		echo "Error: Image SHA files not found. Run 'make build-images' first."; \
+		exit 1; \
+	fi
+	@OPERATOR_SHA=$$(cat bin/operator-sha.txt); \
+	AGENT_SHA=$$(cat bin/agent-sha.txt); \
+	echo "Using Operator SHA: $$OPERATOR_SHA"; \
+	echo "Using Agent SHA: $$AGENT_SHA"; \
+	$(CONTAINER_TOOL) save --format docker-archive $(QUAY_OPERATOR_IMG):$(VERSION) -o bin/$(OPERATOR_IMG).tar; \
+	$(CONTAINER_TOOL) save --format docker-archive $(QUAY_AGENT_IMG):$(VERSION) -o bin/$(AGENT_IMG).tar; \
+	eval $$(crc podman-env) && $(CONTAINER_TOOL) load -i bin/$(OPERATOR_IMG).tar; \
+	eval $$(crc podman-env) && $(CONTAINER_TOOL) load -i bin/$(AGENT_IMG).tar; \
+	eval $$(crc podman-env) && $(CONTAINER_TOOL) tag $(QUAY_OPERATOR_IMG):$(VERSION) $(QUAY_OPERATOR_IMG):sha-$$OPERATOR_SHA; \
+	eval $$(crc podman-env) && $(CONTAINER_TOOL) tag $(QUAY_AGENT_IMG):$(VERSION) $(QUAY_AGENT_IMG):sha-$$AGENT_SHA

@@ -36,6 +36,18 @@ const (
 	MaxStaleNodeTimeout = 24 * time.Hour
 	// DefaultWatchdogPath is the default path to the watchdog device
 	DefaultWatchdogPath = "/dev/watchdog"
+	// DefaultWatchdogTimeout is the default watchdog timeout duration
+	DefaultWatchdogTimeout = 60 * time.Second
+	// MinWatchdogTimeout is the minimum allowed watchdog timeout
+	MinWatchdogTimeout = 10 * time.Second
+	// MaxWatchdogTimeout is the maximum allowed watchdog timeout
+	MaxWatchdogTimeout = 300 * time.Second
+	// DefaultPetIntervalMultiple is the default multiple for calculating pet interval from watchdog timeout
+	DefaultPetIntervalMultiple = 4
+	// MinPetIntervalMultiple is the minimum allowed pet interval multiple
+	MinPetIntervalMultiple = 3
+	// MaxPetIntervalMultiple is the maximum allowed pet interval multiple
+	MaxPetIntervalMultiple = 20
 )
 
 // SBDConfigSpec defines the desired state of SBDConfig.
@@ -66,6 +78,26 @@ type SBDConfigSpec struct {
 	// +kubebuilder:default="1h"
 	// +optional
 	StaleNodeTimeout *metav1.Duration `json:"staleNodeTimeout,omitempty"`
+
+	// WatchdogTimeout defines the watchdog timeout duration for the hardware/software watchdog device.
+	// This determines how long the system will wait before triggering a reboot if the watchdog is not pet.
+	// The pet interval is calculated as watchdog timeout divided by the pet interval multiple.
+	// The value must be between 10 seconds and 300 seconds (5 minutes).
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+	// +kubebuilder:default="60s"
+	// +optional
+	WatchdogTimeout *metav1.Duration `json:"watchdogTimeout,omitempty"`
+
+	// PetIntervalMultiple defines the multiple used to calculate the pet interval from the watchdog timeout.
+	// Pet interval = watchdog timeout / pet interval multiple.
+	// This ensures the pet interval is always shorter than the watchdog timeout with a safety margin.
+	// The value must be between 3.0 and 20.0, with 4.0 providing a good balance of safety and efficiency.
+	// +kubebuilder:validation:Minimum=3
+	// +kubebuilder:validation:Maximum=20
+	// +kubebuilder:default=4
+	// +optional
+	PetIntervalMultiple *int32 `json:"petIntervalMultiple,omitempty"`
 }
 
 // GetSbdWatchdogPath returns the watchdog path with default fallback
@@ -84,6 +116,36 @@ func (s *SBDConfigSpec) GetStaleNodeTimeout() time.Duration {
 	return DefaultStaleNodeTimeout
 }
 
+// GetWatchdogTimeout returns the watchdog timeout with default fallback
+func (s *SBDConfigSpec) GetWatchdogTimeout() time.Duration {
+	if s.WatchdogTimeout != nil {
+		return s.WatchdogTimeout.Duration
+	}
+	return DefaultWatchdogTimeout
+}
+
+// GetPetIntervalMultiple returns the pet interval multiple with default fallback
+func (s *SBDConfigSpec) GetPetIntervalMultiple() int32 {
+	if s.PetIntervalMultiple != nil {
+		return *s.PetIntervalMultiple
+	}
+	return DefaultPetIntervalMultiple
+}
+
+// GetPetInterval calculates the pet interval based on watchdog timeout and multiple
+func (s *SBDConfigSpec) GetPetInterval() time.Duration {
+	watchdogTimeout := s.GetWatchdogTimeout()
+	multiple := s.GetPetIntervalMultiple()
+	petInterval := watchdogTimeout / time.Duration(multiple)
+
+	// Ensure minimum pet interval of 1 second
+	if petInterval < time.Second {
+		petInterval = time.Second
+	}
+
+	return petInterval
+}
+
 // ValidateStaleNodeTimeout validates the stale node timeout value
 func (s *SBDConfigSpec) ValidateStaleNodeTimeout() error {
 	timeout := s.GetStaleNodeTimeout()
@@ -94,6 +156,84 @@ func (s *SBDConfigSpec) ValidateStaleNodeTimeout() error {
 
 	if timeout > MaxStaleNodeTimeout {
 		return fmt.Errorf("stale node timeout %v is greater than maximum %v", timeout, MaxStaleNodeTimeout)
+	}
+
+	return nil
+}
+
+// ValidateWatchdogTimeout validates the watchdog timeout value
+func (s *SBDConfigSpec) ValidateWatchdogTimeout() error {
+	timeout := s.GetWatchdogTimeout()
+
+	if timeout < MinWatchdogTimeout {
+		return fmt.Errorf("watchdog timeout %v is less than minimum %v", timeout, MinWatchdogTimeout)
+	}
+
+	if timeout > MaxWatchdogTimeout {
+		return fmt.Errorf("watchdog timeout %v is greater than maximum %v", timeout, MaxWatchdogTimeout)
+	}
+
+	return nil
+}
+
+// ValidatePetIntervalMultiple validates the pet interval multiple value
+func (s *SBDConfigSpec) ValidatePetIntervalMultiple() error {
+	multiple := s.GetPetIntervalMultiple()
+
+	if multiple < MinPetIntervalMultiple {
+		return fmt.Errorf("pet interval multiple %d is less than minimum %d", multiple, MinPetIntervalMultiple)
+	}
+
+	if multiple > MaxPetIntervalMultiple {
+		return fmt.Errorf("pet interval multiple %d is greater than maximum %d", multiple, MaxPetIntervalMultiple)
+	}
+
+	return nil
+}
+
+// ValidatePetIntervalTiming validates that the calculated pet interval is appropriate
+func (s *SBDConfigSpec) ValidatePetIntervalTiming() error {
+	watchdogTimeout := s.GetWatchdogTimeout()
+	petInterval := s.GetPetInterval()
+
+	// Pet interval must be shorter than watchdog timeout
+	if petInterval >= watchdogTimeout {
+		return fmt.Errorf("pet interval %v must be shorter than watchdog timeout %v", petInterval, watchdogTimeout)
+	}
+
+	// Pet interval should be at least 3 times shorter than watchdog timeout for safety
+	maxPetInterval := watchdogTimeout / 3
+	if petInterval > maxPetInterval {
+		return fmt.Errorf("pet interval %v is too long for watchdog timeout %v. "+
+			"Pet interval should be at least 3 times shorter than watchdog timeout. "+
+			"Maximum recommended pet interval: %v",
+			petInterval, watchdogTimeout, maxPetInterval)
+	}
+
+	// Pet interval should be at least 1 second
+	if petInterval < time.Second {
+		return fmt.Errorf("pet interval %v is too short. Minimum recommended: 1s", petInterval)
+	}
+
+	return nil
+}
+
+// ValidateAll validates all configuration values
+func (s *SBDConfigSpec) ValidateAll() error {
+	if err := s.ValidateStaleNodeTimeout(); err != nil {
+		return fmt.Errorf("stale node timeout validation failed: %w", err)
+	}
+
+	if err := s.ValidateWatchdogTimeout(); err != nil {
+		return fmt.Errorf("watchdog timeout validation failed: %w", err)
+	}
+
+	if err := s.ValidatePetIntervalMultiple(); err != nil {
+		return fmt.Errorf("pet interval multiple validation failed: %w", err)
+	}
+
+	if err := s.ValidatePetIntervalTiming(); err != nil {
+		return fmt.Errorf("pet interval timing validation failed: %w", err)
 	}
 
 	return nil

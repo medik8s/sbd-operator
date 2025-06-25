@@ -57,6 +57,7 @@ const (
 	ReasonDaemonSetError            = "DaemonSetError"
 	ReasonNamespaceError            = "NamespaceError"
 	ReasonServiceAccountError       = "ServiceAccountError"
+	ReasonValidationError           = "ValidationError"
 
 	// Retry configuration constants for SBDConfig controller
 	// MaxSBDConfigRetries is the maximum number of retry attempts for SBDConfig operations
@@ -217,7 +218,19 @@ func (r *SBDConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		"spec.image", sbdConfig.Spec.Image,
 		"spec.namespace", sbdConfig.Spec.Namespace,
 		"spec.sbdWatchdogPath", sbdConfig.Spec.GetSbdWatchdogPath(),
-		"spec.staleNodeTimeout", sbdConfig.Spec.GetStaleNodeTimeout())
+		"spec.staleNodeTimeout", sbdConfig.Spec.GetStaleNodeTimeout(),
+		"spec.watchdogTimeout", sbdConfig.Spec.GetWatchdogTimeout(),
+		"spec.petIntervalMultiple", sbdConfig.Spec.GetPetIntervalMultiple(),
+		"spec.calculatedPetInterval", sbdConfig.Spec.GetPetInterval())
+
+	// Validate the SBDConfig spec
+	if err := sbdConfig.Spec.ValidateAll(); err != nil {
+		logger.Error(err, "SBDConfig validation failed")
+		r.emitEventf(&sbdConfig, EventTypeWarning, ReasonValidationError,
+			"SBDConfig validation failed: %v", err)
+		// Don't requeue on validation errors - user needs to fix the configuration
+		return ctrl.Result{}, fmt.Errorf("SBDConfig validation failed: %w", err)
+	}
 
 	// Set defaults if not specified
 	if sbdConfig.Spec.Image == "" {
@@ -499,6 +512,12 @@ func (r *SBDConfigReconciler) buildDaemonSet(sbdConfig *medik8sv1alpha1.SBDConfi
 		"sbdconfig":  sbdConfig.Name,
 	}
 
+	// Calculate pet interval based on configured watchdog timeout and multiple
+	petInterval := sbdConfig.Spec.GetPetInterval()
+
+	// Convert to command line arguments
+	watchdogTimeoutArg := fmt.Sprintf("--watchdog-timeout=%s", petInterval.String())
+
 	return &appsv1.DaemonSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      daemonSetName,
@@ -614,7 +633,7 @@ func (r *SBDConfigReconciler) buildDaemonSet(sbdConfig *medik8sv1alpha1.SBDConfi
 							},
 							Args: []string{
 								fmt.Sprintf("--watchdog-path=%s", sbdConfig.Spec.GetSbdWatchdogPath()),
-								"--watchdog-timeout=30s",
+								watchdogTimeoutArg,
 								"--log-level=info",
 								fmt.Sprintf("--stale-node-timeout=%s", sbdConfig.Spec.GetStaleNodeTimeout().String()),
 							},

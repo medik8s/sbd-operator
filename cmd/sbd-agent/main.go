@@ -1603,7 +1603,8 @@ func checkNodeIDNameResolution(nodeName string, nodeID uint16) error {
 }
 
 // validateWatchdogTiming validates that the pet interval is appropriate for the watchdog timeout
-func validateWatchdogTiming(petInterval time.Duration) error {
+// Returns true if validation passes, false with a warning message if it fails
+func validateWatchdogTiming(petInterval time.Duration) (bool, string) {
 	// Get the watchdog timeout that will be used (currently hardcoded in watchdog package)
 	watchdogTimeoutSeconds := watchdog.DefaultSoftdogTimeout
 	watchdogTimeout := time.Duration(watchdogTimeoutSeconds) * time.Second
@@ -1613,15 +1614,18 @@ func validateWatchdogTiming(petInterval time.Duration) error {
 	maxPetInterval := watchdogTimeout / 3
 
 	if petInterval > maxPetInterval {
-		return fmt.Errorf("pet interval (%v) is too long for watchdog timeout (%v). "+
-			"Pet interval must be at least 3 times shorter than watchdog timeout. "+
-			"Maximum allowed pet interval: %v",
+		warningMsg := fmt.Sprintf("pet interval (%v) is too long for watchdog timeout (%v). "+
+			"Pet interval should be at least 3 times shorter than watchdog timeout. "+
+			"Maximum recommended pet interval: %v. "+
+			"This configuration may cause watchdog timeout issues.",
 			petInterval, watchdogTimeout, maxPetInterval)
+		return false, warningMsg
 	}
 
 	// Also validate minimum pet interval (should be at least 1 second)
 	if petInterval < time.Second {
-		return fmt.Errorf("pet interval (%v) is too short. Minimum allowed: 1s", petInterval)
+		warningMsg := fmt.Sprintf("pet interval (%v) is very short. Minimum recommended: 1s", petInterval)
+		return false, warningMsg
 	}
 
 	logger.V(1).Info("Watchdog timing validation successful",
@@ -1630,7 +1634,7 @@ func validateWatchdogTiming(petInterval time.Duration) error {
 		"maxAllowedPetInterval", maxPetInterval,
 		"safetyMargin", fmt.Sprintf("%.1fx", float64(watchdogTimeout)/float64(petInterval)))
 
-	return nil
+	return true, ""
 }
 
 func main() {
@@ -1645,9 +1649,8 @@ func main() {
 	logger.Info("SBD Agent starting", "version", "development")
 
 	// Validate watchdog timing early
-	if err := validateWatchdogTiming(*watchdogTimeout); err != nil {
-		logger.Error(err, "Watchdog timing validation failed")
-		os.Exit(1)
+	if valid, warning := validateWatchdogTiming(*watchdogTimeout); !valid {
+		logger.Info("Watchdog timing validation warning", "warning", warning)
 	}
 
 	// Determine node name

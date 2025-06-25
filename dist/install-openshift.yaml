@@ -56,6 +56,17 @@ spec:
                 description: Namespace is the namespace where the SBD agent DaemonSet
                   will be deployed
                 type: string
+              petIntervalMultiple:
+                default: 4
+                description: |-
+                  PetIntervalMultiple defines the multiple used to calculate the pet interval from the watchdog timeout.
+                  Pet interval = watchdog timeout / pet interval multiple.
+                  This ensures the pet interval is always shorter than the watchdog timeout with a safety margin.
+                  The value must be between 3.0 and 20.0, with 4.0 providing a good balance of safety and efficiency.
+                format: int32
+                maximum: 20
+                minimum: 3
+                type: integer
               sbdWatchdogPath:
                 default: /dev/watchdog
                 description: |-
@@ -69,6 +80,15 @@ spec:
                   This timeout determines when inactive nodes are cleaned up from the shared SBD device slot assignments.
                   Nodes that haven't updated their heartbeat within this duration will be considered stale and their slots
                   will be freed for reuse by new nodes. The value must be at least 1 minute.
+                pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                type: string
+              watchdogTimeout:
+                default: 60s
+                description: |-
+                  WatchdogTimeout defines the watchdog timeout duration for the hardware/software watchdog device.
+                  This determines how long the system will wait before triggering a reboot if the watchdog is not pet.
+                  The pet interval is calculated as watchdog timeout divided by the pet interval multiple.
+                  The value must be between 10 seconds and 300 seconds (5 minutes).
                 pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                 type: string
             type: object

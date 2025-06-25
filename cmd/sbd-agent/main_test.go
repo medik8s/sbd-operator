@@ -1424,37 +1424,37 @@ func TestValidateWatchdogTiming(t *testing.T) {
 			name:        "invalid pet interval - too short (500ms)",
 			petInterval: 500 * time.Millisecond,
 			wantErr:     true,
-			errContains: "too short",
+			errContains: "very short",
 		},
 		{
 			name:        "invalid pet interval - too short (100ms)",
 			petInterval: 100 * time.Millisecond,
 			wantErr:     true,
-			errContains: "too short",
+			errContains: "very short",
 		},
 		{
 			name:        "invalid pet interval - zero",
 			petInterval: 0,
 			wantErr:     true,
-			errContains: "too short",
+			errContains: "very short",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateWatchdogTiming(tt.petInterval)
+			valid, warning := validateWatchdogTiming(tt.petInterval)
 
 			if tt.wantErr {
-				if err == nil {
+				if valid {
 					t.Errorf("validateWatchdogTiming() expected error but got none")
 					return
 				}
-				if tt.errContains != "" && !contains(err.Error(), tt.errContains) {
-					t.Errorf("validateWatchdogTiming() error = %v, want error containing %q", err, tt.errContains)
+				if tt.errContains != "" && !contains(warning, tt.errContains) {
+					t.Errorf("validateWatchdogTiming() warning = %v, want warning containing %q", warning, tt.errContains)
 				}
 			} else {
-				if err != nil {
-					t.Errorf("validateWatchdogTiming() unexpected error = %v", err)
+				if !valid {
+					t.Errorf("validateWatchdogTiming() unexpected warning = %v", warning)
 				}
 			}
 		})

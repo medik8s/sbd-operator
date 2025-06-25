@@ -191,3 +191,415 @@ func TestSBDConfigSpec_GetSbdWatchdogPath(t *testing.T) {
 		})
 	}
 }
+
+func TestSBDConfigSpec_GetWatchdogTimeout(t *testing.T) {
+	tests := []struct {
+		name     string
+		spec     SBDConfigSpec
+		expected time.Duration
+	}{
+		{
+			name: "nil timeout returns default",
+			spec: SBDConfigSpec{
+				WatchdogTimeout: nil,
+			},
+			expected: DefaultWatchdogTimeout,
+		},
+		{
+			name: "explicit timeout is returned",
+			spec: SBDConfigSpec{
+				WatchdogTimeout: &metav1.Duration{Duration: 30 * time.Second},
+			},
+			expected: 30 * time.Second,
+		},
+		{
+			name: "custom timeout is returned",
+			spec: SBDConfigSpec{
+				WatchdogTimeout: &metav1.Duration{Duration: 120 * time.Second},
+			},
+			expected: 120 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.spec.GetWatchdogTimeout()
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestSBDConfigSpec_GetPetIntervalMultiple(t *testing.T) {
+	tests := []struct {
+		name     string
+		spec     SBDConfigSpec
+		expected int32
+	}{
+		{
+			name: "nil multiple returns default",
+			spec: SBDConfigSpec{
+				PetIntervalMultiple: nil,
+			},
+			expected: DefaultPetIntervalMultiple,
+		},
+		{
+			name: "explicit multiple is returned",
+			spec: SBDConfigSpec{
+				PetIntervalMultiple: &[]int32{5}[0],
+			},
+			expected: 5,
+		},
+		{
+			name: "custom multiple is returned",
+			spec: SBDConfigSpec{
+				PetIntervalMultiple: &[]int32{6}[0],
+			},
+			expected: 6,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.spec.GetPetIntervalMultiple()
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestSBDConfigSpec_GetPetInterval(t *testing.T) {
+	tests := []struct {
+		name     string
+		spec     SBDConfigSpec
+		expected time.Duration
+	}{
+		{
+			name:     "default values",
+			spec:     SBDConfigSpec{},
+			expected: DefaultWatchdogTimeout / time.Duration(DefaultPetIntervalMultiple), // 60s / 4 = 15s
+		},
+		{
+			name: "custom watchdog timeout with default multiple",
+			spec: SBDConfigSpec{
+				WatchdogTimeout: &metav1.Duration{Duration: 120 * time.Second},
+			},
+			expected: 120 * time.Second / time.Duration(DefaultPetIntervalMultiple), // 120s / 4 = 30s
+		},
+		{
+			name: "default watchdog timeout with custom multiple",
+			spec: SBDConfigSpec{
+				PetIntervalMultiple: &[]int32{6}[0],
+			},
+			expected: DefaultWatchdogTimeout / 6, // 60s / 6 = 10s
+		},
+		{
+			name: "custom values",
+			spec: SBDConfigSpec{
+				WatchdogTimeout:     &metav1.Duration{Duration: 90 * time.Second},
+				PetIntervalMultiple: &[]int32{5}[0],
+			},
+			expected: 90 * time.Second / 5, // 90s / 5 = 18s
+		},
+		{
+			name: "minimum pet interval enforced",
+			spec: SBDConfigSpec{
+				WatchdogTimeout:     &metav1.Duration{Duration: 10 * time.Second},
+				PetIntervalMultiple: &[]int32{20}[0],
+			},
+			expected: time.Second, // Would be 500ms but enforced to 1s minimum
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.spec.GetPetInterval()
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestSBDConfigSpec_ValidateWatchdogTimeout(t *testing.T) {
+	tests := []struct {
+		name      string
+		spec      SBDConfigSpec
+		wantError bool
+	}{
+		{
+			name:      "default timeout is valid",
+			spec:      SBDConfigSpec{},
+			wantError: false,
+		},
+		{
+			name: "valid custom timeout",
+			spec: SBDConfigSpec{
+				WatchdogTimeout: &metav1.Duration{Duration: 30 * time.Second},
+			},
+			wantError: false,
+		},
+		{
+			name: "timeout too small",
+			spec: SBDConfigSpec{
+				WatchdogTimeout: &metav1.Duration{Duration: 5 * time.Second},
+			},
+			wantError: true,
+		},
+		{
+			name: "timeout too large",
+			spec: SBDConfigSpec{
+				WatchdogTimeout: &metav1.Duration{Duration: 400 * time.Second},
+			},
+			wantError: true,
+		},
+		{
+			name: "minimum timeout is valid",
+			spec: SBDConfigSpec{
+				WatchdogTimeout: &metav1.Duration{Duration: MinWatchdogTimeout},
+			},
+			wantError: false,
+		},
+		{
+			name: "maximum timeout is valid",
+			spec: SBDConfigSpec{
+				WatchdogTimeout: &metav1.Duration{Duration: MaxWatchdogTimeout},
+			},
+			wantError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.spec.ValidateWatchdogTimeout()
+			if (err != nil) != tt.wantError {
+				t.Errorf("ValidateWatchdogTimeout() error = %v, wantError %v", err, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestSBDConfigSpec_ValidatePetIntervalMultiple(t *testing.T) {
+	tests := []struct {
+		name      string
+		spec      SBDConfigSpec
+		wantError bool
+	}{
+		{
+			name:      "default multiple is valid",
+			spec:      SBDConfigSpec{},
+			wantError: false,
+		},
+		{
+			name: "valid custom multiple",
+			spec: SBDConfigSpec{
+				PetIntervalMultiple: &[]int32{5}[0],
+			},
+			wantError: false,
+		},
+		{
+			name: "multiple too small",
+			spec: SBDConfigSpec{
+				PetIntervalMultiple: &[]int32{2}[0],
+			},
+			wantError: true,
+		},
+		{
+			name: "multiple too large",
+			spec: SBDConfigSpec{
+				PetIntervalMultiple: &[]int32{25}[0],
+			},
+			wantError: true,
+		},
+		{
+			name: "minimum multiple is valid",
+			spec: SBDConfigSpec{
+				PetIntervalMultiple: &[]int32{MinPetIntervalMultiple}[0],
+			},
+			wantError: false,
+		},
+		{
+			name: "maximum multiple is valid",
+			spec: SBDConfigSpec{
+				PetIntervalMultiple: &[]int32{MaxPetIntervalMultiple}[0],
+			},
+			wantError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.spec.ValidatePetIntervalMultiple()
+			if (err != nil) != tt.wantError {
+				t.Errorf("ValidatePetIntervalMultiple() error = %v, wantError %v", err, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestSBDConfigSpec_ValidatePetIntervalTiming(t *testing.T) {
+	tests := []struct {
+		name      string
+		spec      SBDConfigSpec
+		wantError bool
+	}{
+		{
+			name:      "default values are valid",
+			spec:      SBDConfigSpec{},
+			wantError: false,
+		},
+		{
+			name: "safe configuration",
+			spec: SBDConfigSpec{
+				WatchdogTimeout:     &metav1.Duration{Duration: 60 * time.Second},
+				PetIntervalMultiple: &[]int32{4}[0],
+			},
+			wantError: false,
+		},
+		{
+			name: "pet interval too long - exceeds 1/3 rule",
+			spec: SBDConfigSpec{
+				WatchdogTimeout:     &metav1.Duration{Duration: 90 * time.Second},
+				PetIntervalMultiple: &[]int32{2}[0], // Would give 45s pet interval, which is > 30s (90/3)
+			},
+			wantError: true,
+		},
+		{
+			name: "pet interval equal to watchdog timeout",
+			spec: SBDConfigSpec{
+				WatchdogTimeout:     &metav1.Duration{Duration: 10 * time.Second},
+				PetIntervalMultiple: &[]int32{1}[0],
+			},
+			wantError: true,
+		},
+		{
+			name: "pet interval exactly at 1/3 limit",
+			spec: SBDConfigSpec{
+				WatchdogTimeout:     &metav1.Duration{Duration: 60 * time.Second},
+				PetIntervalMultiple: &[]int32{3}[0], // Gives exactly 20s pet interval (60/3)
+			},
+			wantError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.spec.ValidatePetIntervalTiming()
+			if (err != nil) != tt.wantError {
+				t.Errorf("ValidatePetIntervalTiming() error = %v, wantError %v", err, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestSBDConfigSpec_ValidateAll(t *testing.T) {
+	tests := []struct {
+		name      string
+		spec      SBDConfigSpec
+		wantError bool
+	}{
+		{
+			name:      "all defaults are valid",
+			spec:      SBDConfigSpec{},
+			wantError: false,
+		},
+		{
+			name: "all valid custom values",
+			spec: SBDConfigSpec{
+				StaleNodeTimeout:    &metav1.Duration{Duration: 2 * time.Hour},
+				WatchdogTimeout:     &metav1.Duration{Duration: 90 * time.Second},
+				PetIntervalMultiple: &[]int32{5}[0],
+			},
+			wantError: false,
+		},
+		{
+			name: "invalid stale node timeout",
+			spec: SBDConfigSpec{
+				StaleNodeTimeout: &metav1.Duration{Duration: 30 * time.Second}, // Too small
+				WatchdogTimeout:  &metav1.Duration{Duration: 60 * time.Second},
+			},
+			wantError: true,
+		},
+		{
+			name: "invalid watchdog timeout",
+			spec: SBDConfigSpec{
+				WatchdogTimeout: &metav1.Duration{Duration: 5 * time.Second}, // Too small
+			},
+			wantError: true,
+		},
+		{
+			name: "invalid pet interval multiple",
+			spec: SBDConfigSpec{
+				PetIntervalMultiple: &[]int32{2}[0], // Too small
+			},
+			wantError: true,
+		},
+		{
+			name: "invalid pet interval timing",
+			spec: SBDConfigSpec{
+				WatchdogTimeout:     &metav1.Duration{Duration: 60 * time.Second},
+				PetIntervalMultiple: &[]int32{2}[0], // Would give 30s pet interval, which is > 20s (60/3)
+			},
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.spec.ValidateAll()
+			if (err != nil) != tt.wantError {
+				t.Errorf("ValidateAll() error = %v, wantError %v", err, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestWatchdogConstants(t *testing.T) {
+	// Verify that constants have expected values
+	if DefaultWatchdogTimeout != 60*time.Second {
+		t.Errorf("DefaultWatchdogTimeout = %v, expected 60s", DefaultWatchdogTimeout)
+	}
+
+	if MinWatchdogTimeout != 10*time.Second {
+		t.Errorf("MinWatchdogTimeout = %v, expected 10s", MinWatchdogTimeout)
+	}
+
+	if MaxWatchdogTimeout != 300*time.Second {
+		t.Errorf("MaxWatchdogTimeout = %v, expected 300s", MaxWatchdogTimeout)
+	}
+
+	if DefaultPetIntervalMultiple != 4 {
+		t.Errorf("DefaultPetIntervalMultiple = %v, expected 4", DefaultPetIntervalMultiple)
+	}
+
+	if MinPetIntervalMultiple != 3 {
+		t.Errorf("MinPetIntervalMultiple = %v, expected 3", MinPetIntervalMultiple)
+	}
+
+	if MaxPetIntervalMultiple != 20 {
+		t.Errorf("MaxPetIntervalMultiple = %v, expected 20", MaxPetIntervalMultiple)
+	}
+
+	// Verify logical relationships
+	if MinWatchdogTimeout >= DefaultWatchdogTimeout {
+		t.Errorf("MinWatchdogTimeout (%v) should be less than DefaultWatchdogTimeout (%v)",
+			MinWatchdogTimeout, DefaultWatchdogTimeout)
+	}
+
+	if DefaultWatchdogTimeout >= MaxWatchdogTimeout {
+		t.Errorf("DefaultWatchdogTimeout (%v) should be less than MaxWatchdogTimeout (%v)",
+			DefaultWatchdogTimeout, MaxWatchdogTimeout)
+	}
+
+	if MinPetIntervalMultiple >= DefaultPetIntervalMultiple {
+		t.Errorf("MinPetIntervalMultiple (%v) should be less than DefaultPetIntervalMultiple (%v)",
+			MinPetIntervalMultiple, DefaultPetIntervalMultiple)
+	}
+
+	if DefaultPetIntervalMultiple >= MaxPetIntervalMultiple {
+		t.Errorf("DefaultPetIntervalMultiple (%v) should be less than MaxPetIntervalMultiple (%v)",
+			DefaultPetIntervalMultiple, MaxPetIntervalMultiple)
+	}
+}
