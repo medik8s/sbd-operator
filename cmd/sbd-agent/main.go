@@ -45,7 +45,8 @@ import (
 
 var (
 	watchdogPath      = flag.String("watchdog-path", "/dev/watchdog", "Path to the watchdog device")
-	watchdogTimeout   = flag.Duration("watchdog-timeout", 30*time.Second, "Watchdog pet interval (how often to pet the watchdog)")
+	watchdogTimeout   = flag.Duration("watchdog-timeout", 60*time.Second, "Watchdog timeout duration (how long before watchdog triggers reboot)")
+	petInterval       = flag.Duration("pet-interval", 15*time.Second, "Pet interval (how often to pet the watchdog)")
 	watchdogTestMode  = flag.Bool("watchdog-test-mode", false, "Enable watchdog test mode (soft_noboot=1 for softdog, prevents actual reboots)")
 	sbdDevice         = flag.String("sbd-device", "", "Path to the SBD block device")
 	sbdFileLocking    = flag.Bool("sbd-file-locking", true, "Enable file locking for SBD device operations (recommended for shared storage)")
@@ -1604,20 +1605,15 @@ func checkNodeIDNameResolution(nodeName string, nodeID uint16) error {
 
 // validateWatchdogTiming validates that the pet interval is appropriate for the watchdog timeout
 // Returns true if validation passes, false with a warning message if it fails
-func validateWatchdogTiming(petInterval time.Duration) (bool, string) {
-	// Get the watchdog timeout that will be used (currently hardcoded in watchdog package)
-	watchdogTimeoutSeconds := watchdog.DefaultSoftdogTimeout
-	watchdogTimeout := time.Duration(watchdogTimeoutSeconds) * time.Second
-
+func validateWatchdogTiming(petInterval, watchdogTimeout time.Duration) (bool, string) {
 	// Pet interval should be at least 3 times shorter than watchdog timeout
 	// This ensures we have enough safety margin to pet the watchdog before it times out
 	maxPetInterval := watchdogTimeout / 3
 
 	if petInterval > maxPetInterval {
 		warningMsg := fmt.Sprintf("pet interval (%v) is too long for watchdog timeout (%v). "+
-			"Pet interval should be at least 3 times shorter than watchdog timeout. "+
-			"Maximum recommended pet interval: %v. "+
-			"This configuration may cause watchdog timeout issues.",
+			"Pet interval must be at least 3 times shorter than watchdog timeout. "+
+			"Maximum allowed pet interval: %v",
 			petInterval, watchdogTimeout, maxPetInterval)
 		return false, warningMsg
 	}
@@ -1648,9 +1644,10 @@ func main() {
 
 	logger.Info("SBD Agent starting", "version", "development")
 
-	// Validate watchdog timing early
-	if valid, warning := validateWatchdogTiming(*watchdogTimeout); !valid {
-		logger.Info("Watchdog timing validation warning", "warning", warning)
+	// Validate watchdog timing early using the configured values
+	if valid, warning := validateWatchdogTiming(*petInterval, *watchdogTimeout); !valid {
+		logger.Error(nil, "Watchdog timing validation failed", "error", warning)
+		os.Exit(1)
 	}
 
 	// Determine node name
@@ -1736,7 +1733,7 @@ func main() {
 	}
 
 	// Create SBD agent (hash mapping is always enabled)
-	agent, err := NewSBDAgent(*watchdogPath, *sbdDevice, nodeNameValue, *clusterName, nodeIDValue, *watchdogTimeout, *sbdUpdateInterval, heartbeatInterval, *peerCheckInterval, sbdTimeoutValue, rebootMethodValue, *metricsPort, *staleNodeTimeout, *watchdogTestMode, *sbdFileLocking)
+	agent, err := NewSBDAgent(*watchdogPath, *sbdDevice, nodeNameValue, *clusterName, nodeIDValue, *petInterval, *sbdUpdateInterval, heartbeatInterval, *peerCheckInterval, sbdTimeoutValue, rebootMethodValue, *metricsPort, *staleNodeTimeout, *watchdogTestMode, *sbdFileLocking)
 	if err != nil {
 		logger.Error(err, "Failed to create SBD agent",
 			"watchdogPath", *watchdogPath,

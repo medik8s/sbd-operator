@@ -512,11 +512,13 @@ func (r *SBDConfigReconciler) buildDaemonSet(sbdConfig *medik8sv1alpha1.SBDConfi
 		"sbdconfig":  sbdConfig.Name,
 	}
 
-	// Calculate pet interval based on configured watchdog timeout and multiple
+	// Get configured watchdog timeout and calculate pet interval
+	watchdogTimeout := sbdConfig.Spec.GetWatchdogTimeout()
 	petInterval := sbdConfig.Spec.GetPetInterval()
 
 	// Convert to command line arguments
-	watchdogTimeoutArg := fmt.Sprintf("--watchdog-timeout=%s", petInterval.String())
+	watchdogTimeoutArg := fmt.Sprintf("--watchdog-timeout=%s", watchdogTimeout.String())
+	petIntervalArg := fmt.Sprintf("--pet-interval=%s", petInterval.String())
 
 	return &appsv1.DaemonSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -634,6 +636,7 @@ func (r *SBDConfigReconciler) buildDaemonSet(sbdConfig *medik8sv1alpha1.SBDConfi
 							Args: []string{
 								fmt.Sprintf("--watchdog-path=%s", sbdConfig.Spec.GetSbdWatchdogPath()),
 								watchdogTimeoutArg,
+								petIntervalArg,
 								"--log-level=info",
 								fmt.Sprintf("--stale-node-timeout=%s", sbdConfig.Spec.GetStaleNodeTimeout().String()),
 							},
