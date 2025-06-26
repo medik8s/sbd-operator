@@ -294,10 +294,10 @@ func (o *WebhookInstallOptions) setupCA() error {
 		return fmt.Errorf("unable to marshal webhook serving certs: %w", err)
 	}
 
-	if err := os.WriteFile(filepath.Join(localServingCertsDir, "tls.crt"), certData, 0640); err != nil {
+	if err := os.WriteFile(filepath.Join(localServingCertsDir, "tls.crt"), certData, 0640); err != nil { //nolint:gosec
 		return fmt.Errorf("unable to write webhook serving cert to disk: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(localServingCertsDir, "tls.key"), keyData, 0640); err != nil {
+	if err := os.WriteFile(filepath.Join(localServingCertsDir, "tls.key"), keyData, 0640); err != nil { //nolint:gosec
 		return fmt.Errorf("unable to write webhook serving key to disk: %w", err)
 	}
 
@@ -313,12 +313,14 @@ func createWebhooks(config *rest.Config, mutHooks []*admissionv1.MutatingWebhook
 
 	// Create each webhook
 	for _, hook := range mutHooks {
+		hook := hook
 		log.V(1).Info("installing mutating webhook", "webhook", hook.GetName())
 		if err := ensureCreated(cs, hook); err != nil {
 			return err
 		}
 	}
 	for _, hook := range valHooks {
+		hook := hook
 		log.V(1).Info("installing validating webhook", "webhook", hook.GetName())
 		if err := ensureCreated(cs, hook); err != nil {
 			return err
@@ -419,8 +421,8 @@ func readWebhooks(path string) ([]*admissionv1.MutatingWebhookConfiguration, []*
 			const (
 				admissionregv1 = "admissionregistration.k8s.io/v1"
 			)
-			switch generic.Kind {
-			case "MutatingWebhookConfiguration":
+			switch {
+			case generic.Kind == "MutatingWebhookConfiguration":
 				if generic.APIVersion != admissionregv1 {
 					return nil, nil, fmt.Errorf("only v1 is supported right now for MutatingWebhookConfiguration (name: %s)", generic.Name)
 				}
@@ -429,7 +431,7 @@ func readWebhooks(path string) ([]*admissionv1.MutatingWebhookConfiguration, []*
 					return nil, nil, err
 				}
 				mutHooks = append(mutHooks, hook)
-			case "ValidatingWebhookConfiguration":
+			case generic.Kind == "ValidatingWebhookConfiguration":
 				if generic.APIVersion != admissionregv1 {
 					return nil, nil, fmt.Errorf("only v1 is supported right now for ValidatingWebhookConfiguration (name: %s)", generic.Name)
 				}

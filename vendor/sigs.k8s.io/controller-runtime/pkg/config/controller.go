@@ -16,15 +16,9 @@ limitations under the License.
 
 package config
 
-import (
-	"time"
+import "time"
 
-	"github.com/go-logr/logr"
-)
-
-// Controller contains configuration options for controllers. It only includes options
-// that makes sense for a set of controllers and is used for defaulting the options
-// of multiple controllers.
+// Controller contains configuration options for a controller.
 type Controller struct {
 	// SkipNameValidation allows skipping the name validation that ensures that every controller name is unique.
 	// Unique controller names are important to get unique metrics and logs for a controller.
@@ -59,13 +53,4 @@ type Controller struct {
 	// NeedLeaderElection indicates whether the controller needs to use leader election.
 	// Defaults to true, which means the controller will use leader election.
 	NeedLeaderElection *bool
-
-	// UsePriorityQueue configures the controllers queue to use the controller-runtime provided
-	// priority queue.
-	//
-	// Note: This flag is disabled by default until a future version. It's currently in beta.
-	UsePriorityQueue *bool
-
-	// Logger is the logger controllers should use.
-	Logger logr.Logger
 }
