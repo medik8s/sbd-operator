@@ -7,7 +7,7 @@ set -e
 
 # Configuration
 NAMESPACE="sbd-system"
-DEPLOYMENT_NAME="sbd-agent"
+DEPLOYMENT_NAME="sbd-agent-test-sbdconfig"
 
 # Colors for output
 RED='\033[0;31m'
@@ -51,18 +51,7 @@ check_kubectl() {
 # Function to deploy resources
 deploy_resources() {
     log_info "Deploying SBD Agent resources..."
-    
-    # Create namespace first
-    log_info "Creating namespace: ${NAMESPACE}"
-    kubectl apply -f deploy/sbd-system-namespace.yaml
-    
-    # Wait for namespace to be ready
-    log_info "Waiting for namespace to be ready..."
-    sleep 2  # Brief pause to ensure namespace is fully created
-    
-    # Deploy the DaemonSet and related resources
-    log_info "Deploying SBD Agent DaemonSet..."
-    kubectl apply -f deploy/sbd-agent-daemonset-simple.yaml
+    kubectl apply -f scripts/example-sbdconfig.yaml
     
     log_success "Resources deployed successfully"
 }
@@ -112,7 +101,7 @@ check_status() {
 show_logs() {
     log_info "Showing recent logs from SBD Agent pods..."
     
-    local pods=$(kubectl get pods -n ${NAMESPACE} -l app=${DEPLOYMENT_NAME} -o jsonpath='{.items[*].metadata.name}')
+    local pods=$(kubectl get pods -n ${NAMESPACE} -l component=sbd-agent -o jsonpath='{.items[*].metadata.name}')
     
     if [ -z "${pods}" ]; then
         log_warning "No SBD Agent pods found"
@@ -121,9 +110,12 @@ show_logs() {
     
     for pod in ${pods}; do
         echo ""
-        log_info "Logs from pod: ${pod}"
+        log_info "Logs from pod: ${pod} $(kubectl get pod ${pod} -n ${NAMESPACE} -o jsonpath='{.status.containerStatuses[0].imageID}')"
+        #log_info "Logs from pod: ${pod}"
         echo "----------------------------------------"
-        kubectl logs ${pod} -n ${NAMESPACE} --tail=20 || log_warning "Could not get logs from ${pod}"
+        echo "kubectl logs ${pod} -n ${NAMESPACE}"
+        kubectl logs ${pod} -n ${NAMESPACE}  --tail=20 || log_warning "Could not get logs from ${pod}"
+        echo ""
     done
 }
 
@@ -149,7 +141,12 @@ delete_resources() {
 # Function to wait for rollout
 wait_for_rollout() {
     log_info "Waiting for DaemonSet rollout to complete..."
-    
+
+    # wait for the ${DEPLOYMENT_NAME} daemonset to be exist
+    while ! kubectl get daemonset ${DEPLOYMENT_NAME} -n ${NAMESPACE} &> /dev/null; do
+        sleep 1
+    done
+
     if kubectl rollout status daemonset/${DEPLOYMENT_NAME} -n ${NAMESPACE} --timeout=300s; then
         log_success "DaemonSet rollout completed successfully"
     else

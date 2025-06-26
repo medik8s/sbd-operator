@@ -1,0 +1,13 @@
+apiVersion: medik8s.medik8s.io/v1alpha1
+kind: SBDConfig
+metadata:
+  name: test-sbdconfig
+spec:
+  image: quay.io/medik8s/sbd-agent:latest
+  imagePullPolicy: Always 
+  namespace: sbd-system
+  petIntervalMultiple: 4
+  sbdWatchdogPath: /dev/watchdog
+  staleNodeTimeout: 1h
+  watchdogTimeout: 60s
+
