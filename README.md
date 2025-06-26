@@ -116,81 +116,108 @@ make docker-build-agent
 make build build-agent
 ```
 
-## Running End-to-End Tests
+## Running Tests
 
-### Prerequisites for CRC (OpenShift)
+The SBD operator includes comprehensive testing through both **smoke tests** and **end-to-end (e2e) tests**. Tests can be run using either Make targets or the unified test runner script.
 
-The e2e tests use **CRC (CodeReady Containers)** with OpenShift and **recreate the environment from scratch** for each test run. This ensures clean, consistent testing. You need:
+### Test Runner Script
 
+The `scripts/run-tests.sh` script provides a unified interface for running both smoke and e2e tests with flexible configuration options:
+
+```bash
+# Run smoke tests (default)
+scripts/run-tests.sh
+
+# Run e2e tests
+scripts/run-tests.sh --type e2e
+
+# Run tests without cleanup (useful for debugging)
+scripts/run-tests.sh --type smoke --no-cleanup
+
+# Skip building images (use existing ones)
+scripts/run-tests.sh --skip-build
+
+# Run with verbose output
+scripts/run-tests.sh --verbose
+
+# Custom registry settings
+QUAY_REGISTRY=my-registry.io QUAY_ORG=myorg scripts/run-tests.sh --type e2e
+```
+
+### Make Targets
+
+For convenience, the following Make targets are available:
+
+```bash
+# Smoke tests (OpenShift on CRC)
+make test-smoke                    # Run smoke tests with full setup
+make test-smoke-no-cleanup        # Skip cleanup after tests
+make test-smoke-skip-build        # Use existing images
+
+# E2E tests (existing cluster)
+make test-e2e                     # Run e2e tests with full setup
+make test-e2e-no-cleanup         # Skip cleanup after tests  
+make test-e2e-skip-build         # Use existing images
+```
+
+### Test Types
+
+#### Smoke Tests
+- **Purpose**: Quick validation of core functionality
+- **Environment**: CRC (CodeReady Containers) with OpenShift
+- **Duration**: ~5-10 minutes
+- **Use case**: Development validation, CI/CD pipelines
+
+#### E2E Tests  
+- **Purpose**: Comprehensive integration testing
+- **Environment**: Any Kubernetes/OpenShift cluster
+- **Duration**: ~15-30 minutes
+- **Use case**: Release validation, full feature testing
+
+### Prerequisites
+
+#### For Smoke Tests (CRC)
 1. **Install CRC**: Download from [Red Hat Developers](https://developers.redhat.com/products/codeready-containers/download)
 2. **Setup CRC**: Run `crc setup` once to configure CRC with appropriate resources
 3. **Available disk space**: Ensure sufficient disk space as CRC will be stopped/started
 
-### Running E2E Tests
+#### For E2E Tests
+1. **Kubernetes cluster**: Any Kubernetes 1.21+ or OpenShift 4.8+ cluster
+2. **kubectl/oc**: Cluster CLI tool configured and authenticated
+3. **KUBECONFIG**: Set to point to your target cluster
 
-The Makefile handles all setup automatically:
+### What the Tests Do
 
-```bash
-# Run complete e2e test suite (recreates CRC environment)
-make test-e2e
+Both test types automatically:
 
-# Skip cleanup after tests (useful for debugging)
-E2E_CLEANUP_SKIP=true make test-e2e
-
-# Run with custom image settings
-QUAY_REGISTRY=my-registry.io QUAY_ORG=myorg VERSION=dev make test-e2e
-```
-
-### What the E2E Setup Does
-
-The `make test-e2e` command automatically:
-
-1. **Stops any existing CRC cluster**
-2. **Starts a fresh CRC cluster**
-3. **Builds operator and agent container images**
-4. **Loads images into CRC's container runtime**
-5. **Builds OpenShift installer with SecurityContextConstraints**
-6. **Deploys the operator with OpenShift support**
-7. **Waits for operator readiness**
-8. **Runs the Go test suite**
-9. **Cleans up the environment** (unless `E2E_CLEANUP_SKIP=true`)
-
-### Manual Setup (Advanced)
-
-For development, you can run individual steps:
-
-```bash
-# Setup CRC environment and deploy operator
-make setup-test-e2e
-
-# Run tests only (assumes setup is done)
-go test ./test/e2e/ -v -ginkgo.v
-
-# Clean up everything
-make cleanup-test-e2e
-```
+1. **Build container images** (operator and agent)
+2. **Load/push images** to the target environment
+3. **Generate installation manifests** with proper SecurityContextConstraints
+4. **Deploy the operator** with all required RBAC and resources
+5. **Wait for operator readiness**
+6. **Run the test suite** with comprehensive validation
+7. **Clean up resources** (unless cleanup is skipped)
 
 ### Environment Variables
 
-- `E2E_CLEANUP_SKIP=true`: Skip cleanup after tests (useful for debugging)
-- `CERT_MANAGER_INSTALL_SKIP=true`: Skip CertManager installation
-- `QUAY_REGISTRY`: Registry URL (default: `quay.io`)
+The following environment variables can be used to customize test execution:
+
+- `QUAY_REGISTRY`: Container registry (default: `quay.io`)
 - `QUAY_ORG`: Organization/namespace (default: `medik8s`)
-- `VERSION`: Image version tag (default: `latest`)
+- `TAG`: Image tag (default: `latest`)
+- `CONTAINER_TOOL`: Container tool (default: `podman`)
+- `KUBECTL`: Kubernetes CLI tool (default: `kubectl`)
 
 ### OpenShift vs Kubernetes Differences
 
-When running on OpenShift (CRC), the tests automatically handle:
+When running on OpenShift, the tests automatically handle:
 
-- **Security Context Constraints (SCC)** deployed via OpenShift installer
-- **Privileged pod permissions** for hardware watchdog access
+- **Security Context Constraints (SCC)** for privileged pod access
 - **OpenShift Routes** for ingress (if applicable)
-- **OpenShift Registry** for container images
-- **oc** command instead of kubectl where needed
+- **OpenShift Registry** integration
+- **oc** command usage where appropriate
 
-The tests use the OpenShift-specific installer (`build-openshift-installer`) which includes all necessary SecurityContextConstraints for SBD Agent pods to run with required privileges.
-
-The tests are backward compatible with Kind/Kubernetes for development environments.
+The tests use environment-specific installers that include all necessary permissions and resources for the target platform.
 
 ## AWS OpenShift Cluster Provisioning
 

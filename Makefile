@@ -148,31 +148,12 @@ test-smoke-reload:
 	@eval $$(crc oc-env) && kubectl patch sbdconfig test-config -n sbd-operator-system -p '{"spec":{"image":"$(QUAY_AGENT_IMG)@sha256:$$(podman inspect $(QUAY_AGENT_IMG):$(TAG) --format "{{.ID}}"| head -c 12 )"}}'
 
 
-.PHONY: test-smoke
-test-smoke: setup-test-smoke cleanup-test-smoke load-images ## Run the smoke tests on CRC OpenShift cluster (setup handled in setup-test-smoke).
-	@echo "Building OpenShift installer with SecurityContextConstraints..."
-	@$(MAKE) build-smoke-installer
-	@echo "Deploying operator to CRC with OpenShift support..."
-	@eval $$(crc oc-env) && kubectl apply -f dist/install.yaml --server-side=true
-	@echo "Waiting for operator to be ready..."
-	@eval $$(crc oc-env) && kubectl wait --for=condition=ready pod -l control-plane=controller-manager -n sbd-operator-system --timeout=120s || { \
-		echo "Operator failed to start, checking logs..."; \
-		kubectl logs -n sbd-operator-system -l control-plane=controller-manager --tail=20 || true; \
-		exit 1; \
-	}
-	@echo "Running smoke tests on CRC OpenShift cluster..."
 	#	OPERATOR_IMG="$(QUAY_OPERATOR_IMG)@sha256:$(OPERATOR_SHA)" \
 	#	AGENT_IMG="$(QUAY_AGENT_IMG)@sha256:$(AGENT_SHA)" \
-	@eval $$(crc oc-env) && \
-	QUAY_REGISTRY=$(QUAY_REGISTRY) QUAY_ORG=$(QUAY_ORG) TAG=$(TAG) \
-	go test ./test/smoke/ -v -ginkgo.v; \
-	TEST_EXIT_CODE=$$?; \
-	if [ "$$TEST_EXIT_CODE" = "0" ]; then \
-		$(MAKE) cleanup-test-smoke; \
-	else \
-		echo "Skipping cleanup after failed test"; \
-	fi; \
-	exit $$TEST_EXIT_CODE
+.PHONY: test-smoke
+test-smoke: setup-test-smoke ## Run the smoke tests on CRC OpenShift cluster using the test runner script.
+	@echo "Running smoke tests using test runner script..."
+	@scripts/run-tests.sh --type smoke
 
 .PHONY: test-smoke-crc
 test-smoke-crc: ## Run smoke tests specifically on CRC OpenShift cluster
@@ -201,7 +182,7 @@ test-smoke-kind: ## Run smoke tests on Kind Kubernetes cluster (legacy support)
 # The provisioning script automatically downloads and installs required tools:
 # - AWS CLI v2, openshift-install, oc CLI, and jq
 # Prerequisites: AWS credentials configured, Red Hat pull secret
-OCP_CLUSTER_NAME ?= sbd-operator-test
+OCP_CLUSTER_NAME ?= beekhof-sbd-operator-test
 AWS_REGION ?= us-east-1
 OCP_WORKER_COUNT ?= 4
 OCP_INSTANCE_TYPE ?= m5.large
@@ -231,19 +212,29 @@ destroy-ocp-aws: ## Destroy OpenShift cluster on AWS
 	fi
 
 .PHONY: test-e2e
-test-e2e: ## Run e2e tests on existing OpenShift cluster
-	@echo "Running e2e tests on existing OpenShift cluster..."
-	@command -v kubectl >/dev/null 2>&1 || { \
-		echo "kubectl is not installed. Please install it manually."; \
-		exit 1; \
-	}
-	@echo "Checking cluster connectivity..."
-	@kubectl cluster-info || { \
-		echo "Cannot connect to Kubernetes cluster. Please ensure KUBECONFIG is set correctly."; \
-		exit 1; \
-	}
-	@echo "Running e2e test suite..."
-	@go test ./test/e2e/ -v -ginkgo.v
+test-e2e: ## Run e2e tests on existing OpenShift cluster using the test runner script.
+	@echo "Running e2e tests using test runner script..."
+	@scripts/run-tests.sh --type e2e
+
+.PHONY: test-smoke-no-cleanup
+test-smoke-no-cleanup: setup-test-smoke ## Run smoke tests without cleanup (useful for debugging).
+	@echo "Running smoke tests without cleanup..."
+	@scripts/run-tests.sh --type smoke --no-cleanup
+
+.PHONY: test-e2e-no-cleanup
+test-e2e-no-cleanup: ## Run e2e tests without cleanup (useful for debugging).
+	@echo "Running e2e tests without cleanup..."
+	@scripts/run-tests.sh --type e2e --no-cleanup
+
+.PHONY: test-smoke-skip-build
+test-smoke-skip-build: setup-test-smoke ## Run smoke tests without building images (use existing ones).
+	@echo "Running smoke tests with existing images..."
+	@scripts/run-tests.sh --type smoke --skip-build
+
+.PHONY: test-e2e-skip-build
+test-e2e-skip-build: ## Run e2e tests without building images (use existing ones).
+	@echo "Running e2e tests with existing images..."
+	@scripts/run-tests.sh --type e2e --skip-build
 
 .PHONY: provision-and-test-e2e
 provision-and-test-e2e: ## Provision AWS cluster and run e2e tests
@@ -462,12 +453,7 @@ build-openshift-installer: update-manifests manifests generate kustomize ## Gene
 	cd config/manager && $(KUSTOMIZE) edit set image controller=$(QUAY_OPERATOR_IMG):$(TAG)
 	$(KUSTOMIZE) build config/openshift-default > dist/install.yaml
 
-.PHONY: build-smoke-installer
-build-smoke-installer: update-manifests manifests generate kustomize ## Generate a consolidated YAML with CRDs, deployment, and OpenShift SecurityContextConstraints.
-	mkdir -p dist
-	cd config/manager && $(KUSTOMIZE) edit set image controller=$(QUAY_OPERATOR_IMG)@sha256:$(OPERATOR_SHA)
-	cd config/manager && $(KUSTOMIZE) edit set image controller=$(QUAY_OPERATOR_IMG):$(TAG)
-	$(KUSTOMIZE) build test/smoke > dist/install.yaml
+
 
 ##@ Deployment
 
