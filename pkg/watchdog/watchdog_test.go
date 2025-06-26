@@ -596,3 +596,56 @@ func TestNewWithSoftdogFallbackAndTestMode(t *testing.T) {
 
 	t.Logf("Successfully created softdog watchdog in test mode at path: %s", wd.Path())
 }
+
+// TestBuildNsenterArgs tests the nsenter argument construction
+func TestBuildNsenterArgs(t *testing.T) {
+	// Test with simple command
+	args := buildNsenterArgs("cat", "/proc/modules")
+	expected := []string{
+		"--target", "1",
+		"--mount",
+		"--uts",
+		"--ipc",
+		"--net",
+		"--pid",
+		"--",
+		"cat",
+		"/proc/modules",
+	}
+
+	if len(args) != len(expected) {
+		t.Errorf("Expected %d args, got %d: %v", len(expected), len(args), args)
+	}
+
+	for i, arg := range expected {
+		if i >= len(args) || args[i] != arg {
+			t.Errorf("Expected arg[%d] = %s, got %s", i, arg, args[i])
+		}
+	}
+
+	// Test with command and multiple arguments
+	args = buildNsenterArgs("modprobe", "softdog", "soft_margin=60", "soft_noboot=1")
+	expectedCmd := []string{
+		"--target", "1",
+		"--mount",
+		"--uts",
+		"--ipc",
+		"--net",
+		"--pid",
+		"--",
+		"modprobe",
+		"softdog",
+		"soft_margin=60",
+		"soft_noboot=1",
+	}
+
+	if len(args) != len(expectedCmd) {
+		t.Errorf("Expected %d args for modprobe, got %d: %v", len(expectedCmd), len(args), args)
+	}
+
+	for i, arg := range expectedCmd {
+		if i >= len(args) || args[i] != arg {
+			t.Errorf("Expected modprobe arg[%d] = %s, got %s", i, arg, args[i])
+		}
+	}
+}

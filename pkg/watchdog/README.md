@@ -99,13 +99,16 @@ The `NewWithSoftdogFallback` function implements intelligent fallback logic:
 5. **Device Creation**: Wait for `/dev/watchdog` to appear and open it
 
 The `NewWithSoftdogFallbackAndTestMode` function extends this behavior with test mode support:
-- **Test Mode Disabled** (default): `modprobe softdog soft_margin=60`
-- **Test Mode Enabled**: `modprobe softdog soft_margin=60 soft_noboot=1`
+- **Test Mode Disabled** (default): `nsenter --target 1 --mount --uts --ipc --net --pid -- modprobe softdog soft_margin=60`
+- **Test Mode Enabled**: `nsenter --target 1 --mount --uts --ipc --net --pid -- modprobe softdog soft_margin=60 soft_noboot=1`
+
+**Note**: The package uses `nsenter` to run `modprobe` in the host's namespace, ensuring the kernel module is loaded on the host system rather than in the container.
 
 ### System Requirements for Softdog
 
 - Linux kernel with `softdog` module support
 - `modprobe` command available in PATH
+- `nsenter` command available in PATH (for running modprobe in host namespace)
 - Sufficient privileges to load kernel modules (typically requires `SYS_MODULE` capability)
 - Container environments need `privileged: true` or `SYS_MODULE` capability
 
@@ -176,7 +179,7 @@ The package uses structured logging to provide visibility into watchdog operatio
 INFO Successfully opened hardware watchdog device path="/dev/watchdog"
 INFO Failed to open specified watchdog device, checking for alternatives requestedPath="/dev/watchdog" error="..."
 INFO No watchdog devices found, attempting to load softdog module
-INFO Loading softdog module command="modprobe softdog soft_margin=60" timeout=60
+INFO Loading softdog module using nsenter command="nsenter --target 1 --mount --uts --ipc --net --pid -- modprobe softdog soft_margin=60" timeout=60
 INFO Successfully loaded and opened softdog watchdog device originalPath="/dev/watchdog" softdogPath="/dev/watchdog"
 ```
 
@@ -197,8 +200,8 @@ sudo go test ./pkg/watchdog -v -run TestLoadSoftdogModule_Integration
 - **Default Softdog Timeout**: 60 seconds
 - **Retry Configuration**: 2 retries with exponential backoff (50ms to 500ms)
 - **Module Load Command**: 
-  - Normal mode: `modprobe softdog soft_margin=60`
-  - Test mode: `modprobe softdog soft_margin=60 soft_noboot=1`
+  - Normal mode: `nsenter --target 1 --mount --uts --ipc --net --pid -- modprobe softdog soft_margin=60`
+  - Test mode: `nsenter --target 1 --mount --uts --ipc --net --pid -- modprobe softdog soft_margin=60 soft_noboot=1`
 
 ## Platform Support
 

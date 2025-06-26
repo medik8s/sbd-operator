@@ -66,6 +66,10 @@ const (
 	DefaultSoftdogTimeout = 60
 	// SoftdogModprobe is the command to load the softdog module
 	SoftdogModprobe = "modprobe"
+	// NsenterCommand is the command to enter host namespaces
+	NsenterCommand = "nsenter"
+	// HostPID is the PID of the host init process
+	HostPID = "1"
 )
 
 // Watchdog represents a Linux kernel watchdog device interface.
@@ -217,19 +221,23 @@ func loadSoftdogModule(testMode bool, logger logr.Logger) error {
 	}
 
 	// Build the modprobe command with parameters
-	args := []string{
+	modprobeArgs := []string{
 		SoftdogModule,
 		fmt.Sprintf("soft_margin=%d", DefaultSoftdogTimeout),
 	}
 
 	// Add soft_noboot parameter if test mode is enabled
 	if testMode {
-		args = append(args, "soft_noboot=1")
+		modprobeArgs = append(modprobeArgs, "soft_noboot=1")
 	}
 
-	cmd := exec.Command(SoftdogModprobe, args...)
+	// Use nsenter to run modprobe in the host's namespace
+	// This ensures the kernel module is loaded on the host system
+	args := buildNsenterArgs(SoftdogModprobe, modprobeArgs...)
 
-	logger.Info("Loading softdog module",
+	cmd := exec.Command(NsenterCommand, args...)
+
+	logger.Info("Loading softdog module using nsenter",
 		"command", cmd.String(),
 		"timeout", DefaultSoftdogTimeout,
 		"testMode", testMode)
@@ -252,16 +260,35 @@ func loadSoftdogModule(testMode bool, logger logr.Logger) error {
 	return nil
 }
 
+// buildNsenterArgs builds the standard nsenter arguments to enter host namespaces
+func buildNsenterArgs(hostCommand string, hostArgs ...string) []string {
+	args := []string{
+		"--target", HostPID, // Target PID 1 (init process)
+		"--mount", // Enter mount namespace
+		"--uts",   // Enter UTS namespace
+		"--ipc",   // Enter IPC namespace
+		"--net",   // Enter network namespace
+		"--pid",   // Enter PID namespace
+		"--",
+		hostCommand,
+	}
+	args = append(args, hostArgs...)
+	return args
+}
+
 // isModuleLoaded checks if a kernel module is currently loaded
 func isModuleLoaded(moduleName string) bool {
-	// Read /proc/modules to check if the module is loaded
-	content, err := os.ReadFile("/proc/modules")
+	// Use nsenter to read /proc/modules from the host namespace
+	args := buildNsenterArgs("cat", "/proc/modules")
+	cmd := exec.Command(NsenterCommand, args...)
+
+	output, err := cmd.Output()
 	if err != nil {
 		return false
 	}
 
 	// Each line in /proc/modules starts with the module name
-	lines := strings.Split(string(content), "\n")
+	lines := strings.Split(string(output), "\n")
 	for _, line := range lines {
 		if strings.HasPrefix(line, moduleName+" ") || line == moduleName {
 			return true
