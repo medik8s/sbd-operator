@@ -1090,32 +1090,17 @@ func TestPreflightChecks_WatchdogMissing(t *testing.T) {
 	// Use non-existent watchdog path
 	watchdogPath := "/non/existent/watchdog"
 
-	// Test pre-flight checks with missing watchdog device
+	// Test pre-flight checks with missing watchdog device and no SBD device
+	// This should fail because both watchdog and SBD are unavailable
 	err := runPreflightChecks(watchdogPath, "", "test-node", 1, false)
 	if err == nil {
-		t.Error("Expected pre-flight checks to fail with missing watchdog, but they succeeded")
+		t.Error("Expected pre-flight checks to fail with missing watchdog and no SBD device, but they succeeded")
+		return
 	}
 
-	// With softdog fallback, the error message will now include information about failed softdog loading
-	// or it might succeed if softdog can be loaded. The exact error depends on system capabilities.
-	expectedErrorSubstrings := []string{
-		"watchdog device pre-flight check failed", // Main error type
-		// Could be any of these depending on system state:
-		// - "failed to load softdog module" (if modprobe fails)
-		// - "watchdog device does not exist" (if running in environment that doesn't try softdog)
-		// - Other softdog-related errors
-	}
-
-	errorContainsExpected := false
-	for _, substr := range expectedErrorSubstrings {
-		if strings.Contains(err.Error(), substr) {
-			errorContainsExpected = true
-			break
-		}
-	}
-
-	if !errorContainsExpected {
-		t.Errorf("Expected error to contain one of %v, but got: %v", expectedErrorSubstrings, err)
+	// Should mention both watchdog failure and no SBD device
+	if !strings.Contains(err.Error(), "watchdog device is inaccessible and no SBD device configured") {
+		t.Errorf("Expected error about watchdog inaccessible and no SBD device, but got: %v", err)
 	}
 }
 
@@ -1138,14 +1123,11 @@ func TestPreflightChecks_SBDMissing(t *testing.T) {
 	// Use non-existent SBD path
 	sbdPath := "/non/existent/sbd"
 
-	// Test pre-flight checks with missing SBD device
+	// Test pre-flight checks with missing SBD device but working watchdog
+	// This should now PASS because watchdog is available (either/or logic)
 	err = runPreflightChecks(watchdogPath, sbdPath, "test-node", 1, false)
-	if err == nil {
-		t.Error("Expected pre-flight checks to fail with missing SBD device, but they succeeded")
-	}
-
-	if !strings.Contains(err.Error(), "SBD device does not exist") {
-		t.Errorf("Expected error about missing SBD device, but got: %v", err)
+	if err != nil {
+		t.Errorf("Expected pre-flight checks to succeed with working watchdog despite missing SBD device, but got error: %v", err)
 	}
 }
 
@@ -1571,4 +1553,58 @@ func TestSBDAgent_FileLockingConfiguration(t *testing.T) {
 			t.Error("Expected NodeManager to be nil in watchdog-only mode")
 		}
 	})
+}
+
+// TestPreflightChecks_SBDOnlyMode tests pre-flight checks with working SBD device but failing watchdog
+func TestPreflightChecks_SBDOnlyMode(t *testing.T) {
+	// Initialize logger for tests
+	if err := initializeLogger("info"); err != nil {
+		t.Fatalf("Failed to initialize logger: %v", err)
+	}
+
+	// Create temporary SBD device file with sufficient size
+	tmpDir := t.TempDir()
+	sbdPath := filepath.Join(tmpDir, "sbd")
+	sbdFile, err := os.Create(sbdPath)
+	if err != nil {
+		t.Fatalf("Failed to create mock SBD file: %v", err)
+	}
+	// Write enough data for SBD slots
+	data := make([]byte, 1024*1024) // 1MB
+	sbdFile.Write(data)
+	sbdFile.Close()
+
+	// Use non-existent watchdog path (should fail)
+	watchdogPath := "/non/existent/watchdog"
+
+	// Test pre-flight checks with missing watchdog device but working SBD device
+	// This should PASS because SBD device is available (either/or logic)
+	err = runPreflightChecks(watchdogPath, sbdPath, "test-node", 1, false)
+	if err != nil {
+		t.Errorf("Expected pre-flight checks to succeed with working SBD device despite missing watchdog, but got error: %v", err)
+	}
+}
+
+// TestPreflightChecks_BothFailing tests pre-flight checks with both watchdog and SBD device failing
+func TestPreflightChecks_BothFailing(t *testing.T) {
+	// Initialize logger for tests
+	if err := initializeLogger("info"); err != nil {
+		t.Fatalf("Failed to initialize logger: %v", err)
+	}
+
+	// Use non-existent paths for both watchdog and SBD device
+	watchdogPath := "/non/existent/watchdog"
+	sbdPath := "/non/existent/sbd"
+
+	// Test pre-flight checks with both watchdog and SBD device failing
+	// This should FAIL because neither component is available
+	err := runPreflightChecks(watchdogPath, sbdPath, "test-node", 1, false)
+	if err == nil {
+		t.Error("Expected pre-flight checks to fail with both watchdog and SBD device missing, but they succeeded")
+	}
+
+	// Should mention both failures
+	if !strings.Contains(err.Error(), "both watchdog device and SBD device are inaccessible") {
+		t.Errorf("Expected error about both devices being inaccessible, but got: %v", err)
+	}
 }

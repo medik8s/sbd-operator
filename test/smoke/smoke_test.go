@@ -826,6 +826,195 @@ spec:
 			_, _ = utils.Run(cmd)
 		})
 	})
+
+	Context("Preflight Checks", func() {
+		var tmpFile string
+		var sbdConfigName string
+
+		BeforeEach(func() {
+			// Generate unique name for each test
+			sbdConfigName = fmt.Sprintf("test-sbdconfig-%d", time.Now().UnixNano())
+		})
+
+		AfterEach(func() {
+			By("cleaning up test SBDConfig")
+			if sbdConfigName != "" {
+				cmd := exec.Command("kubectl", "delete", "sbdconfig", sbdConfigName, "--ignore-not-found=true")
+				_, _ = utils.Run(cmd)
+			}
+
+			// Clean up temporary file
+			if tmpFile != "" {
+				os.Remove(tmpFile)
+			}
+		})
+
+		It("should pass preflight checks with working watchdog and failing SBD device", func() {
+			By("creating an SBDConfig with a non-existent SBD device path")
+			// Load sample configuration and customize for this test
+			samplePath := "../../config/samples/medik8s_v1alpha1_sbdconfig.yaml"
+			sampleData, err := os.ReadFile(samplePath)
+			Expect(err).NotTo(HaveOccurred(), "Failed to read sample SBDConfig")
+
+			// Replace the sample name with our test name
+			sbdConfigYAML := strings.ReplaceAll(string(sampleData), "sbdconfig-sample", sbdConfigName)
+			// Ensure imagePullPolicy is Always for testing
+			sbdConfigYAML = strings.ReplaceAll(sbdConfigYAML, `imagePullPolicy: "IfNotPresent"`, `imagePullPolicy: "Always"`)
+			// Add a non-existent SBD device path to force SBD device check to fail
+			// This tests the either/or logic: watchdog works, SBD fails, should still pass
+			sbdConfigYAML = strings.ReplaceAll(sbdConfigYAML, `sbdWatchdogPath: "/dev/watchdog"`, `sbdWatchdogPath: "/dev/watchdog"
+  # Non-existent SBD device to test preflight either/or logic
+  sbdDevice: "/dev/non-existent-sbd-device"`)
+
+			// Write SBDConfig to temporary file
+			tmpFile = filepath.Join("/tmp", fmt.Sprintf("sbdconfig-preflight-watchdog-%s.yaml", sbdConfigName))
+			err = os.WriteFile(tmpFile, []byte(sbdConfigYAML), 0644)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Apply the SBDConfig
+			cmd := exec.Command("kubectl", "apply", "-f", tmpFile)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create SBDConfig")
+
+			By("verifying the SBDConfig resource exists")
+			verifySBDConfigExists := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "sbdconfig", sbdConfigName, "-o", "jsonpath={.metadata.name}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal(sbdConfigName))
+			}
+			Eventually(verifySBDConfigExists, 30*time.Second).Should(Succeed())
+
+			By("verifying the SBD agent DaemonSet is created despite SBD device failure")
+			expectedDaemonSetName := fmt.Sprintf("sbd-agent-%s", sbdConfigName)
+			verifyDaemonSetCreated := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "daemonset", expectedDaemonSetName, "-n", "sbd-system", "-o", "jsonpath={.metadata.name}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal(expectedDaemonSetName))
+			}
+			Eventually(verifyDaemonSetCreated, 60*time.Second).Should(Succeed())
+
+			By("verifying SBD agent pods are created and running (watchdog-only mode)")
+			verifySBDPodsRunning := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pods", "-n", "sbd-system", "-l", fmt.Sprintf("sbdconfig=%s", sbdConfigName), "-o", "jsonpath={.items[*].status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				// All pods should be Running despite SBD device failure
+				phases := strings.Fields(output)
+				for _, phase := range phases {
+					g.Expect(phase).To(Equal("Running"), fmt.Sprintf("Pod phase is %s, expected Running", phase))
+				}
+				g.Expect(len(phases)).To(BeNumerically(">", 0), "No pods found")
+			}
+			Eventually(verifySBDPodsRunning, 2*time.Minute).Should(Succeed())
+
+			By("verifying agent logs show preflight checks passed with watchdog only")
+			verifyPreflightLogs := func(g Gomega) {
+				// Get the first pod name
+				cmd := exec.Command("kubectl", "get", "pods", "-n", "sbd-system", "-l", fmt.Sprintf("sbdconfig=%s", sbdConfigName), "-o", "jsonpath={.items[0].metadata.name}")
+				podName, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(podName).ToNot(BeEmpty())
+
+				// Check the logs for preflight check messages
+				cmd = exec.Command("kubectl", "logs", podName, "-n", "sbd-system", "-c", "sbd-agent", "--tail=100")
+				logs, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				// Should show that preflight checks passed despite SBD device failure
+				g.Expect(logs).To(ContainSubstring("Pre-flight checks passed"), "Should show preflight checks passed")
+				g.Expect(logs).To(ContainSubstring("watchdog device available"), "Should show watchdog is available")
+			}
+			Eventually(verifyPreflightLogs, 2*time.Minute).Should(Succeed())
+		})
+
+		It("should pass preflight checks with working SBD device and failing watchdog", func() {
+			By("creating an SBDConfig with a non-existent watchdog path")
+			// Load sample configuration and customize for this test
+			samplePath := "../../config/samples/medik8s_v1alpha1_sbdconfig.yaml"
+			sampleData, err := os.ReadFile(samplePath)
+			Expect(err).NotTo(HaveOccurred(), "Failed to read sample SBDConfig")
+
+			// Replace the sample name with our test name
+			sbdConfigYAML := strings.ReplaceAll(string(sampleData), "sbdconfig-sample", sbdConfigName)
+			// Ensure imagePullPolicy is Always for testing
+			sbdConfigYAML = strings.ReplaceAll(sbdConfigYAML, `imagePullPolicy: "IfNotPresent"`, `imagePullPolicy: "Always"`)
+			// Use a non-existent watchdog path to force watchdog check to fail
+			// This tests the either/or logic: SBD works, watchdog fails, should still pass
+			sbdConfigYAML = strings.ReplaceAll(sbdConfigYAML, `sbdWatchdogPath: "/dev/watchdog"`, `sbdWatchdogPath: "/dev/non-existent-watchdog"
+  # Add a mock SBD device path (will be created as a file for testing)
+  sbdDevice: "/tmp/mock-sbd-device"`)
+
+			// Write SBDConfig to temporary file
+			tmpFile = filepath.Join("/tmp", fmt.Sprintf("sbdconfig-preflight-sbd-%s.yaml", sbdConfigName))
+			err = os.WriteFile(tmpFile, []byte(sbdConfigYAML), 0644)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a mock SBD device file for testing")
+			mockSBDPath := "/tmp/mock-sbd-device"
+			// Create a file with sufficient size for SBD operations
+			mockSBDData := make([]byte, 1024*1024) // 1MB
+			err = os.WriteFile(mockSBDPath, mockSBDData, 0644)
+			Expect(err).NotTo(HaveOccurred())
+			defer os.Remove(mockSBDPath) // Clean up after test
+
+			// Apply the SBDConfig
+			cmd := exec.Command("kubectl", "apply", "-f", tmpFile)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create SBDConfig")
+
+			By("verifying the SBDConfig resource exists")
+			verifySBDConfigExists := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "sbdconfig", sbdConfigName, "-o", "jsonpath={.metadata.name}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal(sbdConfigName))
+			}
+			Eventually(verifySBDConfigExists, 30*time.Second).Should(Succeed())
+
+			By("verifying the SBD agent DaemonSet is created despite watchdog failure")
+			expectedDaemonSetName := fmt.Sprintf("sbd-agent-%s", sbdConfigName)
+			verifyDaemonSetCreated := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "daemonset", expectedDaemonSetName, "-n", "sbd-system", "-o", "jsonpath={.metadata.name}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal(expectedDaemonSetName))
+			}
+			Eventually(verifyDaemonSetCreated, 60*time.Second).Should(Succeed())
+
+			By("verifying SBD agent pods are created and running (SBD-only mode)")
+			verifySBDPodsRunning := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pods", "-n", "sbd-system", "-l", fmt.Sprintf("sbdconfig=%s", sbdConfigName), "-o", "jsonpath={.items[*].status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				// All pods should be Running despite watchdog failure
+				phases := strings.Fields(output)
+				for _, phase := range phases {
+					g.Expect(phase).To(Equal("Running"), fmt.Sprintf("Pod phase is %s, expected Running", phase))
+				}
+				g.Expect(len(phases)).To(BeNumerically(">", 0), "No pods found")
+			}
+			Eventually(verifySBDPodsRunning, 2*time.Minute).Should(Succeed())
+
+			By("verifying agent logs show preflight checks passed with SBD only")
+			verifyPreflightLogs := func(g Gomega) {
+				// Get the first pod name
+				cmd := exec.Command("kubectl", "get", "pods", "-n", "sbd-system", "-l", fmt.Sprintf("sbdconfig=%s", sbdConfigName), "-o", "jsonpath={.items[0].metadata.name}")
+				podName, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(podName).ToNot(BeEmpty())
+
+				// Check the logs for preflight check messages
+				cmd = exec.Command("kubectl", "logs", podName, "-n", "sbd-system", "-c", "sbd-agent", "--tail=100")
+				logs, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				// Should show that preflight checks passed despite watchdog failure
+				g.Expect(logs).To(ContainSubstring("Pre-flight checks passed"), "Should show preflight checks passed")
+				g.Expect(logs).To(ContainSubstring("SBD device available"), "Should show SBD device is available")
+			}
+			Eventually(verifyPreflightLogs, 2*time.Minute).Should(Succeed())
+		})
+	})
 })
 
 // serviceAccountToken returns a token for the specified service account in the given namespace.

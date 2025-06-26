@@ -1380,6 +1380,7 @@ func (s *SBDAgent) readOwnSlotForFenceMessage() error {
 }
 
 // runPreflightChecks performs critical startup validation before entering main event loops
+// Returns success if EITHER watchdog is active OR SBD device is accessible (or both)
 func runPreflightChecks(watchdogPath, sbdDevicePath, nodeName string, nodeID uint16, watchdogTestMode bool) error {
 	logger.Info("Running pre-flight checks",
 		"watchdogPath", watchdogPath,
@@ -1388,34 +1389,69 @@ func runPreflightChecks(watchdogPath, sbdDevicePath, nodeName string, nodeID uin
 		"nodeID", nodeID,
 		"watchdogTestMode", watchdogTestMode)
 
-	// 1. Watchdog Device Availability Check
-	if err := checkWatchdogDevice(watchdogPath, watchdogTestMode); err != nil {
-		return fmt.Errorf("watchdog device pre-flight check failed: %w", err)
-	}
-	logger.Info("Pre-flight check passed: watchdog device accessible", "watchdogPath", watchdogPath)
+	var watchdogErr, sbdErr, nodeErr error
+	var watchdogPassed, sbdPassed bool
 
-	// 2. Shared SBD Device Accessibility Check (if configured)
+	// 1. Watchdog Device Availability Check - always run
+	watchdogErr = checkWatchdogDevice(watchdogPath, watchdogTestMode)
+	if watchdogErr != nil {
+		logger.Error(watchdogErr, "Watchdog device pre-flight check failed", "watchdogPath", watchdogPath)
+	} else {
+		logger.Info("Pre-flight check passed: watchdog device accessible", "watchdogPath", watchdogPath)
+		watchdogPassed = true
+	}
+
+	// 2. Shared SBD Device Accessibility Check - always run if configured
 	if sbdDevicePath != "" {
-		if err := checkSBDDevice(sbdDevicePath, nodeID, nodeName); err != nil {
-			return fmt.Errorf("SBD device pre-flight check failed: %w", err)
+		sbdErr = checkSBDDevice(sbdDevicePath, nodeID, nodeName)
+		if sbdErr != nil {
+			logger.Error(sbdErr, "SBD device pre-flight check failed", "sbdDevicePath", sbdDevicePath)
+		} else {
+			logger.Info("Pre-flight check passed: SBD device accessible and read/write test successful",
+				"sbdDevicePath", sbdDevicePath,
+				"nodeID", nodeID)
+			sbdPassed = true
 		}
-		logger.Info("Pre-flight check passed: SBD device accessible and read/write test successful",
-			"sbdDevicePath", sbdDevicePath,
-			"nodeID", nodeID)
 	} else {
 		logger.Info("Pre-flight check skipped: no SBD device configured (watchdog-only mode)")
+		// In watchdog-only mode, SBD is not a factor (neither pass nor fail)
+		// The system must rely solely on the watchdog
 	}
 
-	// 3. Node ID/Name Resolution Check
-	if err := checkNodeIDNameResolution(nodeName, nodeID); err != nil {
-		return fmt.Errorf("node ID/name resolution pre-flight check failed: %w", err)
+	// 3. Node ID/Name Resolution Check - always required
+	nodeErr = checkNodeIDNameResolution(nodeName, nodeID)
+	if nodeErr != nil {
+		logger.Error(nodeErr, "Node ID/name resolution pre-flight check failed")
+		return fmt.Errorf("node ID/name resolution pre-flight check failed: %w", nodeErr)
 	}
 	logger.Info("Pre-flight check passed: node ID/name resolution successful",
 		"nodeName", nodeName,
 		"nodeID", nodeID)
 
-	logger.Info("All pre-flight checks passed successfully")
-	return nil
+	// Check if at least one critical component (watchdog OR SBD) is working
+	if sbdDevicePath == "" {
+		// Watchdog-only mode: only watchdog needs to work
+		if watchdogPassed {
+			logger.Info("Pre-flight checks passed - watchdog device available (watchdog-only mode)")
+			return nil
+		} else {
+			return fmt.Errorf("pre-flight checks failed: watchdog device is inaccessible and no SBD device configured. Watchdog error: %v", watchdogErr)
+		}
+	} else {
+		// SBD mode: either watchdog OR SBD needs to work
+		if watchdogPassed || sbdPassed {
+			if watchdogPassed && sbdPassed {
+				logger.Info("All pre-flight checks passed successfully - both watchdog and SBD device available")
+			} else if watchdogPassed {
+				logger.Info("Pre-flight checks passed - watchdog device available (SBD device failed)")
+			} else {
+				logger.Info("Pre-flight checks passed - SBD device available (watchdog device failed)")
+			}
+			return nil
+		} else {
+			return fmt.Errorf("pre-flight checks failed: both watchdog device and SBD device are inaccessible. Watchdog error: %v, SBD error: %v", watchdogErr, sbdErr)
+		}
+	}
 }
 
 // checkWatchdogDevice verifies the watchdog device exists and can be opened, with softdog fallback

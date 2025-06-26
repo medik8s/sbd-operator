@@ -210,7 +210,7 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # Example: make build-push QUAY_REGISTRY=my-registry.io QUAY_ORG=myorg
 
 # PLATFORMS defines the target platforms for multi-platform builds
-PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
+PLATFORMS ?= linux/arm64,linux/amd64 # Others: linux/s390x,linux/ppc64le
 
 .PHONY: build-operator-image
 build-operator-image: manifests generate fmt vet ## Build operator container image.
@@ -273,7 +273,6 @@ buildx: manifests generate fmt vet ## Build and push multi-platform images to re
 	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
 	$(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) \
 		--tag $(QUAY_OPERATOR_IMG):$(TAG) \
-		--tag $(QUAY_OPERATOR_IMG):latest \
 		-f Dockerfile.cross .
 	rm Dockerfile.cross
 	
@@ -282,7 +281,6 @@ buildx: manifests generate fmt vet ## Build and push multi-platform images to re
 	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile.sbd-agent > Dockerfile.sbd-agent.cross
 	$(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) \
 		--tag $(QUAY_AGENT_IMG):$(TAG) \
-		--tag $(QUAY_AGENT_IMG):latest \
 		-f Dockerfile.sbd-agent.cross .
 	rm Dockerfile.sbd-agent.cross
 	
