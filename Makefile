@@ -80,34 +80,22 @@ fmt: ## Run go fmt against code.
 vet: ## Run go vet against code.
 	go vet ./...
 
+.PHONY: test-all
+test-all: test test-smoke test-e2e ## Run all tests: unit tests, smoke tests, and e2e tests
+
 .PHONY: test
 test: manifests generate fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v -E '/(e2e|smoke)') -coverprofile cover.out
 
-.PHONY: test-all
-test-all: test test-smoke test-e2e ## Run all tests: unit tests, smoke tests, and e2e tests
+.PHONY: test-e2e
+test-e2e: ## Run e2e tests using the test runner script (auto-detects environment).
+	@echo "Running e2e tests using test runner script..."
+	@scripts/run-tests.sh --type e2e  --env cluster
 
-# Smoke Test Targets:
-# - test-smoke: Standard smoke tests using VERSION tags
-# - test-smoke-fresh: Clean environment + smoke tests with SHA-based images for deterministic testing
-# Use 'test-smoke' to reuse existing CRC (faster) or 'test-smoke-fresh' for clean environment.
-# The SHA-based tests ensure reproducible results by pinning exact image digests.
-
-# Environment Variables:
-# - SMOKE_CLEANUP_SKIP=true: Skip cleanup after tests (useful for debugging)
-# - CERT_MANAGER_INSTALL_SKIP=true: Skip CertManager installation
-# - IMAGE_BUILD_SKIP=true: Skip building images if they are already available in CRC
-# - QUAY_REGISTRY: Container registry (default: quay.io)
-# - QUAY_ORG: Container organization (default: medik8s)
-# - VERSION: Image version tag (default: latest)
-#
-# The setup-test-smoke target handles:
-# 1. Starting CRC cluster (only if not already running)
-# 2. Building and loading container images (unless IMAGE_BUILD_SKIP=true)
-# 3. Installing CRDs
-# 4. Deploying the operator
-# 5. Waiting for operator readiness
-CRC_CLUSTER ?= sbd-operator-test-smoke
+.PHONY: test-smoke
+test-smoke: ## Run smoke tests with building images.
+	@echo "Running smoke tests with image building..."
+	@scripts/run-tests.sh --type smoke --env cluster
 
 .PHONY: load-images
 load-images:
@@ -117,53 +105,13 @@ load-images:
 	@eval $$(crc podman-env) && $(CONTAINER_TOOL) load -i bin/$(OPERATOR_IMG).tar
 	@eval $$(crc podman-env) && $(CONTAINER_TOOL) load -i bin/$(AGENT_IMG).tar
 
-.PHONY: setup-test-smoke
-setup-test-smoke: ## Set up CRC environment for smoke tests (start CRC only if not running)
-	@command -v crc >/dev/null 2>&1 || { \
-		echo "CRC is not installed. Please install CRC manually."; \
-		echo "Visit: https://developers.redhat.com/products/codeready-containers/download"; \
-		exit 1; \
-	}
-	@echo "Setting up CRC environment for smoke tests..."
-	@if crc status | grep -q "CRC VM.*Running"; then \
-		echo "CRC is already running, skipping CRC start..."; \
-	else \
-		echo "CRC is not running, starting CRC cluster..."; \
-		crc start; \
-	fi
-	@echo "Setting up CRC environment..."
-	@eval $$(crc oc-env) && oc whoami || { \
-		echo "Failed to authenticate with CRC cluster"; \
-		exit 1; \
-	}
-	@echo "Smoke test environment setup complete!"
-
-.PHONY: test-smoke-fresh
-test-smoke-fresh: destroy-crc setup-test-smoke build-images load-images test-smoke
-
 .PHONY: test-smoke-reload
 test-smoke-reload:
 	@echo "Reloading operator deployment..."
 	@eval $$(crc oc-env) && kubectl patch deployment sbd-operator-controller-manager -n sbd-operator-system -p '{"spec":{"template":{"spec":{"containers":[{"name":"manager","image":"$(QUAY_OPERATOR_IMG)@sha256:$$(podman inspect $(QUAY_AGENT_IMG):$(TAG) --format "{{.ID}}"| head -c 12 )","imagePullPolicy":"Never"}]}}}}'
 	@eval $$(crc oc-env) && kubectl patch sbdconfig test-config -n sbd-operator-system -p '{"spec":{"image":"$(QUAY_AGENT_IMG)@sha256:$$(podman inspect $(QUAY_AGENT_IMG):$(TAG) --format "{{.ID}}"| head -c 12 )"}}'
-
-
 	#	OPERATOR_IMG="$(QUAY_OPERATOR_IMG)@sha256:$(OPERATOR_SHA)" \
 	#	AGENT_IMG="$(QUAY_AGENT_IMG)@sha256:$(AGENT_SHA)" \
-.PHONY: test-smoke
-test-smoke: setup-test-smoke ## Run the smoke tests using the test runner script (auto-detects environment).
-	@echo "Running smoke tests using test runner script..."
-	@scripts/run-tests.sh --type smoke
-
-.PHONY: test-smoke-crc
-test-smoke-crc: setup-test-smoke ## Run smoke tests specifically on CRC OpenShift cluster
-	@echo "Running smoke tests on CRC OpenShift cluster..."
-	@scripts/run-tests.sh --type smoke --env crc
-
-.PHONY: test-smoke-kind
-test-smoke-kind: ## Run smoke tests on Kind Kubernetes cluster
-	@echo "Running smoke tests on Kind cluster..."
-	@scripts/run-tests.sh --type smoke --env kind
 
 ##@ OpenShift on AWS
 
@@ -200,46 +148,6 @@ destroy-ocp-aws: ## Destroy OpenShift cluster on AWS
 		echo "No cluster directory found - cluster may already be destroyed"; \
 	fi
 
-.PHONY: test-e2e
-test-e2e: ## Run e2e tests using the test runner script (auto-detects environment).
-	@echo "Running e2e tests using test runner script..."
-	@scripts/run-tests.sh --type e2e
-
-.PHONY: test-e2e-crc
-test-e2e-crc: setup-test-smoke ## Run e2e tests specifically on CRC OpenShift cluster
-	@echo "Running e2e tests on CRC OpenShift cluster..."
-	@scripts/run-tests.sh --type e2e --env crc
-
-.PHONY: test-e2e-kind
-test-e2e-kind: ## Run e2e tests on Kind Kubernetes cluster
-	@echo "Running e2e tests on Kind cluster..."
-	@scripts/run-tests.sh --type e2e --env kind
-
-.PHONY: test-e2e-cluster
-test-e2e-cluster: ## Run e2e tests on existing cluster
-	@echo "Running e2e tests on existing cluster..."
-	@scripts/run-tests.sh --type e2e --env cluster
-
-.PHONY: test-smoke-no-cleanup
-test-smoke-no-cleanup: setup-test-smoke ## Run smoke tests without cleanup (useful for debugging).
-	@echo "Running smoke tests without cleanup..."
-	@scripts/run-tests.sh --type smoke --no-cleanup
-
-.PHONY: test-e2e-no-cleanup
-test-e2e-no-cleanup: ## Run e2e tests without cleanup (useful for debugging).
-	@echo "Running e2e tests without cleanup..."
-	@scripts/run-tests.sh --type e2e --no-cleanup
-
-.PHONY: test-smoke-build
-test-smoke-build: setup-test-smoke ## Run smoke tests with building images.
-	@echo "Running smoke tests with image building..."
-	@scripts/run-tests.sh --type smoke --build
-
-.PHONY: test-e2e-build
-test-e2e-build: ## Run e2e tests with building images.
-	@echo "Running e2e tests with image building..."
-	@scripts/run-tests.sh --type e2e --build
-
 .PHONY: provision-and-test-e2e
 provision-and-test-e2e: ## Provision AWS cluster and run e2e tests
 	@echo "Provisioning AWS cluster and running e2e tests..."
@@ -256,21 +164,7 @@ provision-and-test-e2e: ## Provision AWS cluster and run e2e tests
 		echo "Cluster preserved. Run 'make destroy-ocp-aws' to clean up manually."; \
 	fi
 
-.PHONY: cleanup-test-smoke
-cleanup-test-smoke: ## Clean up smoke test environment and stop CRC cluster
-	@echo "Cleaning up smoke test environment..."
-	@eval $$(crc oc-env) && kubectl delete sbdconfig --all --ignore-not-found=true || true
-	@eval $$(crc oc-env) && kubectl delete daemonset sbd-agent-test-sbdconfig -n sbd-system  --ignore-not-found=true || true
-	@eval $$(crc oc-env) && kubectl delete clusterrolebinding -l app.kubernetes.io/managed-by=sbd-operator --ignore-not-found=true || true
-	@eval $$(crc oc-env) && kubectl delete clusterrole -l app.kubernetes.io/managed-by=sbd-operator --ignore-not-found=true || true
-	@eval $$(crc oc-env) && kubectl delete ns sbd-operator-system --ignore-not-found=true || true
-	@eval $$(crc oc-env) && kubectl delete ns sbd-system --ignore-not-found=true || true
-	@echo "Cleaning up OpenShift-specific resources..."
-	@eval $$(crc oc-env) && kubectl delete scc sbd-operator-sbd-agent-privileged --ignore-not-found=true || true
-	@eval $$(crc oc-env) && kubectl delete clusterrolebinding sbd-operator-sbd-agent-scc-user --ignore-not-found=true || true
-	@eval $$(crc oc-env) && kubectl delete clusterrole sbd-operator-sbd-agent-scc-user --ignore-not-found=true || true
-	@echo "Cleaning up CRDs..."
-	@eval $$(crc oc-env) && $(KUSTOMIZE) build config/crd | $(KUBECTL) delete --ignore-not-found=true -f - || true
+
 
 destroy-crc:
 	@echo "Deleting CRC cluster..."
@@ -328,7 +222,6 @@ build-operator-image: manifests generate fmt vet ## Build operator container ima
 		--build-arg GIT_DESCRIBE="$(GIT_DESCRIBE)" \
 		.
 	$(CONTAINER_TOOL) tag sbd-operator:$(TAG) $(QUAY_OPERATOR_IMG):$(TAG)
-	$(CONTAINER_TOOL) tag sbd-operator:$(TAG) $(QUAY_OPERATOR_IMG):latest
 
 .PHONY: build-agent-image  
 build-agent-image: manifests generate fmt vet ## Build agent container image.
@@ -340,28 +233,22 @@ build-agent-image: manifests generate fmt vet ## Build agent container image.
 		--build-arg GIT_DESCRIBE="$(GIT_DESCRIBE)" \
 		.
 	$(CONTAINER_TOOL) tag sbd-agent:$(TAG) $(QUAY_AGENT_IMG):$(TAG)
-	$(CONTAINER_TOOL) tag sbd-agent:$(TAG) $(QUAY_AGENT_IMG):latest
 
 .PHONY: build-images
 build-images: build-operator-image build-agent-image ## Build both operator and agent container images.
 	@echo "Built SBD Operator images..."
 	@echo "Operator: $(QUAY_OPERATOR_IMG):$(TAG)"
 	@echo "Agent: $(QUAY_AGENT_IMG):$(TAG)"
-	@echo "Capturing image SHAs for smoke tests..."
-	@echo "Operator SHA: $(OPERATOR_SHA)"
-	@echo "Agent SHA: $(AGENT_SHA)"
 
 .PHONY: push-operator-image
 push-operator-image: ## Push operator container image to registry.
 	@echo "Pushing operator image: $(QUAY_OPERATOR_IMG):$(TAG)"
 	$(CONTAINER_TOOL) push $(QUAY_OPERATOR_IMG):$(TAG)
-	$(CONTAINER_TOOL) push $(QUAY_OPERATOR_IMG):latest
 
 .PHONY: push-agent-image
 push-agent-image: ## Push agent container image to registry.
 	@echo "Pushing agent image: $(QUAY_AGENT_IMG):$(TAG)"
 	$(CONTAINER_TOOL) push $(QUAY_AGENT_IMG):$(TAG)
-	$(CONTAINER_TOOL) push $(QUAY_AGENT_IMG):latest
 
 .PHONY: push-images
 push-images: push-operator-image push-agent-image ## Push both operator and agent container images to registry.
@@ -549,21 +436,3 @@ mv $(1) $(1)-$(3) ;\
 } ;\
 ln -sf $(1)-$(3) $(1)
 endef
-
-.PHONY: load-images-with-sha
-load-images-with-sha: ## Load images into CRC with SHA-based tagging for smoke tests
-	@echo "Loading images into CRC with SHA-based tags..."
-	@if [ ! -f bin/operator-sha.txt ] || [ ! -f bin/agent-sha.txt ]; then \
-		echo "Error: Image SHA files not found. Run 'make build-images' first."; \
-		exit 1; \
-	fi
-	@OPERATOR_SHA=$$(cat bin/operator-sha.txt); \
-	AGENT_SHA=$$(cat bin/agent-sha.txt); \
-	echo "Using Operator SHA: $$OPERATOR_SHA"; \
-	echo "Using Agent SHA: $$AGENT_SHA"; \
-	$(CONTAINER_TOOL) save --format docker-archive $(QUAY_OPERATOR_IMG):$(TAG) -o bin/$(OPERATOR_IMG).tar; \
-	$(CONTAINER_TOOL) save --format docker-archive $(QUAY_AGENT_IMG):$(TAG) -o bin/$(AGENT_IMG).tar; \
-	eval $$(crc podman-env) && $(CONTAINER_TOOL) load -i bin/$(OPERATOR_IMG).tar; \
-	eval $$(crc podman-env) && $(CONTAINER_TOOL) load -i bin/$(AGENT_IMG).tar; \
-	eval $$(crc podman-env) && $(CONTAINER_TOOL) tag $(QUAY_OPERATOR_IMG):$(TAG) $(QUAY_OPERATOR_IMG):sha-$$OPERATOR_SHA; \
-	eval $$(crc podman-env) && $(CONTAINER_TOOL) tag $(QUAY_AGENT_IMG):$(TAG) $(QUAY_AGENT_IMG):sha-$$AGENT_SHA
