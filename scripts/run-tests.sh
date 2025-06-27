@@ -79,7 +79,8 @@ OPTIONS:
     -h, --help              Show this help message
 
 ENVIRONMENT VARIABLES:
-    QUAY_REGISTRY          Container registry (default: quay.io)
+    KUBECONFIG            Kubernetes config file (when set, prioritizes cluster testing)
+    QUAY_REGISTRY         Container registry (default: quay.io)
     QUAY_ORG              Container organization (default: medik8s)
     TAG                   Image tag (default: latest)
     CONTAINER_TOOL        Container tool (default: podman)
@@ -87,8 +88,15 @@ ENVIRONMENT VARIABLES:
 
 TEST ENVIRONMENTS:
     crc                   CodeReady Containers (OpenShift local)
-    kind                  Kind (Kubernetes in Docker)
+    kind                  Kind (Kubernetes in Docker)  
     cluster               Existing Kubernetes/OpenShift cluster
+
+AUTO-DETECTION PRIORITY (when --env is not specified):
+    1. If KUBECONFIG is set and cluster is accessible → cluster
+    2. If CRC is running → crc
+    3. If Kind cluster exists → kind
+    4. If any cluster is accessible → cluster
+    5. Default: crc (smoke tests) or cluster (e2e tests)
 
 EXAMPLES:
     # Run smoke tests with auto-detected environment (uses existing images)
@@ -105,6 +113,9 @@ EXAMPLES:
 
     # Run tests with custom registry
     QUAY_REGISTRY=my-registry.io QUAY_ORG=myorg $0
+
+    # Run tests with specific kubeconfig (auto-detects cluster environment)
+    KUBECONFIG=/path/to/kubeconfig $0 --type e2e
 
 EOF
 }
@@ -156,12 +167,19 @@ fi
 
 # Auto-detect test environment if not specified
 if [[ -z "$TEST_ENVIRONMENT" ]]; then
-    if command -v crc &> /dev/null && crc status | grep -q "CRC VM.*Running"; then
+    # Priority 1: If KUBECONFIG is set, prioritize cluster testing
+    if [[ -n "$KUBECONFIG" ]] && $KUBECTL cluster-info &> /dev/null; then
+        TEST_ENVIRONMENT="cluster"
+        log_info "Auto-detected environment: existing cluster (KUBECONFIG is set: $KUBECONFIG)"
+    # Priority 2: Check for running CRC
+    elif command -v crc &> /dev/null && crc status | grep -q "CRC VM.*Running"; then
         TEST_ENVIRONMENT="crc"
         log_info "Auto-detected environment: CRC"
+    # Priority 3: Check for Kind cluster
     elif command -v kind &> /dev/null && kind get clusters | grep -q "$CRC_CLUSTER"; then
         TEST_ENVIRONMENT="kind"
         log_info "Auto-detected environment: Kind"
+    # Priority 4: Check for any accessible cluster
     elif $KUBECTL cluster-info &> /dev/null; then
         TEST_ENVIRONMENT="cluster"
         log_info "Auto-detected environment: existing cluster"
