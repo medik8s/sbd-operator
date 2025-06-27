@@ -88,9 +88,9 @@ type SBDConfigSpec struct {
 	SharedStoragePVC string `json:"sharedStoragePVC,omitempty"`
 
 	// SharedStorageMountPath is the path where the shared storage PVC will be mounted
-	// in the sbd-agent containers. Defaults to "/shared-storage" if not specified.
+	// in the sbd-agent containers. Defaults to "/sbd-block" if not specified.
 	// This path will be passed to the sbd-agent via command line arguments.
-	// +kubebuilder:default="/shared-storage"
+	// +kubebuilder:default="/sbd-block"
 	// +optional
 	SharedStorageMountPath string `json:"sharedStorageMountPath,omitempty"`
 
@@ -198,7 +198,7 @@ func (s *SBDConfigSpec) GetSharedStorageMountPath() string {
 	if s.SharedStorageMountPath != "" {
 		return s.SharedStorageMountPath
 	}
-	return "/shared-storage"
+	return "/sbd-block"
 }
 
 // HasSharedStorage returns true if shared storage is configured

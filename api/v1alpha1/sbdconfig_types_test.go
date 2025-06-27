@@ -824,7 +824,7 @@ func TestSBDConfigSpec_GetSharedStorageMountPath(t *testing.T) {
 		{
 			name:     "default mount path",
 			spec:     SBDConfigSpec{},
-			expected: "/shared-storage",
+			expected: "/sbd-block",
 		},
 		{
 			name: "explicit mount path",
@@ -838,7 +838,7 @@ func TestSBDConfigSpec_GetSharedStorageMountPath(t *testing.T) {
 			spec: SBDConfigSpec{
 				SharedStorageMountPath: "",
 			},
-			expected: "/shared-storage",
+			expected: "/sbd-block",
 		},
 	}
 
@@ -1093,7 +1093,7 @@ func TestSBDConfigSpec_ValidateAll_WithSharedStorage(t *testing.T) {
 			name: "valid config with shared storage",
 			spec: SBDConfigSpec{
 				SharedStoragePVC:       "valid-pvc",
-				SharedStorageMountPath: "/shared-storage",
+				SharedStorageMountPath: "/sbd-block",
 			},
 			wantError: false,
 		},

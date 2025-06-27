@@ -44,13 +44,13 @@ spec:
   # These fields enable automatic shared storage integration
   # The controller will mount the PVC and configure the sbd-agent accordingly
   sharedStoragePVC: "sbd-shared-pvc"           # Required: Name of RWX PVC
-  sharedStorageMountPath: "/shared-storage"    # Optional: Defaults to /shared-storage
+  sharedStorageMountPath: "/sbd-block"         # Optional: Defaults to /sbd-block
   
   # When shared storage is configured, the controller automatically:
   # 1. Validates the PVC name and mount path
   # 2. Adds the PVC as a volume in the DaemonSet
   # 3. Mounts it at the specified path in sbd-agent containers
-  # 4. Passes --shared-storage=/shared-storage to the sbd-agent command
+  # 4. Passes --shared-storage=/sbd-block to the sbd-agent command
   # 5. Enables cross-node coordination features
 
 ---

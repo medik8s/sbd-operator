@@ -78,10 +78,10 @@ spec:
                   If not specified, defaults to "/dev/watchdog"
                 type: string
               sharedStorageMountPath:
-                default: /shared-storage
+                default: /sbd-block
                 description: |-
                   SharedStorageMountPath is the path where the shared storage PVC will be mounted
-                  in the sbd-agent containers. Defaults to "/shared-storage" if not specified.
+                  in the sbd-agent containers. Defaults to "/sbd-block" if not specified.
                   This path will be passed to the sbd-agent via command line arguments.
                 type: string
               sharedStoragePVC:
