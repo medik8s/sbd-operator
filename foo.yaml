@@ -1,18 +1,11 @@
-# SBDConfig Sample Configuration
-#
-# This is a sample configuration for the SBD (STONITH Block Device) operator.
-# The SBD operator provides watchdog-based fencing for Kubernetes clusters
-# to ensure high availability through automatic node remediation.
-#
-# For comprehensive documentation, see: docs/sbdconfig-user-guide.md
-
 apiVersion: medik8s.medik8s.io/v1alpha1
 kind: SBDConfig
 metadata:
   labels:
     app.kubernetes.io/name: sbd-operator
     app.kubernetes.io/managed-by: kustomize
-  name: sbdconfig-sample
+  name: test-sbdconfig-1751003388899821000
+  namespace: sbd-test
 spec:
   # ========================================================================
   # WATCHDOG CONFIGURATION
@@ -77,7 +70,7 @@ spec:
   # - IfNotPresent: Pull only if image not present locally (default, production-safe)
   # - Never: Never pull, only use local images
   # Default: "IfNotPresent" for production stability
-  imagePullPolicy: "IfNotPresent"
+  imagePullPolicy: "Always"
   
   # ========================================================================
   # DEPLOYMENT CONFIGURATION
@@ -155,7 +148,7 @@ spec:
 #
 # Check status:
 #   kubectl get sbdconfig
-#   kubectl describe sbdconfig sbdconfig-sample
+#   kubectl describe sbdconfig test-sbdconfig-1751003388899821000
 #
 # Monitor deployment:
 #   kubectl get pods -n <namespace>
@@ -163,31 +156,4 @@ spec:
 #   (Replace <namespace> with the namespace where you created the SBDConfig)
 #
 # ========================================================================
-# OPENSHIFT SECURITY CONTEXT CONSTRAINTS (SCC) MANAGEMENT
-# ========================================================================
-#
-# The SBD operator automatically manages OpenShift SecurityContextConstraints
-# when deployed on OpenShift clusters. The controller will:
-#
-# 1. Detect if running on OpenShift platform
-# 2. Check for the required SCC: sbd-operator-sbd-agent-privileged
-# 3. Automatically update the SCC to grant permissions to service accounts
-#    in any namespace where SBDConfig resources are deployed
-#
-# Example: If you create an SBDConfig in namespace "my-app", the operator
-# will automatically add "system:serviceaccount:my-app:sbd-agent" to the
-# SCC users list, allowing pods to start with required privileges.
-#
-# Manual SCC management (if needed):
-#   # Check SCC status
-#   oc get scc sbd-operator-sbd-agent-privileged -o yaml
-#   
-#   # Manually add service account (normally automatic)
-#   oc adm policy add-scc-to-user sbd-operator-sbd-agent-privileged \
-#     system:serviceaccount:my-namespace:sbd-agent
-#
-# Note: The base SCC must be installed via the OpenShift installer:
-#   make build-openshift-installer
-#   kubectl apply -f dist/install-openshift.yaml
-#
-# ========================================================================
+

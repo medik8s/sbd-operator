@@ -38,6 +38,7 @@ The OpenShift installer includes:
 - All standard operator resources (CRDs, RBAC, deployment)
 - SecurityContextConstraints for SBD Agent privileged access
 - Proper service account bindings for OpenShift security model
+- **Automatic SCC management**: The operator automatically detects OpenShift and updates the SCC to grant permissions to service accounts in any namespace where SBDConfig resources are deployed
 
 For more details on OpenShift-specific configuration, see [config/openshift/README.md](config/openshift/README.md).
 

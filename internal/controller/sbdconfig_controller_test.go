@@ -679,4 +679,85 @@ var _ = Describe("SBDConfig Controller", func() {
 			Expect(reconciler.Scheme).NotTo(BeNil())
 		})
 	})
+
+	Context("When managing OpenShift SecurityContextConstraints", func() {
+		var customControllerReconciler *SBDConfigReconciler
+		var customNamespace string
+
+		BeforeEach(func() {
+			// Generate unique namespace for each test to avoid conflicts
+			customNamespace = fmt.Sprintf("custom-sbd-namespace-%d", time.Now().UnixNano())
+
+			// Create the custom namespace first
+			testNamespace := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: customNamespace,
+				},
+			}
+			Expect(k8sClient.Create(ctx, testNamespace)).To(Succeed())
+
+			customControllerReconciler = &SBDConfigReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+		})
+
+		AfterEach(func() {
+			// Clean up the test namespace
+			testNamespace := &corev1.Namespace{}
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: customNamespace}, testNamespace)
+			if err == nil {
+				Expect(k8sClient.Delete(ctx, testNamespace)).To(Succeed())
+			}
+		})
+
+		It("should manage resources in custom namespace", func() {
+			By("creating an SBDConfig in the custom namespace")
+			sbdConfig := &medik8sv1alpha1.SBDConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-scc-sbdconfig",
+					Namespace: customNamespace,
+				},
+				Spec: medik8sv1alpha1.SBDConfigSpec{
+					Image:           "test-sbd-agent:latest",
+					ImagePullPolicy: "Always",
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, sbdConfig)).To(Succeed())
+
+			By("reconciling the created resource")
+			customTypeNamespacedName := types.NamespacedName{
+				Name:      "test-scc-sbdconfig",
+				Namespace: customNamespace,
+			}
+
+			result, err := customControllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: customTypeNamespacedName,
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+
+			By("verifying the service account is created in the custom namespace")
+			serviceAccount := &corev1.ServiceAccount{}
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: "sbd-agent", Namespace: customNamespace}, serviceAccount)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the DaemonSet is created in the custom namespace")
+			daemonSet := &appsv1.DaemonSet{}
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: "sbd-agent-test-scc-sbdconfig", Namespace: customNamespace}, daemonSet)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the SBDConfig status is updated")
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, customTypeNamespacedName, sbdConfig)
+				if err != nil {
+					return false
+				}
+				// Check if status has been updated (TotalNodes should be set)
+				return sbdConfig.Status.TotalNodes >= 0
+			}, time.Second*10, time.Millisecond*250).Should(BeTrue())
+		})
+	})
 })

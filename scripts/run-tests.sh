@@ -27,6 +27,7 @@ SKIP_BUILD="true"
 SKIP_DEPLOY="false"
 VERBOSE="false"
 CRC_CLUSTER="sbd-operator-test"
+test_namespace="sbd-test"
 
 # Environment variables with defaults
 QUAY_REGISTRY="${QUAY_REGISTRY:-quay.io}"
@@ -376,12 +377,12 @@ cleanup_environment() {
     
     # Clean up test resources
     $KUBECTL delete sbdconfig --all --ignore-not-found=true || true
-    $KUBECTL delete sbdconfig --all -n sbd-test --ignore-not-found=true || true
-    $KUBECTL delete daemonset -l app=sbd-agent -n sbd-test --ignore-not-found=true || true
+    $KUBECTL delete sbdconfig --all -n $test_namespace --ignore-not-found=true || true
+    $KUBECTL delete daemonset -l app=sbd-agent -n $test_namespace --ignore-not-found=true || true
     $KUBECTL delete clusterrolebinding -l app.kubernetes.io/managed-by=sbd-operator --ignore-not-found=true || true
     $KUBECTL delete clusterrole -l app.kubernetes.io/managed-by=sbd-operator --ignore-not-found=true || true
     $KUBECTL delete ns sbd-operator-system --ignore-not-found=true || true
-    $KUBECTL delete ns sbd-test --ignore-not-found=true || true
+    $KUBECTL delete ns $test_namespace --ignore-not-found=true || true
     $KUBECTL delete ns sbd-system --ignore-not-found=true || true
     sleep 60
     
@@ -393,9 +394,7 @@ cleanup_environment() {
     fi
     
     # Clean up CRDs
-    if [[ -f "bin/kustomize" ]]; then
-        ./bin/kustomize build config/crd | $KUBECTL delete --ignore-not-found=true -f - || true
-    fi
+    $KUBECTL kustomize config/crd | $KUBECTL delete --ignore-not-found=true -f - || true
     
     # Clean up Kind cluster if requested (only for post-test cleanup)
     if [[ "$cleanup_reason" == "after tests" && "$TEST_ENVIRONMENT" == "kind" && "${CLEANUP_KIND_CLUSTER:-false}" == "true" ]]; then
@@ -511,7 +510,7 @@ build_installer() {
         fi
     fi
     
-    ./bin/kustomize build "$kustomize_target" > dist/install.yaml
+    $KUBECTL kustomize "$kustomize_target" > dist/install.yaml
     
     log_success "Installer manifest built: dist/install.yaml"
 }
@@ -569,10 +568,9 @@ create_test_namespace() {
     
     # Create the test namespace where SBDConfig will be deployed
     # This is needed because the controller now deploys in the same namespace as the SBDConfig CR
-    local test_namespace="sbd-test"
     
     log_info "Creating namespace: $test_namespace"
-    $KUBECTL create namespace "$test_namespace" --dry-run=client -o yaml | $KUBECTL apply -f - || {
+    $KUBECTL create namespace "$test_namespace" || {
         log_warning "Namespace $test_namespace may already exist"
     }
     

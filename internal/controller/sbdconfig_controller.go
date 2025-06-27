@@ -29,7 +29,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -53,10 +55,15 @@ const (
 	ReasonDaemonSetManaged          = "DaemonSetManaged"
 	ReasonServiceAccountCreated     = "ServiceAccountCreated"
 	ReasonClusterRoleBindingCreated = "ClusterRoleBindingCreated"
+	ReasonSCCManaged                = "SCCManaged"
 	ReasonReconcileError            = "ReconcileError"
 	ReasonDaemonSetError            = "DaemonSetError"
 	ReasonServiceAccountError       = "ServiceAccountError"
+	ReasonSCCError                  = "SCCError"
 	ReasonValidationError           = "ValidationError"
+
+	// OpenShift SCC constants
+	SBDOperatorSCCName = "sbd-operator-sbd-agent-privileged"
 
 	// Retry configuration constants for SBDConfig controller
 	// MaxSBDConfigRetries is the maximum number of retry attempts for SBDConfig operations
@@ -77,6 +84,9 @@ type SBDConfigReconciler struct {
 
 	// Retry configuration for Kubernetes API operations
 	retryConfig retry.Config
+
+	// OpenShift detection cache
+	isOpenShift *bool
 }
 
 // initializeRetryConfig initializes the retry configuration for SBDConfig operations
@@ -190,6 +200,114 @@ func (r *SBDConfigReconciler) getOperatorImage(ctx context.Context, logger logr.
 	return "sbd-agent:latest", nil
 }
 
+// isRunningOnOpenShift detects if the operator is running on OpenShift
+// by checking for the presence of OpenShift-specific API resources
+func (r *SBDConfigReconciler) isRunningOnOpenShift(ctx context.Context, logger logr.Logger) bool {
+	// Use cached result if available
+	if r.isOpenShift != nil {
+		return *r.isOpenShift
+	}
+
+	// Check for OpenShift-specific API groups
+	discoveryClient := r.Client.RESTMapper()
+
+	// Try to find security.openshift.io API group
+	_, err := discoveryClient.RESTMapping(schema.GroupKind{
+		Group: "security.openshift.io",
+		Kind:  "SecurityContextConstraints",
+	})
+
+	result := err == nil
+	r.isOpenShift = &result
+
+	if result {
+		logger.Info("Detected OpenShift platform - SCC management enabled")
+	} else {
+		logger.V(1).Info("Standard Kubernetes platform detected - SCC management disabled")
+	}
+
+	return result
+}
+
+// ensureSCCPermissions ensures that the service account has the required SCC permissions
+// This function updates the existing SCC to include the service account from the target namespace
+func (r *SBDConfigReconciler) ensureSCCPermissions(ctx context.Context, sbdConfig *medik8sv1alpha1.SBDConfig, namespaceName string, logger logr.Logger) error {
+	if !r.isRunningOnOpenShift(ctx, logger) {
+		logger.V(1).Info("Not running on OpenShift, skipping SCC management")
+		return nil
+	}
+
+	sccLogger := logger.WithValues("scc.name", SBDOperatorSCCName, "namespace", namespaceName)
+	serviceAccountUser := fmt.Sprintf("system:serviceaccount:%s:sbd-agent", namespaceName)
+
+	// Get the existing SCC
+	scc := &unstructured.Unstructured{}
+	scc.SetAPIVersion("security.openshift.io/v1")
+	scc.SetKind("SecurityContextConstraints")
+
+	err := r.Get(ctx, types.NamespacedName{Name: SBDOperatorSCCName}, scc)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			sccLogger.Error(err, "Required SCC not found - ensure OpenShift installer was used",
+				"scc", SBDOperatorSCCName,
+				"requiredServiceAccount", serviceAccountUser)
+			return fmt.Errorf("required SCC '%s' not found - ensure the operator was installed using the OpenShift installer: %w", SBDOperatorSCCName, err)
+		}
+		sccLogger.Error(err, "Failed to get SCC")
+		return fmt.Errorf("failed to get SCC '%s': %w", SBDOperatorSCCName, err)
+	}
+
+	// Check if the service account is already in the users list
+	users, found, err := unstructured.NestedStringSlice(scc.Object, "users")
+	if err != nil {
+		sccLogger.Error(err, "Failed to get users from SCC")
+		return fmt.Errorf("failed to get users from SCC: %w", err)
+	}
+
+	if !found {
+		users = []string{}
+	}
+
+	// Check if service account is already present
+	for _, user := range users {
+		if user == serviceAccountUser {
+			sccLogger.V(1).Info("Service account already has SCC permissions", "serviceAccount", serviceAccountUser)
+			return nil
+		}
+	}
+
+	// Add the service account to the users list
+	users = append(users, serviceAccountUser)
+
+	// Update the SCC
+	err = unstructured.SetNestedStringSlice(scc.Object, users, "users")
+	if err != nil {
+		sccLogger.Error(err, "Failed to set users in SCC")
+		return fmt.Errorf("failed to set users in SCC: %w", err)
+	}
+
+	// Perform the update with retry logic
+	err = r.performKubernetesAPIOperationWithRetry(ctx, "update SCC", func() error {
+		return r.Update(ctx, scc)
+	}, sccLogger)
+
+	if err != nil {
+		sccLogger.Error(err, "Failed to update SCC after retries", "serviceAccount", serviceAccountUser)
+		r.emitEventf(sbdConfig, EventTypeWarning, ReasonSCCError,
+			"Failed to update SCC '%s' to grant permissions to service account '%s': %v", SBDOperatorSCCName, serviceAccountUser, err)
+		return fmt.Errorf("failed to update SCC '%s': %w", SBDOperatorSCCName, err)
+	}
+
+	sccLogger.Info("Successfully updated SCC to grant permissions to service account",
+		"serviceAccount", serviceAccountUser,
+		"scc", SBDOperatorSCCName)
+
+	r.emitEventf(sbdConfig, EventTypeNormal, ReasonSCCManaged,
+		"SCC '%s' updated to grant permissions to service account '%s'", SBDOperatorSCCName, serviceAccountUser)
+
+	return nil
+}
+
 // +kubebuilder:rbac:groups=medik8s.medik8s.io,resources=sbdconfigs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=medik8s.medik8s.io,resources=sbdconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=medik8s.medik8s.io,resources=sbdconfigs/finalizers,verbs=update
@@ -201,6 +319,7 @@ func (r *SBDConfigReconciler) getOperatorImage(ctx context.Context, logger logr.
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch
+// +kubebuilder:rbac:groups=security.openshift.io,resources=securitycontextconstraints,verbs=get;list;watch;update;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -290,6 +409,25 @@ func (r *SBDConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			"operation", "serviceaccount-creation")
 		r.emitEventf(&sbdConfig, EventTypeWarning, ReasonServiceAccountError,
 			"Failed to ensure service account 'sbd-agent' exists in namespace '%s': %v", sbdConfig.Namespace, err)
+
+		// Return requeue with backoff for transient errors
+		if r.isTransientKubernetesError(err) {
+			return ctrl.Result{RequeueAfter: InitialSBDConfigRetryDelay}, err
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Ensure SCC permissions are configured for OpenShift
+	err = r.performKubernetesAPIOperationWithRetry(ctx, "ensure SCC permissions", func() error {
+		return r.ensureSCCPermissions(ctx, &sbdConfig, sbdConfig.Namespace, logger)
+	}, logger)
+
+	if err != nil {
+		logger.Error(err, "Failed to ensure SCC permissions after retries",
+			"namespace", sbdConfig.Namespace,
+			"operation", "scc-permissions")
+		r.emitEventf(&sbdConfig, EventTypeWarning, ReasonSCCError,
+			"Failed to ensure SCC permissions for service account 'sbd-agent' in namespace '%s': %v", sbdConfig.Namespace, err)
 
 		// Return requeue with backoff for transient errors
 		if r.isTransientKubernetesError(err) {

@@ -80,10 +80,6 @@ var _ = Describe("SBD Operator Smoke Tests", Ordered, Label("Smoke"), func() {
 		By("cleaning up any test SBDConfigs")
 		cmd = exec.Command("kubectl", "delete", "sbdconfig", "--all", "-n", testNamespace, "--ignore-not-found=true")
 		_, _ = utils.Run(cmd)
-
-		By("cleaning up test namespaces")
-		cmd = exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found=true")
-		_, _ = utils.Run(cmd)
 	})
 
 	// After each test, check for failures and collect logs, events,
