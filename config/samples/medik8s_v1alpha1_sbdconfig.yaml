@@ -162,7 +162,7 @@ spec:
 #   name: production-sbd
 #   namespace: my-app
 # spec:
-#   image: "quay.io/medik8s/sbd-agent:v1.2.3"
+#   image: "quay.io/medik8s/sbd-agent:latest"
 #   imagePullPolicy: "IfNotPresent"
 # ---
 # # Canary config  
@@ -170,7 +170,7 @@ spec:
 #   name: canary-sbd
 #   namespace: my-app
 # spec:
-#   image: "quay.io/medik8s/sbd-agent:v1.3.0-beta"
+#   image: "quay.io/medik8s/sbd-agent:latest"
 #   imagePullPolicy: "Always"
 #   nodeSelector:
 #     canary: "true"
