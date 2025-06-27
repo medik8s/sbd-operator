@@ -211,7 +211,7 @@ func (s *SBDConfigSpec) HasSharedStorage() bool {
 
 // GetNodeSelector returns the node selector with default fallback to worker nodes only
 func (s *SBDConfigSpec) GetNodeSelector() map[string]string {
-	if s.NodeSelector != nil && len(s.NodeSelector) > 0 {
+	if len(s.NodeSelector) > 0 {
 		return s.NodeSelector
 	}
 

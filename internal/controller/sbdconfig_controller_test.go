@@ -26,6 +26,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -295,8 +296,16 @@ var _ = Describe("SBDConfig Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, sbdConfig)).To(Succeed())
 
-			By("reconciling the SBDConfig")
+			By("reconciling the SBDConfig multiple times for finalizer and resource creation")
+			// First reconcile adds finalizer
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+
+			// Second reconcile creates the resources
+			result, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -372,8 +381,16 @@ var _ = Describe("SBDConfig Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, sbdConfig)).To(Succeed())
 
-			By("reconciling the SBDConfig")
+			By("reconciling the SBDConfig multiple times for finalizer and resource creation")
+			// First reconcile adds finalizer
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+
+			// Second reconcile creates the resources
+			result, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -443,8 +460,16 @@ var _ = Describe("SBDConfig Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, sbdConfig)).To(Succeed())
 
-			By("reconciling the SBDConfig")
+			By("reconciling the SBDConfig multiple times for finalizer and resource creation")
+			// First reconcile adds finalizer
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+
+			// Second reconcile creates the resources
+			result, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -474,6 +499,13 @@ var _ = Describe("SBDConfig Controller", func() {
 			By("deleting the SBDConfig")
 			Expect(k8sClient.Delete(ctx, sbdConfig)).To(Succeed())
 
+			By("reconciling the SBDConfig deletion to handle finalizer cleanup")
+			result, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+
 			By("verifying the SBDConfig is deleted")
 			Eventually(func() bool {
 				err := k8sClient.Get(ctx, typeNamespacedName, sbdConfig)
@@ -498,8 +530,16 @@ var _ = Describe("SBDConfig Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, sbdConfig)).To(Succeed())
 
-			By("reconciling the SBDConfig")
+			By("reconciling the SBDConfig multiple times for finalizer and resource creation")
+			// First reconcile adds finalizer
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+
+			// Second reconcile creates the resources
+			result, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -523,6 +563,8 @@ var _ = Describe("SBDConfig Controller", func() {
 	Context("When testing event emission", func() {
 		const (
 			resourceName = "test-events-sbdconfig"
+			timeout      = time.Second * 10
+			interval     = time.Millisecond * 250
 		)
 
 		var namespace string
@@ -587,8 +629,16 @@ var _ = Describe("SBDConfig Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
-			By("reconciling the resource")
+			By("reconciling the resource multiple times for finalizer and resource creation")
+			// First reconcile adds finalizer
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+
+			// Second reconcile creates the resources and emits events
+			result, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -669,6 +719,35 @@ var _ = Describe("SBDConfig Controller", func() {
 	})
 
 	Context("When testing controller initialization", func() {
+		var namespace string
+		const (
+			resourceName = "test-events-system"
+			timeout      = time.Second * 10
+			interval     = time.Millisecond * 250
+		)
+
+		BeforeEach(func() {
+			// Generate unique namespace for each test to avoid conflicts
+			namespace = fmt.Sprintf("test-events-system-%d", time.Now().UnixNano())
+
+			// Create the test namespace
+			testNamespace := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: namespace,
+				},
+			}
+			Expect(k8sClient.Create(ctx, testNamespace)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			// Clean up the test namespace
+			testNamespace := &corev1.Namespace{}
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: namespace}, testNamespace)
+			if err == nil {
+				Expect(k8sClient.Delete(ctx, testNamespace)).To(Succeed())
+			}
+		})
+
 		It("should create a controller reconciler successfully", func() {
 			reconciler := &SBDConfigReconciler{
 				Client: k8sClient,
@@ -677,6 +756,139 @@ var _ = Describe("SBDConfig Controller", func() {
 
 			Expect(reconciler.Client).NotTo(BeNil())
 			Expect(reconciler.Scheme).NotTo(BeNil())
+		})
+
+		It("should support multiple SBDConfig resources in the same namespace", func() {
+			By("creating a multi-SBD controller reconciler")
+			multiSBDReconciler := &SBDConfigReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			By("creating the first SBDConfig")
+			// First SBDConfig
+			sbdConfig1 := &medik8sv1alpha1.SBDConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "first-sbdconfig",
+					Namespace: namespace,
+				},
+				Spec: medik8sv1alpha1.SBDConfigSpec{
+					ImagePullPolicy: "IfNotPresent",
+					Image:           "test-sbd-agent:v1.0.0",
+				},
+			}
+			Expect(k8sClient.Create(ctx, sbdConfig1)).To(Succeed())
+
+			// Reconcile the first SBDConfig multiple times for finalizer and resource creation
+			// First reconcile adds finalizer
+			_, err := multiSBDReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      sbdConfig1.Name,
+					Namespace: sbdConfig1.Namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Second reconcile creates the resources
+			_, err = multiSBDReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      sbdConfig1.Name,
+					Namespace: sbdConfig1.Namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the first SBDConfig creates shared resources")
+			// Check service account (shared)
+			serviceAccount := &corev1.ServiceAccount{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Name: "sbd-agent", Namespace: namespace}, serviceAccount)
+			}, timeout, interval).Should(Succeed())
+
+			// Check first ClusterRoleBinding (SBDConfig-specific)
+			clusterRoleBinding1 := &rbacv1.ClusterRoleBinding{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Name: fmt.Sprintf("sbd-agent-%s-%s", namespace, sbdConfig1.Name)}, clusterRoleBinding1)
+			}, timeout, interval).Should(Succeed())
+
+			// Check first DaemonSet (SBDConfig-specific)
+			daemonSet1 := &appsv1.DaemonSet{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Name: fmt.Sprintf("sbd-agent-%s", sbdConfig1.Name), Namespace: namespace}, daemonSet1)
+			}, timeout, interval).Should(Succeed())
+
+			By("creating the second SBDConfig in the same namespace")
+			sbdConfig2 := &medik8sv1alpha1.SBDConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "second-sbdconfig",
+					Namespace: namespace,
+				},
+				Spec: medik8sv1alpha1.SBDConfigSpec{
+					ImagePullPolicy: "Always",
+					Image:           "test-sbd-agent:v2.0.0",
+				},
+			}
+			Expect(k8sClient.Create(ctx, sbdConfig2)).To(Succeed())
+
+			// Reconcile the second SBDConfig multiple times for finalizer and resource creation
+			// First reconcile adds finalizer
+			_, err = multiSBDReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      sbdConfig2.Name,
+					Namespace: sbdConfig2.Namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Second reconcile creates the resources
+			_, err = multiSBDReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      sbdConfig2.Name,
+					Namespace: sbdConfig2.Namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying both SBDConfigs share the service account but have separate resources")
+			// Service account should still be the same (shared)
+			sharedServiceAccount := &corev1.ServiceAccount{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Name: "sbd-agent", Namespace: namespace}, sharedServiceAccount)
+			}, timeout, interval).Should(Succeed())
+
+			// Verify service account has shared resource annotations
+			Expect(sharedServiceAccount.Annotations).To(HaveKeyWithValue("sbd-operator/shared-resource", "true"))
+			Expect(sharedServiceAccount.Annotations).To(HaveKeyWithValue("sbd-operator/managed-by", "sbd-operator"))
+
+			// Second ClusterRoleBinding (SBDConfig-specific)
+			clusterRoleBinding2 := &rbacv1.ClusterRoleBinding{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Name: fmt.Sprintf("sbd-agent-%s-%s", namespace, sbdConfig2.Name)}, clusterRoleBinding2)
+			}, timeout, interval).Should(Succeed())
+
+			// Second DaemonSet (SBDConfig-specific)
+			daemonSet2 := &appsv1.DaemonSet{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Name: fmt.Sprintf("sbd-agent-%s", sbdConfig2.Name), Namespace: namespace}, daemonSet2)
+			}, timeout, interval).Should(Succeed())
+
+			By("verifying the DaemonSets have different configurations")
+			Expect(daemonSet1.Spec.Template.Spec.Containers[0].ImagePullPolicy).To(Equal(corev1.PullIfNotPresent))
+			Expect(daemonSet2.Spec.Template.Spec.Containers[0].ImagePullPolicy).To(Equal(corev1.PullAlways))
+			Expect(daemonSet1.Spec.Template.Spec.Containers[0].Image).To(Equal("test-sbd-agent:v1.0.0"))
+			Expect(daemonSet2.Spec.Template.Spec.Containers[0].Image).To(Equal("test-sbd-agent:v2.0.0"))
+
+			By("verifying ClusterRoleBindings have different names but same service account")
+			Expect(clusterRoleBinding1.Name).To(Equal(fmt.Sprintf("sbd-agent-%s-%s", namespace, sbdConfig1.Name)))
+			Expect(clusterRoleBinding2.Name).To(Equal(fmt.Sprintf("sbd-agent-%s-%s", namespace, sbdConfig2.Name)))
+			Expect(clusterRoleBinding1.Subjects[0].Name).To(Equal("sbd-agent"))
+			Expect(clusterRoleBinding2.Subjects[0].Name).To(Equal("sbd-agent"))
+			Expect(clusterRoleBinding1.Subjects[0].Namespace).To(Equal(namespace))
+			Expect(clusterRoleBinding2.Subjects[0].Namespace).To(Equal(namespace))
+
+			By("cleaning up test resources")
+			Expect(k8sClient.Delete(ctx, sbdConfig1)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, sbdConfig2)).To(Succeed())
 		})
 	})
 
@@ -726,28 +938,37 @@ var _ = Describe("SBDConfig Controller", func() {
 
 			Expect(k8sClient.Create(ctx, sbdConfig)).To(Succeed())
 
-			By("reconciling the created resource")
+			By("reconciling the created resource multiple times for finalizer and resource creation")
 			customTypeNamespacedName := types.NamespacedName{
 				Name:      "test-scc-sbdconfig",
 				Namespace: customNamespace,
 			}
 
+			// First reconcile adds finalizer
 			result, err := customControllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: customTypeNamespacedName,
 			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
 
+			// Second reconcile creates the resources
+			result, err = customControllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: customTypeNamespacedName,
+			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal(reconcile.Result{}))
 
 			By("verifying the service account is created in the custom namespace")
 			serviceAccount := &corev1.ServiceAccount{}
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: "sbd-agent", Namespace: customNamespace}, serviceAccount)
-			Expect(err).NotTo(HaveOccurred())
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Name: "sbd-agent", Namespace: customNamespace}, serviceAccount)
+			}, time.Second*10, time.Millisecond*250).Should(Succeed())
 
 			By("verifying the DaemonSet is created in the custom namespace")
 			daemonSet := &appsv1.DaemonSet{}
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: "sbd-agent-test-scc-sbdconfig", Namespace: customNamespace}, daemonSet)
-			Expect(err).NotTo(HaveOccurred())
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Name: "sbd-agent-test-scc-sbdconfig", Namespace: customNamespace}, daemonSet)
+			}, time.Second*10, time.Millisecond*250).Should(Succeed())
 
 			By("verifying the SBDConfig status is updated")
 			Eventually(func() bool {

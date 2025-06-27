@@ -61,6 +61,11 @@ const (
 	ReasonServiceAccountError       = "ServiceAccountError"
 	ReasonSCCError                  = "SCCError"
 	ReasonValidationError           = "ValidationError"
+	ReasonCleanupCompleted          = "CleanupCompleted"
+	ReasonCleanupError              = "CleanupError"
+
+	// Finalizer for cleanup operations
+	SBDConfigFinalizerName = "sbd-operator.medik8s.io/cleanup"
 
 	// OpenShift SCC constants
 	SBDOperatorSCCName = "sbd-operator-sbd-agent-privileged"
@@ -372,6 +377,19 @@ func (r *SBDConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		"sbdconfig.resourceVersion", sbdConfig.ResourceVersion,
 	)
 
+	// Handle deletion with finalizer
+	if sbdConfig.DeletionTimestamp != nil {
+		logger.Info("SBDConfig is being deleted, performing cleanup")
+		return r.handleDeletion(ctx, &sbdConfig, logger)
+	}
+
+	// Add finalizer if not present
+	if !controllerutil.ContainsFinalizer(&sbdConfig, SBDConfigFinalizerName) {
+		logger.Info("Adding finalizer to SBDConfig")
+		controllerutil.AddFinalizer(&sbdConfig, SBDConfigFinalizerName)
+		return ctrl.Result{}, r.Update(ctx, &sbdConfig)
+	}
+
 	// Get the operator image first for logging and DaemonSet creation
 	operatorImage, err := r.getOperatorImage(ctx, logger)
 	if err != nil {
@@ -531,9 +549,55 @@ func (r *SBDConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{}, nil
 }
 
+// handleDeletion handles the cleanup when an SBDConfig is being deleted
+func (r *SBDConfigReconciler) handleDeletion(ctx context.Context, sbdConfig *medik8sv1alpha1.SBDConfig, logger logr.Logger) (ctrl.Result, error) {
+	logger.Info("Starting SBDConfig cleanup")
+
+	// Clean up the ClusterRoleBinding specific to this SBDConfig
+	clusterRoleBindingName := fmt.Sprintf("sbd-agent-%s-%s", sbdConfig.Namespace, sbdConfig.Name)
+	clusterRoleBinding := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: clusterRoleBindingName,
+		},
+	}
+
+	err := r.Delete(ctx, clusterRoleBinding)
+	if err != nil && !errors.IsNotFound(err) {
+		logger.Error(err, "Failed to delete ClusterRoleBinding during cleanup", "clusterRoleBinding", clusterRoleBindingName)
+		r.emitEventf(sbdConfig, EventTypeWarning, ReasonCleanupError,
+			"Failed to delete ClusterRoleBinding '%s': %v", clusterRoleBindingName, err)
+		return ctrl.Result{RequeueAfter: InitialSBDConfigRetryDelay}, err
+	}
+
+	if err == nil {
+		logger.Info("ClusterRoleBinding deleted successfully", "clusterRoleBinding", clusterRoleBindingName)
+	}
+
+	// Note: We don't delete the shared service account because other SBDConfigs in the same namespace might be using it
+	// The service account will be cleaned up when the namespace is deleted or manually by administrators
+
+	// Note: DaemonSet cleanup is handled automatically by Kubernetes garbage collection due to OwnerReference
+
+	// Remove the finalizer to allow deletion
+	controllerutil.RemoveFinalizer(sbdConfig, SBDConfigFinalizerName)
+	err = r.Update(ctx, sbdConfig)
+	if err != nil {
+		logger.Error(err, "Failed to remove finalizer from SBDConfig")
+		r.emitEventf(sbdConfig, EventTypeWarning, ReasonCleanupError,
+			"Failed to remove finalizer: %v", err)
+		return ctrl.Result{RequeueAfter: InitialSBDConfigRetryDelay}, err
+	}
+
+	logger.Info("SBDConfig cleanup completed successfully")
+	r.emitEventf(sbdConfig, EventTypeNormal, ReasonCleanupCompleted,
+		"SBDConfig cleanup completed successfully")
+
+	return ctrl.Result{}, nil
+}
+
 // ensureServiceAccount creates the service account and RBAC resources if they don't exist
 func (r *SBDConfigReconciler) ensureServiceAccount(ctx context.Context, sbdConfig *medik8sv1alpha1.SBDConfig, namespaceName string, logger logr.Logger) error {
-	// Create the service account
+	// Create the service account - SHARED across multiple SBDConfigs in the same namespace
 	serviceAccount := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "sbd-agent",
@@ -545,12 +609,33 @@ func (r *SBDConfigReconciler) ensureServiceAccount(ctx context.Context, sbdConfi
 				"app.kubernetes.io/part-of":    "sbd-operator",
 				"app.kubernetes.io/managed-by": "sbd-operator",
 			},
+			Annotations: map[string]string{
+				"sbd-operator/shared-resource": "true",
+				"sbd-operator/managed-by":      "sbd-operator",
+			},
 		},
 	}
 
 	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, serviceAccount, func() error {
-		// Set the controller reference
-		return controllerutil.SetControllerReference(sbdConfig, serviceAccount, r.Scheme)
+		// DO NOT set controller reference - allow multiple SBDConfigs to share this service account
+		// Instead, use labels and annotations to track management
+		if serviceAccount.Labels == nil {
+			serviceAccount.Labels = make(map[string]string)
+		}
+		if serviceAccount.Annotations == nil {
+			serviceAccount.Annotations = make(map[string]string)
+		}
+
+		// Update management labels
+		serviceAccount.Labels["app"] = "sbd-agent"
+		serviceAccount.Labels["app.kubernetes.io/name"] = "sbd-agent"
+		serviceAccount.Labels["app.kubernetes.io/component"] = "agent"
+		serviceAccount.Labels["app.kubernetes.io/part-of"] = "sbd-operator"
+		serviceAccount.Labels["app.kubernetes.io/managed-by"] = "sbd-operator"
+		serviceAccount.Annotations["sbd-operator/shared-resource"] = "true"
+		serviceAccount.Annotations["sbd-operator/managed-by"] = "sbd-operator"
+
+		return nil
 	})
 
 	if err != nil {
@@ -564,9 +649,10 @@ func (r *SBDConfigReconciler) ensureServiceAccount(ctx context.Context, sbdConfi
 	}
 
 	// Create the ClusterRoleBinding to use the existing sbd-agent-role
+	// Use SBDConfig-specific name to avoid conflicts
 	clusterRoleBinding := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: fmt.Sprintf("sbd-agent-%s", sbdConfig.Name),
+			Name: fmt.Sprintf("sbd-agent-%s-%s", namespaceName, sbdConfig.Name),
 			Labels: map[string]string{
 				"app":                          "sbd-agent",
 				"app.kubernetes.io/name":       "sbd-agent",
@@ -574,6 +660,7 @@ func (r *SBDConfigReconciler) ensureServiceAccount(ctx context.Context, sbdConfi
 				"app.kubernetes.io/part-of":    "sbd-operator",
 				"app.kubernetes.io/managed-by": "sbd-operator",
 				"sbdconfig":                    sbdConfig.Name,
+				"sbdconfig-namespace":          namespaceName,
 			},
 		},
 		Subjects: []rbacv1.Subject{
@@ -602,9 +689,9 @@ func (r *SBDConfigReconciler) ensureServiceAccount(ctx context.Context, sbdConfi
 	}
 
 	if result == controllerutil.OperationResultCreated {
-		logger.Info("ClusterRoleBinding created for SBD agent", "clusterRoleBinding", fmt.Sprintf("sbd-agent-%s", sbdConfig.Name))
+		logger.Info("ClusterRoleBinding created for SBD agent", "clusterRoleBinding", fmt.Sprintf("sbd-agent-%s-%s", namespaceName, sbdConfig.Name))
 		r.emitEventf(sbdConfig, EventTypeNormal, ReasonClusterRoleBindingCreated,
-			"ClusterRoleBinding 'sbd-agent-%s' created", sbdConfig.Name)
+			"ClusterRoleBinding 'sbd-agent-%s-%s' created", namespaceName, sbdConfig.Name)
 	}
 
 	return nil

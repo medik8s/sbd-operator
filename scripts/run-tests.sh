@@ -537,7 +537,7 @@ deploy_operator() {
             ;;
     esac
     
-    $KUBECTL apply -f dist/install.yaml --server-side=true
+    $KUBECTL apply -f dist/install.yaml --server-side=true --force-conflicts=true
     
     log_info "Waiting for operator to be ready..."
     $KUBECTL wait --for=condition=ready pod -l control-plane=controller-manager -n sbd-operator-system --timeout=120s || {
@@ -604,6 +604,12 @@ run_tests() {
             # Use current context
             ;;
     esac
+    
+    # Clean up any leftover test resources from previous runs
+    log_info "Cleaning up any leftover test resources from previous runs"
+    $KUBECTL delete sbdconfig --all -n "$test_namespace" --ignore-not-found=true || true
+    $KUBECTL delete serviceaccount sbd-agent -n "$test_namespace" --ignore-not-found=true || true
+    $KUBECTL delete daemonset --all -n "$test_namespace" --ignore-not-found=true || true
     
     # Create test namespace before running tests
     create_test_namespace
