@@ -263,13 +263,21 @@ var _ = Describe("SBD Operator Smoke Tests", Ordered, Label("Smoke"), func() {
 		})
 
 		AfterEach(func() {
-			// Clean up SBDConfig
+			// Clean up SBDConfig and wait for finalizer cleanup
 			By("cleaning up SBDConfig resource")
 			cmd := exec.Command("kubectl", "delete", "sbdconfig", sbdConfigName, "--ignore-not-found=true")
 			_, _ = utils.Run(cmd)
 
-			// Clean up any remaining DaemonSets
-			By("cleaning up SBD agent DaemonSets")
+			// Wait for SBDConfig deletion to complete (finalizer cleanup)
+			By("waiting for SBDConfig deletion to complete")
+			Eventually(func() bool {
+				cmd := exec.Command("kubectl", "get", "sbdconfig", sbdConfigName, "-n", testNamespace)
+				_, err := utils.Run(cmd)
+				return err != nil // Error means resource not found (deleted)
+			}, 30*time.Second, 2*time.Second).Should(BeTrue())
+
+			// Clean up any remaining DaemonSets (should be auto-deleted by owner references)
+			By("cleaning up any remaining SBD agent DaemonSets")
 			cmd = exec.Command("kubectl", "delete", "daemonset", "-l", "app.kubernetes.io/name=sbd-agent", "-n", testNamespace, "--ignore-not-found=true")
 			_, _ = utils.Run(cmd)
 
@@ -302,10 +310,10 @@ var _ = Describe("SBD Operator Smoke Tests", Ordered, Label("Smoke"), func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Display the contents of the tmp file for debugging
-			By("displaying the SBDConfig YAML contents")
-			tmpFileContents, err := os.ReadFile(tmpFile)
-			Expect(err).NotTo(HaveOccurred(), "Failed to read temporary SBDConfig file")
-			fmt.Printf("SBDConfig YAML contents:\n%s\n", string(tmpFileContents))
+			// By("displaying the SBDConfig YAML contents")
+			// tmpFileContents, err := os.ReadFile(tmpFile)
+			// Expect(err).NotTo(HaveOccurred(), "Failed to read temporary SBDConfig file")
+			// fmt.Printf("SBDConfig YAML contents:\n%s\n", string(tmpFileContents))
 
 			// Apply the SBDConfig to the test namespace
 			cmd := exec.Command("kubectl", "apply", "-f", tmpFile, "-n", testNamespace)
@@ -509,6 +517,14 @@ var _ = Describe("SBD Operator Smoke Tests", Ordered, Label("Smoke"), func() {
 			By("cleaning up SBDRemediation resource")
 			cmd := exec.Command("kubectl", "delete", "sbdremediation", sbdRemediationName, "--ignore-not-found=true")
 			_, _ = utils.Run(cmd)
+
+			// Wait for SBDRemediation deletion to complete
+			By("waiting for SBDRemediation deletion to complete")
+			Eventually(func() bool {
+				cmd := exec.Command("kubectl", "get", "sbdremediation", sbdRemediationName)
+				_, err := utils.Run(cmd)
+				return err != nil // Error means resource not found (deleted)
+			}, 30*time.Second, 2*time.Second).Should(BeTrue())
 
 			// Clean up temporary file
 			if tmpFile != "" {
@@ -846,6 +862,14 @@ spec:
 			if sbdConfigName != "" {
 				cmd := exec.Command("kubectl", "delete", "sbdconfig", sbdConfigName, "--ignore-not-found=true")
 				_, _ = utils.Run(cmd)
+
+				// Wait for SBDConfig deletion to complete (finalizer cleanup)
+				By("waiting for SBDConfig deletion to complete")
+				Eventually(func() bool {
+					cmd := exec.Command("kubectl", "get", "sbdconfig", sbdConfigName, "-n", testNamespace)
+					_, err := utils.Run(cmd)
+					return err != nil // Error means resource not found (deleted)
+				}, 30*time.Second, 2*time.Second).Should(BeTrue())
 			}
 
 			// Clean up temporary file
