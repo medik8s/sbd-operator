@@ -145,7 +145,6 @@ var _ = Describe("SBDConfig Controller", func() {
 				Spec: medik8sv1alpha1.SBDConfigSpec{
 					SbdWatchdogPath: "/dev/watchdog",
 					Image:           "test-sbd-agent:latest",
-					Namespace:       namespace,
 				},
 			}
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
@@ -188,7 +187,6 @@ var _ = Describe("SBDConfig Controller", func() {
 				Spec: medik8sv1alpha1.SBDConfigSpec{
 					SbdWatchdogPath: "/dev/watchdog",
 					Image:           "test-sbd-agent:latest",
-					Namespace:       namespace,
 				},
 			}
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
@@ -257,7 +255,6 @@ var _ = Describe("SBDConfig Controller", func() {
 				Spec: medik8sv1alpha1.SBDConfigSpec{
 					SbdWatchdogPath: "/dev/watchdog",
 					Image:           "test-sbd-agent:latest",
-					Namespace:       namespace,
 				},
 			}
 			Expect(k8sClient.Create(ctx, sbdConfig)).To(Succeed())
@@ -334,7 +331,6 @@ var _ = Describe("SBDConfig Controller", func() {
 				Spec: medik8sv1alpha1.SBDConfigSpec{
 					SbdWatchdogPath: "/dev/watchdog",
 					Image:           "test-sbd-agent:v1.0.0",
-					Namespace:       namespace,
 				},
 			}
 			Expect(k8sClient.Create(ctx, sbdConfig)).To(Succeed())
@@ -405,7 +401,6 @@ var _ = Describe("SBDConfig Controller", func() {
 				Spec: medik8sv1alpha1.SBDConfigSpec{
 					SbdWatchdogPath: "/dev/watchdog",
 					Image:           "test-sbd-agent:latest",
-					Namespace:       namespace,
 				},
 			}
 			Expect(k8sClient.Create(ctx, sbdConfig)).To(Succeed())
@@ -531,7 +526,6 @@ var _ = Describe("SBDConfig Controller", func() {
 				Spec: medik8sv1alpha1.SBDConfigSpec{
 					SbdWatchdogPath: "/dev/watchdog",
 					Image:           "test-sbd-agent:latest",
-					Namespace:       namespace,
 				},
 			}
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
@@ -546,17 +540,6 @@ var _ = Describe("SBDConfig Controller", func() {
 			By("verifying events were emitted")
 			events := mockRecorder.GetEvents()
 			Expect(len(events)).To(BeNumerically(">=", 2))
-
-			// Check for namespace creation event
-			namespaceEvent := false
-			for _, event := range events {
-				if event.Reason == ReasonNamespaceCreated && event.EventType == EventTypeNormal {
-					namespaceEvent = true
-					Expect(event.Message).To(ContainSubstring(namespace))
-					break
-				}
-			}
-			Expect(namespaceEvent).To(BeTrue(), "Namespace creation event should be emitted")
 
 			// Check for DaemonSet management event
 			daemonSetEvent := false
