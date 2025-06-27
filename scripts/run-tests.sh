@@ -376,15 +376,14 @@ cleanup_environment() {
     esac
     
     # Clean up test resources
-    $KUBECTL delete sbdconfig --all --ignore-not-found=true || true
-    $KUBECTL delete sbdconfig --all -n $test_namespace --ignore-not-found=true || true
+    $KUBECTL delete sbdremediation --all -A --ignore-not-found=true || true
+    $KUBECTL delete sbdconfig --all -A --ignore-not-found=true || true
     $KUBECTL delete daemonset -l app=sbd-agent -n $test_namespace --ignore-not-found=true || true
     $KUBECTL delete clusterrolebinding -l app.kubernetes.io/managed-by=sbd-operator --ignore-not-found=true || true
     $KUBECTL delete clusterrole -l app.kubernetes.io/managed-by=sbd-operator --ignore-not-found=true || true
     $KUBECTL delete ns sbd-operator-system --ignore-not-found=true || true
     $KUBECTL delete ns $test_namespace --ignore-not-found=true || true
     $KUBECTL delete ns sbd-system --ignore-not-found=true || true
-    sleep 60
     
     # Clean up environment-specific resources
     if [[ "$TEST_ENVIRONMENT" == "crc" ]]; then
