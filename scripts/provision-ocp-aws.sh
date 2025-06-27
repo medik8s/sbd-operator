@@ -646,6 +646,7 @@ cleanup_cluster() {
         log_info "Cleaning up existing cluster directory..."
         CLUSTER_FULL_DIR="${CLUSTER_DIR}/${CLUSTER_NAME}"
         if [[ -d "${CLUSTER_FULL_DIR}" ]]; then
+            openshift-install destroy cluster --dir "${CLUSTER_FULL_DIR}"
             rm -rf "${CLUSTER_FULL_DIR}"
             log_success "Cleaned up ${CLUSTER_FULL_DIR}"
         fi
