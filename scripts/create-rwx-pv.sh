@@ -35,6 +35,8 @@ KUBECTL="${KUBECTL:-kubectl}"
 CLEANUP="false"
 DRY_RUN="false"
 SKIP_PERMISSION_CHECK="false"
+EXISTING_SECURITY_GROUP=""
+SKIP_VPC_VALIDATION="false"
 
 # Functions
 log_info() {
@@ -70,27 +72,30 @@ OPTIONS:
     --performance-mode MODE   EFS performance mode: generalPurpose|maxIO (default: generalPurpose)
     --throughput-mode MODE    EFS throughput mode: provisioned|burstingThroughput (default: provisioned)
     --provisioned-tp MBPS     Provisioned throughput in MiB/s (default: 100, only for provisioned mode)
+    --existing-sg SG_ID       Use existing security group instead of creating new one
+    --skip-vpc-validation     Skip VPC validation (reduces required permissions)
     --cleanup                 Delete existing EFS and Kubernetes resources
     --dry-run                 Show what would be created without actually creating
     --skip-permission-check   Skip AWS permission validation (use with caution)
     -h, --help                Show this help message
 
 EXAMPLES:
-    # Create RWX PV with defaults
+    # Basic usage (auto-detect cluster and region)
     $0
 
-    # Create with custom settings
-    $0 --name my-shared-storage --size 50Gi --cluster-name my-cluster
+    # Specify cluster and region
+    $0 --cluster-name my-cluster --region us-west-2
 
-    # Cleanup existing resources
+    # Use existing security group (avoids CreateSecurityGroup permission)
+    $0 --existing-sg sg-1234567890abcdef0
+
+    # Clean up resources
     $0 --cleanup
 
-    # Preview what would be created
-    $0 --dry-run
-
 PREREQUISITES:
-    - AWS CLI configured with appropriate permissions
-    - kubectl/oc configured for target OpenShift cluster
+    - AWS CLI configured with appropriate credentials
+    - kubectl configured for target OpenShift cluster
+    - jq installed for JSON processing
     - AWS EFS CSI driver installed in the cluster
     - Cluster must have worker nodes in multiple AZs for HA
 
@@ -103,9 +108,11 @@ AWS PERMISSIONS REQUIRED:
     - ec2:DescribeInstances
     - ec2:DescribeSubnets
     - ec2:DescribeSecurityGroups
-    - ec2:DescribeVpcs
-    - ec2:CreateSecurityGroup
-    - ec2:AuthorizeSecurityGroupIngress
+    
+    Conditionally required (can be avoided with options):
+    - ec2:CreateSecurityGroup (not needed with --existing-sg)
+    - ec2:AuthorizeSecurityGroupIngress (not needed with --existing-sg)
+    - ec2:DescribeVpcs (not needed with --skip-vpc-validation)
     
     Optional permissions (for tagging):
     - elasticfilesystem:CreateTags
@@ -159,6 +166,14 @@ while [[ $# -gt 0 ]]; do
         --provisioned-tp)
             PROVISIONED_THROUGHPUT="$2"
             shift 2
+            ;;
+        --existing-sg)
+            EXISTING_SECURITY_GROUP="$2"
+            shift 2
+            ;;
+        --skip-vpc-validation)
+            SKIP_VPC_VALIDATION="true"
+            shift
             ;;
         --cleanup)
             CLEANUP="true"
@@ -366,8 +381,10 @@ check_aws_permissions() {
         missing_permissions+=("ec2:DescribeSubnets")
     fi
     
-    if ! aws ec2 describe-vpcs --region "$AWS_REGION" --max-items 1 >/dev/null 2>&1; then
-        missing_permissions+=("ec2:DescribeVpcs")
+    if [[ "$SKIP_VPC_VALIDATION" != "true" ]]; then
+        if ! aws ec2 describe-vpcs --region "$AWS_REGION" --max-items 1 >/dev/null 2>&1; then
+            missing_permissions+=("ec2:DescribeVpcs")
+        fi
     fi
     
     # Test EFS permissions (core functionality)
@@ -405,26 +422,30 @@ check_aws_permissions() {
             fi
         fi
         
-        # Test security group creation permission
-        if ! aws ec2 create-security-group --region "$AWS_REGION" --group-name "test-sg" --description "test" --vpc-id "vpc-test" --dry-run >/dev/null 2>&1; then
-            local sg_test_output
-            sg_test_output=$(aws ec2 create-security-group --region "$AWS_REGION" --group-name "test-sg" --description "test" --vpc-id "vpc-test" --dry-run 2>&1 || true)
-            if [[ "$sg_test_output" == *"DryRunOperation"* ]]; then
-                log_info "EC2 security group creation permission available"
-            elif [[ "$sg_test_output" == *"AccessDenied"* ]] || [[ "$sg_test_output" == *"not authorized"* ]]; then
-                missing_permissions+=("ec2:CreateSecurityGroup")
+        # Test security group creation permission (only if not using existing SG)
+        if [[ -z "$EXISTING_SECURITY_GROUP" ]]; then
+            if ! aws ec2 create-security-group --region "$AWS_REGION" --group-name "test-sg" --description "test" --vpc-id "vpc-test" --dry-run >/dev/null 2>&1; then
+                local sg_test_output
+                sg_test_output=$(aws ec2 create-security-group --region "$AWS_REGION" --group-name "test-sg" --description "test" --vpc-id "vpc-test" --dry-run 2>&1 || true)
+                if [[ "$sg_test_output" == *"DryRunOperation"* ]]; then
+                    log_info "EC2 security group creation permission available"
+                elif [[ "$sg_test_output" == *"AccessDenied"* ]] || [[ "$sg_test_output" == *"not authorized"* ]]; then
+                    missing_permissions+=("ec2:CreateSecurityGroup")
+                fi
             fi
-        fi
-        
-        # Test security group ingress rule permission
-        if ! aws ec2 authorize-security-group-ingress --region "$AWS_REGION" --group-id "sg-test" --protocol tcp --port 2049 --source-group "sg-test" --dry-run >/dev/null 2>&1; then
-            local sg_ingress_test_output
-            sg_ingress_test_output=$(aws ec2 authorize-security-group-ingress --region "$AWS_REGION" --group-id "sg-test" --protocol tcp --port 2049 --source-group "sg-test" --dry-run 2>&1 || true)
-            if [[ "$sg_ingress_test_output" == *"DryRunOperation"* ]]; then
-                log_info "EC2 security group ingress permission available"
-            elif [[ "$sg_ingress_test_output" == *"AccessDenied"* ]] || [[ "$sg_ingress_test_output" == *"not authorized"* ]]; then
-                missing_permissions+=("ec2:AuthorizeSecurityGroupIngress")
+            
+            # Test security group ingress rule permission
+            if ! aws ec2 authorize-security-group-ingress --region "$AWS_REGION" --group-id "sg-test" --protocol tcp --port 2049 --source-group "sg-test" --dry-run >/dev/null 2>&1; then
+                local sg_ingress_test_output
+                sg_ingress_test_output=$(aws ec2 authorize-security-group-ingress --region "$AWS_REGION" --group-id "sg-test" --protocol tcp --port 2049 --source-group "sg-test" --dry-run 2>&1 || true)
+                if [[ "$sg_ingress_test_output" == *"DryRunOperation"* ]]; then
+                    log_info "EC2 security group ingress permission available"
+                elif [[ "$sg_ingress_test_output" == *"AccessDenied"* ]] || [[ "$sg_ingress_test_output" == *"not authorized"* ]]; then
+                    missing_permissions+=("ec2:AuthorizeSecurityGroupIngress")
+                fi
             fi
+        else
+            log_info "Using existing security group, skipping creation permission checks"
         fi
     fi
     
@@ -458,7 +479,13 @@ check_aws_permissions() {
         log_error ""
         log_error "Please ensure your AWS credentials have the following permissions:"
         log_error "  EFS: CreateFileSystem, DescribeFileSystems, CreateMountTarget, DescribeMountTargets"
-        log_error "  EC2: DescribeInstances, DescribeSecurityGroups, DescribeSubnets, DescribeVpcs, CreateSecurityGroup, AuthorizeSecurityGroupIngress"
+        log_error "  EC2: DescribeInstances, DescribeSecurityGroups, DescribeSubnets"
+        if [[ "$SKIP_VPC_VALIDATION" != "true" ]]; then
+            log_error "       DescribeVpcs (or use --skip-vpc-validation)"
+        fi
+        if [[ -z "$EXISTING_SECURITY_GROUP" ]]; then
+            log_error "       CreateSecurityGroup, AuthorizeSecurityGroupIngress (or use --existing-sg)"
+        fi
         log_error "  Optional: CreateTags (for both EFS and EC2 resources)"
         exit 1
     fi
@@ -513,6 +540,42 @@ get_efs_security_group() {
     local vpc_id="$1"
     
     log_info "Setting up security group for EFS..."
+    
+    # Use existing security group if provided
+    if [[ -n "$EXISTING_SECURITY_GROUP" ]]; then
+        log_info "Using specified security group: $EXISTING_SECURITY_GROUP"
+        
+        # Validate the security group exists
+        local sg_check
+        sg_check=$(aws ec2 describe-security-groups \
+            --region "$AWS_REGION" \
+            --group-ids "$EXISTING_SECURITY_GROUP" \
+            --query 'SecurityGroups[0].GroupId' \
+            --output text 2>/dev/null || echo "")
+        
+        if [[ -z "$sg_check" || "$sg_check" == "None" ]]; then
+            log_error "Specified security group $EXISTING_SECURITY_GROUP does not exist"
+            exit 1
+        fi
+        
+        # Check if the security group allows NFS traffic (port 2049)
+        local nfs_rule_check
+        nfs_rule_check=$(aws ec2 describe-security-groups \
+            --region "$AWS_REGION" \
+            --group-ids "$EXISTING_SECURITY_GROUP" \
+            --query 'SecurityGroups[0].IpPermissions[?FromPort==`2049` && ToPort==`2049`]' \
+            --output text 2>/dev/null || echo "")
+        
+        if [[ -z "$nfs_rule_check" ]]; then
+            log_warning "Security group $EXISTING_SECURITY_GROUP does not appear to have NFS (port 2049) rules"
+            log_warning "Please ensure it allows inbound NFS traffic for EFS to work properly"
+        else
+            log_info "Security group has NFS rules configured"
+        fi
+        
+        echo "$EXISTING_SECURITY_GROUP"
+        return
+    fi
     
     # Check if EFS security group already exists
     local sg_id
