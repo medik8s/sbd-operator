@@ -17,17 +17,21 @@ limitations under the License.
 package e2e
 
 import (
-	"encoding/json"
 	"fmt"
 	"math/rand"
-	"os/exec"
 	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 
-	"github.com/medik8s/sbd-operator/test/utils"
+	medik8sv1alpha1 "github.com/medik8s/sbd-operator/api/v1alpha1"
 )
 
 // ClusterInfo holds information about the test cluster
@@ -69,8 +73,12 @@ var _ = Describe("SBD Operator E2E Tests", func() {
 
 		// Create test namespace
 		By(fmt.Sprintf("Creating test namespace %s", testNS))
-		cmd := exec.Command("kubectl", "create", "namespace", testNS)
-		_, err := utils.Run(cmd)
+		namespace := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: testNS,
+			},
+		}
+		err := k8sClient.Create(ctx, namespace)
 		Expect(err).NotTo(HaveOccurred())
 
 		// Discover cluster topology
@@ -83,8 +91,16 @@ var _ = Describe("SBD Operator E2E Tests", func() {
 	AfterEach(func() {
 		// Clean up test namespace and any test artifacts
 		By(fmt.Sprintf("Cleaning up test namespace %s", testNS))
-		cmd := exec.Command("kubectl", "delete", "namespace", testNS, "--ignore-not-found=true")
-		_, _ = utils.Run(cmd)
+		namespace := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: testNS,
+			},
+		}
+		err := k8sClient.Delete(ctx, namespace)
+		if err != nil {
+			// Ignore not found errors
+			_, _ = fmt.Fprintf(GinkgoWriter, "Warning: failed to delete namespace %s: %v\n", testNS, err)
+		}
 
 		// Clean up any test pods or disruptions
 		cleanupTestArtifacts()
@@ -139,33 +155,46 @@ var _ = Describe("SBD Operator E2E Tests", func() {
 func discoverClusterTopology() {
 	By("Discovering cluster topology")
 
-	// Get all nodes in JSON format
-	cmd := exec.Command("kubectl", "get", "nodes", "-o", "json")
-	output, err := utils.Run(cmd)
-	Expect(err).NotTo(HaveOccurred())
-
-	var nodeList struct {
-		Items []NodeInfo `json:"items"`
-	}
-
-	err = json.Unmarshal([]byte(output), &nodeList)
+	// Get all nodes using Kubernetes API
+	nodes := &corev1.NodeList{}
+	err := k8sClient.List(ctx, nodes)
 	Expect(err).NotTo(HaveOccurred())
 
 	clusterInfo = ClusterInfo{
-		TotalNodes:   len(nodeList.Items),
+		TotalNodes:   len(nodes.Items),
 		WorkerNodes:  []NodeInfo{},
 		ControlNodes: []NodeInfo{},
 		NodeNames:    []string{},
 		ZoneInfo:     make(map[string][]string),
 	}
 
-	// Categorize nodes
-	for _, node := range nodeList.Items {
-		clusterInfo.NodeNames = append(clusterInfo.NodeNames, node.Metadata.Name)
+	// Convert and categorize nodes
+	for _, k8sNode := range nodes.Items {
+		// Convert k8s Node to NodeInfo
+		nodeInfo := NodeInfo{
+			Metadata: struct {
+				Name   string            `json:"name"`
+				Labels map[string]string `json:"labels"`
+			}{
+				Name:   k8sNode.Name,
+				Labels: k8sNode.Labels,
+			},
+		}
+
+		// Convert conditions
+		for _, condition := range k8sNode.Status.Conditions {
+			nodeInfo.Status.Conditions = append(nodeInfo.Status.Conditions, NodeCondition{
+				Type:   string(condition.Type),
+				Status: string(condition.Status),
+				Reason: condition.Reason,
+			})
+		}
+
+		clusterInfo.NodeNames = append(clusterInfo.NodeNames, nodeInfo.Metadata.Name)
 
 		// Check if it's a control plane node
 		isControlPlane := false
-		for label := range node.Metadata.Labels {
+		for label := range nodeInfo.Metadata.Labels {
 			if strings.Contains(label, "control-plane") || strings.Contains(label, "master") {
 				isControlPlane = true
 				break
@@ -173,14 +202,14 @@ func discoverClusterTopology() {
 		}
 
 		if isControlPlane {
-			clusterInfo.ControlNodes = append(clusterInfo.ControlNodes, node)
+			clusterInfo.ControlNodes = append(clusterInfo.ControlNodes, nodeInfo)
 		} else {
-			clusterInfo.WorkerNodes = append(clusterInfo.WorkerNodes, node)
+			clusterInfo.WorkerNodes = append(clusterInfo.WorkerNodes, nodeInfo)
 		}
 
 		// Track zone information
-		if zone, exists := node.Metadata.Labels["topology.kubernetes.io/zone"]; exists {
-			clusterInfo.ZoneInfo[zone] = append(clusterInfo.ZoneInfo[zone], node.Metadata.Name)
+		if zone, exists := nodeInfo.Metadata.Labels["topology.kubernetes.io/zone"]; exists {
+			clusterInfo.ZoneInfo[zone] = append(clusterInfo.ZoneInfo[zone], nodeInfo.Metadata.Name)
 		}
 	}
 
@@ -195,60 +224,92 @@ func discoverClusterTopology() {
 
 func testBasicSBDConfiguration(cluster ClusterInfo) {
 	By("Creating SBDConfig with proper agent deployment")
-	sbdConfigYAML := fmt.Sprintf(`apiVersion: medik8s.medik8s.io/v1alpha1
-kind: SBDConfig
-metadata:
-  name: test-sbd-config
-  namespace: %s
-spec:
-  sbdWatchdogPath: "/dev/watchdog"
-  image: "quay.io/medik8s/sbd-agent:test-amd64"
-  staleNodeTimeout: "30s"
-`, testNS)
+	sbdConfig := &medik8sv1alpha1.SBDConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-sbd-config",
+			Namespace: testNS,
+		},
+		Spec: medik8sv1alpha1.SBDConfigSpec{
+			SbdWatchdogPath:  "/dev/watchdog",
+			StaleNodeTimeout: &metav1.Duration{Duration: 90 * time.Second},
+		},
+	}
 
-	// Apply the SBDConfig
-	cmd := exec.Command("kubectl", "apply", "-f", "-")
-	cmd.Stdin = strings.NewReader(sbdConfigYAML)
-	_, err := utils.Run(cmd)
+	// Create the SBDConfig
+	err := k8sClient.Create(ctx, sbdConfig)
 	Expect(err).NotTo(HaveOccurred())
 
 	By("Verifying SBDConfig was created and processed")
 	Eventually(func() bool {
-		cmd := exec.Command("kubectl", "get", "sbdconfig", "test-sbd-config", "-n", testNS)
-		_, err := utils.Run(cmd)
+		retrievedConfig := &medik8sv1alpha1.SBDConfig{}
+		err := k8sClient.Get(ctx, types.NamespacedName{
+			Name:      "test-sbd-config",
+			Namespace: testNS,
+		}, retrievedConfig)
 		return err == nil
 	}, time.Minute*2, time.Second*10).Should(BeTrue())
 
+	By("Displaying SBDConfig in YAML format")
+	Eventually(func() string {
+		retrievedConfig := &medik8sv1alpha1.SBDConfig{}
+		err := k8sClient.Get(ctx, types.NamespacedName{
+			Name:      "test-sbd-config",
+			Namespace: testNS,
+		}, retrievedConfig)
+		if err != nil {
+			return ""
+		}
+
+		// Convert to YAML
+		yamlData, err := yaml.Marshal(retrievedConfig)
+		if err != nil {
+			return ""
+		}
+		return string(yamlData)
+	}, time.Minute*2, time.Second*10).Should(Not(BeEmpty()))
+
+	// Get and display the final YAML
+	retrievedConfig := &medik8sv1alpha1.SBDConfig{}
+	err = k8sClient.Get(ctx, types.NamespacedName{
+		Name:      "test-sbd-config",
+		Namespace: testNS,
+	}, retrievedConfig)
+	Expect(err).NotTo(HaveOccurred())
+
+	yamlData, err := yaml.Marshal(retrievedConfig)
+	Expect(err).NotTo(HaveOccurred())
+
+	GinkgoWriter.Printf("SBDConfig YAML:\n%s\n", string(yamlData))
+
 	By("Waiting for SBD agent DaemonSet to be created")
 	Eventually(func() bool {
-		cmd := exec.Command("kubectl", "get", "daemonset", "-n", testNS, "-l", "app=sbd-agent")
-		output, err := utils.Run(cmd)
-		return err == nil && !strings.Contains(output, "No resources found")
+		daemonSets := &appsv1.DaemonSetList{}
+		err := k8sClient.List(ctx, daemonSets, client.InNamespace(testNS), client.MatchingLabels{"app": "sbd-agent"})
+
+		By("Listing all DaemonSets in the test namespace")
+		daemonSetsT := &appsv1.DaemonSetList{}
+		err = k8sClient.List(ctx, daemonSetsT, client.InNamespace(testNS))
+		if err != nil {
+			GinkgoWriter.Printf("Found %d DaemonSets in namespace %s:\n", len(daemonSetsT.Items), testNS)
+			for i, ds := range daemonSetsT.Items {
+				GinkgoWriter.Printf("  %d. Name: %s, Desired: %d, Current: %d, Ready: %d\n",
+					i+1, ds.Name, ds.Status.DesiredNumberScheduled, ds.Status.CurrentNumberScheduled, ds.Status.NumberReady)
+			}
+		}
+		return err == nil && len(daemonSets.Items) > 0
 	}, time.Minute*3, time.Second*15).Should(BeTrue())
 
 	By("Verifying SBD agents are running on worker nodes")
 	Eventually(func() bool {
-		cmd := exec.Command("kubectl", "get", "pods", "-n", testNS, "-l", "app=sbd-agent", "-o", "json")
-		output, err := utils.Run(cmd)
+		pods := &corev1.PodList{}
+		err := k8sClient.List(ctx, pods, client.InNamespace(testNS), client.MatchingLabels{"app": "sbd-agent"})
 		if err != nil {
 			return false
 		}
 
-		var podList struct {
-			Items []struct {
-				Status struct {
-					Phase string `json:"phase"`
-				} `json:"status"`
-			} `json:"items"`
-		}
-
-		if err := json.Unmarshal([]byte(output), &podList); err != nil {
-			return false
-		}
-
 		runningPods := 0
-		for _, pod := range podList.Items {
-			if pod.Status.Phase == "Running" {
+		for _, pod := range pods.Items {
+			if pod.Status.Phase == corev1.PodRunning {
 				runningPods++
 			}
 		}
@@ -307,19 +368,36 @@ spec:
   - operator: Exists`, testNS, targetNode.Metadata.Name)
 
 	By("Creating storage disruption pod")
-	cmd := exec.Command("kubectl", "apply", "-f", "-")
-	cmd.Stdin = strings.NewReader(disruptionPodYAML)
-	_, err := utils.Run(cmd)
+	var disruptionPod corev1.Pod
+	err := yaml.Unmarshal([]byte(disruptionPodYAML), &disruptionPod)
+	Expect(err).NotTo(HaveOccurred())
+	err = k8sClient.Create(ctx, &disruptionPod)
 	Expect(err).NotTo(HaveOccurred())
 
 	By("Monitoring for SBD agent response to storage issues")
 	// Monitor SBD agent logs for storage access issues
 	Eventually(func() bool {
-		cmd := exec.Command("kubectl", "logs", "-n", testNS, "-l", "app=sbd-agent", "--tail=50")
-		output, err := utils.Run(cmd)
+		pods := &corev1.PodList{}
+		err := k8sClient.List(ctx, pods, client.InNamespace(testNS), client.MatchingLabels{"app": "sbd-agent"})
+		if err != nil || len(pods.Items) == 0 {
+			return false
+		}
+
+		// Get logs from the first pod using clientset (as controller-runtime doesn't support logs)
+		podLogOptions := &corev1.PodLogOptions{
+			TailLines: func(i int64) *int64 { return &i }(50),
+		}
+		req := k8sClientset.CoreV1().Pods(testNS).GetLogs(pods.Items[0].Name, podLogOptions)
+		logs, err := req.Stream(ctx)
 		if err != nil {
 			return false
 		}
+		defer logs.Close()
+
+		// Read logs (simplified check)
+		buf := make([]byte, 1024)
+		n, _ := logs.Read(buf)
+		output := string(buf[:n])
 
 		// Look for storage-related warnings or errors
 		return strings.Contains(output, "storage") ||
@@ -330,14 +408,22 @@ spec:
 	By("Verifying cluster stability after storage disruption")
 	// Ensure the cluster remains stable and other nodes are healthy
 	Consistently(func() bool {
-		cmd := exec.Command("kubectl", "get", "nodes", "--no-headers")
-		output, err := utils.Run(cmd)
+		nodes := &corev1.NodeList{}
+		err := k8sClient.List(ctx, nodes)
 		if err != nil {
 			return false
 		}
 
 		// Count Ready nodes - should remain stable
-		readyNodes := strings.Count(output, " Ready ")
+		readyNodes := 0
+		for _, node := range nodes.Items {
+			for _, condition := range node.Status.Conditions {
+				if condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue {
+					readyNodes++
+					break
+				}
+			}
+		}
 		return readyNodes >= len(cluster.WorkerNodes)-1 // Allow for one potentially affected node
 	}, time.Minute*2, time.Second*30).Should(BeTrue())
 
@@ -398,28 +484,24 @@ spec:
   - operator: Exists`, testNS, targetNode.Metadata.Name)
 
 	By("Creating network disruption pod")
-	cmd := exec.Command("kubectl", "apply", "-f", "-")
-	cmd.Stdin = strings.NewReader(networkDisruptorYAML)
-	_, err := utils.Run(cmd)
+	var networkPod corev1.Pod
+	err := yaml.Unmarshal([]byte(networkDisruptorYAML), &networkPod)
+	Expect(err).NotTo(HaveOccurred())
+	err = k8sClient.Create(ctx, &networkPod)
 	Expect(err).NotTo(HaveOccurred())
 
 	By("Monitoring node status during communication disruption")
 	// Monitor for node becoming NotReady
 	Eventually(func() bool {
-		cmd := exec.Command("kubectl", "get", "node", targetNode.Metadata.Name, "-o", "json")
-		output, err := utils.Run(cmd)
+		node := &corev1.Node{}
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: targetNode.Metadata.Name}, node)
 		if err != nil {
-			return false
-		}
-
-		var node NodeInfo
-		if err := json.Unmarshal([]byte(output), &node); err != nil {
 			return false
 		}
 
 		// Check if node is marked as NotReady
 		for _, condition := range node.Status.Conditions {
-			if condition.Type == "Ready" && condition.Status != "True" {
+			if condition.Type == corev1.NodeReady && condition.Status != corev1.ConditionTrue {
 				GinkgoWriter.Printf("Node %s marked as NotReady due to communication failure\n", targetNode.Metadata.Name)
 				return true
 			}
@@ -430,20 +512,15 @@ spec:
 	By("Verifying node recovery after communication restoration")
 	// Wait for node to become Ready again
 	Eventually(func() bool {
-		cmd := exec.Command("kubectl", "get", "node", targetNode.Metadata.Name, "-o", "json")
-		output, err := utils.Run(cmd)
+		node := &corev1.Node{}
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: targetNode.Metadata.Name}, node)
 		if err != nil {
-			return false
-		}
-
-		var node NodeInfo
-		if err := json.Unmarshal([]byte(output), &node); err != nil {
 			return false
 		}
 
 		// Check if node is Ready again
 		for _, condition := range node.Status.Conditions {
-			if condition.Type == "Ready" && condition.Status == "True" {
+			if condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue {
 				GinkgoWriter.Printf("Node %s recovered and marked as Ready\n", targetNode.Metadata.Name)
 				return true
 			}
@@ -462,49 +539,38 @@ func testSBDAgentCrash(cluster ClusterInfo) {
 	By(fmt.Sprintf("Testing SBD agent crash and recovery on node %s", targetNode.Metadata.Name))
 
 	// Get the SBD agent pod on the target node
-	cmd := exec.Command("kubectl", "get", "pods", "-n", testNS, "-l", "app=sbd-agent",
-		"--field-selector", fmt.Sprintf("spec.nodeName=%s", targetNode.Metadata.Name), "-o", "name")
-	output, err := utils.Run(cmd)
+	pods := &corev1.PodList{}
+	err := k8sClient.List(ctx, pods,
+		client.InNamespace(testNS),
+		client.MatchingLabels{"app": "sbd-agent"},
+		client.MatchingFields{"spec.nodeName": targetNode.Metadata.Name})
 	Expect(err).NotTo(HaveOccurred())
+	Expect(len(pods.Items)).To(BeNumerically(">", 0), "Should find SBD agent pod on target node")
 
-	podName := strings.TrimSpace(strings.TrimPrefix(output, "pod/"))
-	Expect(podName).NotTo(BeEmpty(), "Should find SBD agent pod on target node")
+	podName := pods.Items[0].Name
+	targetPod := &pods.Items[0]
 
 	By(fmt.Sprintf("Crashing SBD agent pod %s", podName))
 	// Delete the pod to simulate a crash
-	cmd = exec.Command("kubectl", "delete", "pod", podName, "-n", testNS)
-	_, err = utils.Run(cmd)
+	err = k8sClient.Delete(ctx, targetPod)
 	Expect(err).NotTo(HaveOccurred())
 
 	By("Verifying SBD agent pod is recreated by DaemonSet")
 	Eventually(func() bool {
-		cmd := exec.Command("kubectl", "get", "pods", "-n", testNS, "-l", "app=sbd-agent",
-			"--field-selector", fmt.Sprintf("spec.nodeName=%s", targetNode.Metadata.Name), "-o", "json")
-		output, err := utils.Run(cmd)
+		newPods := &corev1.PodList{}
+		err := k8sClient.List(ctx, newPods,
+			client.InNamespace(testNS),
+			client.MatchingLabels{"app": "sbd-agent"},
+			client.MatchingFields{"spec.nodeName": targetNode.Metadata.Name})
 		if err != nil {
 			return false
 		}
 
-		var podList struct {
-			Items []struct {
-				Metadata struct {
-					Name string `json:"name"`
-				} `json:"metadata"`
-				Status struct {
-					Phase string `json:"phase"`
-				} `json:"status"`
-			} `json:"items"`
-		}
-
-		if err := json.Unmarshal([]byte(output), &podList); err != nil {
-			return false
-		}
-
 		// Check for a new running pod (different name)
-		for _, pod := range podList.Items {
-			if pod.Metadata.Name != podName && pod.Status.Phase == "Running" {
+		for _, pod := range newPods.Items {
+			if pod.Name != podName && pod.Status.Phase == corev1.PodRunning {
 				GinkgoWriter.Printf("New SBD agent pod %s is running on node %s\n",
-					pod.Metadata.Name, targetNode.Metadata.Name)
+					pod.Name, targetNode.Metadata.Name)
 				return true
 			}
 		}
@@ -513,20 +579,15 @@ func testSBDAgentCrash(cluster ClusterInfo) {
 
 	By("Verifying node remains healthy after agent recovery")
 	Consistently(func() bool {
-		cmd := exec.Command("kubectl", "get", "node", targetNode.Metadata.Name, "-o", "json")
-		output, err := utils.Run(cmd)
+		node := &corev1.Node{}
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: targetNode.Metadata.Name}, node)
 		if err != nil {
-			return false
-		}
-
-		var node NodeInfo
-		if err := json.Unmarshal([]byte(output), &node); err != nil {
 			return false
 		}
 
 		// Verify node remains Ready
 		for _, condition := range node.Status.Conditions {
-			if condition.Type == "Ready" && condition.Status == "True" {
+			if condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue {
 				return true
 			}
 		}
@@ -577,21 +638,30 @@ spec:
   restartPolicy: Never`, testNS)
 
 	By("Creating resource constraint pod")
-	cmd := exec.Command("kubectl", "apply", "-f", "-")
-	cmd.Stdin = strings.NewReader(resourceConstraintYAML)
-	_, err := utils.Run(cmd)
+	var resourcePod corev1.Pod
+	err := yaml.Unmarshal([]byte(resourceConstraintYAML), &resourcePod)
+	Expect(err).NotTo(HaveOccurred())
+	err = k8sClient.Create(ctx, &resourcePod)
 	Expect(err).NotTo(HaveOccurred())
 
 	By("Verifying all nodes remain healthy during non-critical failure")
 	Consistently(func() bool {
-		cmd := exec.Command("kubectl", "get", "nodes", "--no-headers")
-		output, err := utils.Run(cmd)
+		nodes := &corev1.NodeList{}
+		err := k8sClient.List(ctx, nodes)
 		if err != nil {
 			return false
 		}
 
 		// All nodes should remain Ready
-		readyNodes := strings.Count(output, " Ready ")
+		readyNodes := 0
+		for _, node := range nodes.Items {
+			for _, condition := range node.Status.Conditions {
+				if condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue {
+					readyNodes++
+					break
+				}
+			}
+		}
 		expectedNodes := len(cluster.WorkerNodes) + len(cluster.ControlNodes)
 
 		if readyNodes == expectedNodes {
@@ -604,27 +674,15 @@ spec:
 
 	By("Verifying SBD agents continue running normally")
 	Consistently(func() bool {
-		cmd := exec.Command("kubectl", "get", "pods", "-n", testNS, "-l", "app=sbd-agent", "-o", "json")
-		output, err := utils.Run(cmd)
+		pods := &corev1.PodList{}
+		err := k8sClient.List(ctx, pods, client.InNamespace(testNS), client.MatchingLabels{"app": "sbd-agent"})
 		if err != nil {
 			return false
 		}
 
-		var podList struct {
-			Items []struct {
-				Status struct {
-					Phase string `json:"phase"`
-				} `json:"status"`
-			} `json:"items"`
-		}
-
-		if err := json.Unmarshal([]byte(output), &podList); err != nil {
-			return false
-		}
-
 		runningPods := 0
-		for _, pod := range podList.Items {
-			if pod.Status.Phase == "Running" {
+		for _, pod := range pods.Items {
+			if pod.Status.Phase == corev1.PodRunning {
 				runningPods++
 			}
 		}
@@ -641,30 +699,15 @@ func testLargeClusterCoordination(cluster ClusterInfo) {
 
 	By("Verifying SBD agents coordinate across large cluster")
 	Eventually(func() bool {
-		cmd := exec.Command("kubectl", "get", "pods", "-n", testNS, "-l", "app=sbd-agent", "-o", "json")
-		output, err := utils.Run(cmd)
+		pods := &corev1.PodList{}
+		err := k8sClient.List(ctx, pods, client.InNamespace(testNS), client.MatchingLabels{"app": "sbd-agent"})
 		if err != nil {
 			return false
 		}
 
-		var podList struct {
-			Items []struct {
-				Spec struct {
-					NodeName string `json:"nodeName"`
-				} `json:"spec"`
-				Status struct {
-					Phase string `json:"phase"`
-				} `json:"status"`
-			} `json:"items"`
-		}
-
-		if err := json.Unmarshal([]byte(output), &podList); err != nil {
-			return false
-		}
-
 		runningAgents := make(map[string]bool)
-		for _, pod := range podList.Items {
-			if pod.Status.Phase == "Running" {
+		for _, pod := range pods.Items {
+			if pod.Status.Phase == corev1.PodRunning {
 				runningAgents[pod.Spec.NodeName] = true
 			}
 		}
@@ -687,8 +730,13 @@ func cleanupTestArtifacts() {
 	disruptionPods := []string{"storage-disruptor", "network-disruptor", "resource-consumer"}
 
 	for _, podName := range disruptionPods {
-		cmd := exec.Command("kubectl", "delete", "pod", podName, "-n", testNS, "--ignore-not-found=true")
-		_, _ = utils.Run(cmd)
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      podName,
+				Namespace: testNS,
+			},
+		}
+		_ = k8sClient.Delete(ctx, pod)
 	}
 
 	// Wait a moment for cleanup

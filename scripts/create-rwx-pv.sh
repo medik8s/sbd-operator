@@ -6,6 +6,9 @@
 
 set -e
 
+# Disable AWS CLI pager to prevent hanging
+export AWS_PAGER=""
+
 # Script configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -21,9 +24,9 @@ NC='\033[0m' # No Color
 EFS_NAME="sbd-operator-shared-storage"
 PV_NAME="sbd-shared-pv"
 PVC_NAME="sbd-shared-pvc"
-NAMESPACE="sbd-system"
+NAMESPACE="sbd-operator-system"
 STORAGE_SIZE="10Gi"
-AWS_REGION="${AWS_REGION:-us-east-1}"
+AWS_REGION="${AWS_REGION:-}"
 CLUSTER_NAME=""
 PERFORMANCE_MODE="generalPurpose"  # generalPurpose or maxIO
 THROUGHPUT_MODE="provisioned"      # provisioned or burstingThroughput
@@ -31,22 +34,23 @@ PROVISIONED_THROUGHPUT="100"       # MiB/s (only for provisioned mode)
 KUBECTL="${KUBECTL:-kubectl}"
 CLEANUP="false"
 DRY_RUN="false"
+SKIP_PERMISSION_CHECK="false"
 
 # Functions
 log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
+    echo -e "${BLUE}[INFO]${NC} $1" >&2
 }
 
 log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
+    echo -e "${GREEN}[SUCCESS]${NC} $1" >&2
 }
 
 log_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
+    echo -e "${YELLOW}[WARNING]${NC} $1" >&2
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+    echo -e "${RED}[ERROR]${NC} $1" >&2
 }
 
 show_usage() {
@@ -60,7 +64,7 @@ OPTIONS:
     -p, --pv-name NAME        Persistent Volume name (default: sbd-shared-pv)
     -c, --pvc-name NAME       Persistent Volume Claim name (default: sbd-shared-pvc)
     -s, --size SIZE           Storage size (default: 10Gi)
-    -r, --region REGION       AWS region (default: us-east-1)
+    -r, --region REGION       AWS region (auto-detected if not provided)
     -k, --cluster-name NAME   OpenShift cluster name (auto-detected if not provided)
     -N, --namespace NS        Kubernetes namespace (default: sbd-system)
     --performance-mode MODE   EFS performance mode: generalPurpose|maxIO (default: generalPurpose)
@@ -68,6 +72,7 @@ OPTIONS:
     --provisioned-tp MBPS     Provisioned throughput in MiB/s (default: 100, only for provisioned mode)
     --cleanup                 Delete existing EFS and Kubernetes resources
     --dry-run                 Show what would be created without actually creating
+    --skip-permission-check   Skip AWS permission validation (use with caution)
     -h, --help                Show this help message
 
 EXAMPLES:
@@ -90,13 +95,24 @@ PREREQUISITES:
     - Cluster must have worker nodes in multiple AZs for HA
 
 AWS PERMISSIONS REQUIRED:
-    - efs:CreateFileSystem
-    - efs:CreateMountTarget
-    - efs:DescribeFileSystems
-    - efs:DescribeMountTargets
+    Required permissions:
+    - elasticfilesystem:CreateFileSystem
+    - elasticfilesystem:CreateMountTarget  
+    - elasticfilesystem:DescribeFileSystems
+    - elasticfilesystem:DescribeMountTargets
+    - ec2:DescribeInstances
     - ec2:DescribeSubnets
     - ec2:DescribeSecurityGroups
     - ec2:DescribeVpcs
+    - ec2:CreateSecurityGroup
+    - ec2:AuthorizeSecurityGroupIngress
+    
+    Optional permissions (for tagging):
+    - elasticfilesystem:CreateTags
+    - ec2:CreateTags
+    
+    The script will automatically check these permissions before proceeding.
+    Use --skip-permission-check to bypass this validation.
 
 EOF
 }
@@ -150,6 +166,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dry-run)
             DRY_RUN="true"
+            shift
+            ;;
+        --skip-permission-check)
+            SKIP_PERMISSION_CHECK="true"
             shift
             ;;
         -h|--help)
@@ -231,6 +251,229 @@ detect_cluster_name() {
     fi
 }
 
+# Function to auto-detect AWS region from cluster configuration
+detect_aws_region() {
+    if [[ -n "$AWS_REGION" ]]; then
+        log_info "Using specified AWS region: $AWS_REGION"
+        return
+    fi
+    
+    log_info "Auto-detecting AWS region from cluster configuration..."
+    
+    local detected_region=""
+    
+    # Try to detect region from kubectl context and cluster configuration
+    if command -v $KUBECTL >/dev/null 2>&1; then
+        # Get current context
+        local current_context
+        current_context=$($KUBECTL config current-context 2>/dev/null || echo "")
+        
+        # Get cluster endpoint
+        local cluster_endpoint
+        cluster_endpoint=$($KUBECTL config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo "")
+        
+        # Get cluster name from context
+         local cluster_name
+         cluster_name=$($KUBECTL config view --minify -o jsonpath='{.clusters[0].name}' 2>/dev/null || echo "")
+         
+         # Get node information to extract region from AWS node names
+         local node_names
+         node_names=$($KUBECTL get nodes -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+         
+         log_info "Cluster endpoint: $cluster_endpoint"
+         log_info "Cluster context: $current_context"
+         log_info "Cluster name: $cluster_name"
+         log_info "Node names: $node_names"
+        
+                 # Try various patterns to extract region
+         
+         # 1. Extract region from AWS node names (e.g., ip-10-0-1-1.us-east-1.compute.internal)
+         if [[ -n "$node_names" ]]; then
+             for node in $node_names; do
+                 if [[ "$node" =~ \.([^.]*-(east|west|north|south|southeast|northeast|central)-[0-9]+)\.compute\.internal ]]; then
+                     detected_region="${BASH_REMATCH[1]}"
+                     log_info "Detected region from node name pattern: $detected_region"
+                     break
+                 fi
+             done
+         fi
+         
+         # OpenShift on AWS pattern: api.<cluster>.<region>.domain
+         if [[ -z "$detected_region" && "$cluster_endpoint" =~ https://api\.[^.]+\.([^.]+)\..*\.io ]]; then
+             local potential_region="${BASH_REMATCH[1]}"
+             # Validate if it looks like an AWS region (e.g., us-east-1, eu-west-1, ap-southeast-2)
+             if [[ "$potential_region" =~ ^(us|eu|ap|ca|sa|af|me)-(east|west|north|south|southeast|northeast|central)-[0-9]+$ ]]; then
+                 detected_region="$potential_region"
+                 log_info "Detected region from OpenShift endpoint pattern: $detected_region"
+             fi
+         fi
+        
+        # If we found a region, validate and set it
+        if [[ -n "$detected_region" ]]; then
+            # Quick validation by trying to list regions (if AWS CLI works)
+            if aws ec2 describe-regions --region "$detected_region" --region-names "$detected_region" >/dev/null 2>&1; then
+                log_success "Successfully validated region: $detected_region"
+                AWS_REGION="$detected_region"
+                return
+            else
+                log_warning "Detected region '$detected_region' but could not validate with AWS CLI"
+                # Still use it as it might work
+                AWS_REGION="$detected_region"
+                return
+            fi
+        fi
+    fi
+    
+    # Fallback: try AWS CLI default region
+    detected_region=$(aws configure get region 2>/dev/null || echo "")
+    if [[ -n "$detected_region" ]]; then
+        log_info "Using AWS CLI default region: $detected_region"
+        AWS_REGION="$detected_region"
+        return
+    fi
+    
+    # Fallback: try environment variable
+    if [[ -n "$AWS_DEFAULT_REGION" ]]; then
+        log_info "Using AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION"
+        AWS_REGION="$AWS_DEFAULT_REGION"
+        return
+    fi
+    
+    # If all fails, use default
+    log_warning "Could not auto-detect AWS region from cluster configuration"
+    log_warning "Using default region: us-east-1"
+    log_warning "You can specify a region with --region or set AWS_REGION environment variable"
+    AWS_REGION="us-east-1"
+}
+
+# Function to check AWS permissions
+check_aws_permissions() {
+    log_info "Checking AWS permissions..."
+    
+    local missing_permissions=()
+    local warnings=()
+    
+    # Test EC2 permissions (required for VPC/subnet discovery and security groups)
+    if ! aws ec2 describe-instances --region "$AWS_REGION" --max-items 1 >/dev/null 2>&1; then
+        missing_permissions+=("ec2:DescribeInstances")
+    fi
+    
+    if ! aws ec2 describe-security-groups --region "$AWS_REGION" --max-items 1 >/dev/null 2>&1; then
+        missing_permissions+=("ec2:DescribeSecurityGroups")
+    fi
+    
+    if ! aws ec2 describe-subnets --region "$AWS_REGION" --max-items 1 >/dev/null 2>&1; then
+        missing_permissions+=("ec2:DescribeSubnets")
+    fi
+    
+    if ! aws ec2 describe-vpcs --region "$AWS_REGION" --max-items 1 >/dev/null 2>&1; then
+        missing_permissions+=("ec2:DescribeVpcs")
+    fi
+    
+    # Test EFS permissions (core functionality)
+    if ! aws efs describe-file-systems --region "$AWS_REGION" --max-items 1 >/dev/null 2>&1; then
+        missing_permissions+=("elasticfilesystem:DescribeFileSystems")
+    fi
+    
+    if ! aws efs describe-mount-targets --region "$AWS_REGION" --max-items 1 >/dev/null 2>&1; then
+        missing_permissions+=("elasticfilesystem:DescribeMountTargets")
+    fi
+    
+    # Test EFS creation permissions (will be tested with dry-run if available)
+    if [[ "$DRY_RUN" != "true" ]]; then
+        # Test EFS creation permission with a dry-run call
+        if ! aws efs create-file-system --region "$AWS_REGION" --performance-mode generalPurpose --dry-run >/dev/null 2>&1; then
+            # Check if it's a dry-run not supported error vs permission error
+            local create_test_output
+            create_test_output=$(aws efs create-file-system --region "$AWS_REGION" --performance-mode generalPurpose --dry-run 2>&1 || true)
+            if [[ "$create_test_output" == *"DryRunOperation"* ]]; then
+                # Dry-run not supported, but permission seems OK
+                log_info "EFS create permission appears to be available (dry-run not supported by EFS)"
+            elif [[ "$create_test_output" == *"AccessDenied"* ]] || [[ "$create_test_output" == *"not authorized"* ]]; then
+                missing_permissions+=("elasticfilesystem:CreateFileSystem")
+            fi
+        fi
+        
+        # Test mount target creation permission
+        if ! aws efs create-mount-target --region "$AWS_REGION" --file-system-id "fs-test" --subnet-id "subnet-test" --dry-run >/dev/null 2>&1; then
+            local mount_test_output
+            mount_test_output=$(aws efs create-mount-target --region "$AWS_REGION" --file-system-id "fs-test" --subnet-id "subnet-test" --dry-run 2>&1 || true)
+            if [[ "$mount_test_output" == *"DryRunOperation"* ]]; then
+                log_info "EFS mount target creation permission appears to be available"
+            elif [[ "$mount_test_output" == *"AccessDenied"* ]] || [[ "$mount_test_output" == *"not authorized"* ]]; then
+                missing_permissions+=("elasticfilesystem:CreateMountTarget")
+            fi
+        fi
+        
+        # Test security group creation permission
+        if ! aws ec2 create-security-group --region "$AWS_REGION" --group-name "test-sg" --description "test" --vpc-id "vpc-test" --dry-run >/dev/null 2>&1; then
+            local sg_test_output
+            sg_test_output=$(aws ec2 create-security-group --region "$AWS_REGION" --group-name "test-sg" --description "test" --vpc-id "vpc-test" --dry-run 2>&1 || true)
+            if [[ "$sg_test_output" == *"DryRunOperation"* ]]; then
+                log_info "EC2 security group creation permission available"
+            elif [[ "$sg_test_output" == *"AccessDenied"* ]] || [[ "$sg_test_output" == *"not authorized"* ]]; then
+                missing_permissions+=("ec2:CreateSecurityGroup")
+            fi
+        fi
+        
+        # Test security group ingress rule permission
+        if ! aws ec2 authorize-security-group-ingress --region "$AWS_REGION" --group-id "sg-test" --protocol tcp --port 2049 --source-group "sg-test" --dry-run >/dev/null 2>&1; then
+            local sg_ingress_test_output
+            sg_ingress_test_output=$(aws ec2 authorize-security-group-ingress --region "$AWS_REGION" --group-id "sg-test" --protocol tcp --port 2049 --source-group "sg-test" --dry-run 2>&1 || true)
+            if [[ "$sg_ingress_test_output" == *"DryRunOperation"* ]]; then
+                log_info "EC2 security group ingress permission available"
+            elif [[ "$sg_ingress_test_output" == *"AccessDenied"* ]] || [[ "$sg_ingress_test_output" == *"not authorized"* ]]; then
+                missing_permissions+=("ec2:AuthorizeSecurityGroupIngress")
+            fi
+        fi
+    fi
+    
+    # Test optional permissions (will generate warnings if missing)
+    if ! aws efs create-tags --region "$AWS_REGION" --file-system-id "fs-test" --tags "Key=test,Value=test" --dry-run >/dev/null 2>&1; then
+        local tag_test_output
+        tag_test_output=$(aws efs create-tags --region "$AWS_REGION" --file-system-id "fs-test" --tags "Key=test,Value=test" --dry-run 2>&1 || true)
+        if [[ "$tag_test_output" == *"DryRunOperation"* ]]; then
+            log_info "EFS tagging permission available"
+        elif [[ "$tag_test_output" == *"AccessDenied"* ]] || [[ "$tag_test_output" == *"not authorized"* ]]; then
+            warnings+=("elasticfilesystem:CreateTags (EFS resources will be created without tags)")
+        fi
+    fi
+    
+    if ! aws ec2 create-tags --region "$AWS_REGION" --resources "sg-test" --tags "Key=test,Value=test" --dry-run >/dev/null 2>&1; then
+        local ec2_tag_test_output
+        ec2_tag_test_output=$(aws ec2 create-tags --region "$AWS_REGION" --resources "sg-test" --tags "Key=test,Value=test" --dry-run 2>&1 || true)
+        if [[ "$ec2_tag_test_output" == *"DryRunOperation"* ]]; then
+            log_info "EC2 tagging permission available"
+        elif [[ "$ec2_tag_test_output" == *"AccessDenied"* ]] || [[ "$ec2_tag_test_output" == *"not authorized"* ]]; then
+            warnings+=("ec2:CreateTags (security groups will be created without tags)")
+        fi
+    fi
+    
+    # Report results
+    if [[ ${#missing_permissions[@]} -gt 0 ]]; then
+        log_error "Missing required AWS permissions:"
+        for perm in "${missing_permissions[@]}"; do
+            log_error "  - $perm"
+        done
+        log_error ""
+        log_error "Please ensure your AWS credentials have the following permissions:"
+        log_error "  EFS: CreateFileSystem, DescribeFileSystems, CreateMountTarget, DescribeMountTargets"
+        log_error "  EC2: DescribeInstances, DescribeSecurityGroups, DescribeSubnets, DescribeVpcs, CreateSecurityGroup, AuthorizeSecurityGroupIngress"
+        log_error "  Optional: CreateTags (for both EFS and EC2 resources)"
+        exit 1
+    fi
+    
+    if [[ ${#warnings[@]} -gt 0 ]]; then
+        log_warning "Some optional permissions are missing:"
+        for warning in "${warnings[@]}"; do
+            log_warning "  - $warning"
+        done
+        log_warning "The script will continue but some features may be limited"
+    fi
+    
+    log_success "AWS permissions check completed successfully"
+}
+
 # Function to get cluster VPC and subnets
 get_cluster_network_info() {
     log_info "Getting cluster network information..."
@@ -239,7 +482,7 @@ get_cluster_network_info() {
     local vpc_id
     vpc_id=$(aws ec2 describe-instances \
         --region "$AWS_REGION" \
-        --filters "Name=tag:Name,Values=${CLUSTER_NAME}-worker-*" "Name=instance-state-name,Values=running" \
+        --filters "Name=tag:Name,Values=${CLUSTER_NAME}-*" "Name=instance-state-name,Values=running" \
         --query 'Reservations[0].Instances[0].VpcId' \
         --output text 2>/dev/null || echo "")
     
@@ -260,7 +503,7 @@ get_worker_subnets() {
     # Get subnets from worker nodes
     aws ec2 describe-instances \
         --region "$AWS_REGION" \
-        --filters "Name=tag:Name,Values=${CLUSTER_NAME}-worker-*" "Name=instance-state-name,Values=running" \
+        --filters "Name=tag:Name,Values=${CLUSTER_NAME}-*-worker-*" "Name=instance-state-name,Values=running" \
         --query 'Reservations[].Instances[].SubnetId' \
         --output text | tr '\t' '\n' | sort -u
 }
@@ -307,14 +550,14 @@ get_efs_security_group() {
         --group-id "$sg_id" \
         --protocol tcp \
         --port 2049 \
-        --source-group "$sg_id"
+        --source-group "$sg_id" >/dev/null
     
     # Tag the security group
     aws ec2 create-tags \
         --region "$AWS_REGION" \
         --resources "$sg_id" \
         --tags "Key=Name,Value=${CLUSTER_NAME}-efs-sg" \
-               "Key=kubernetes.io/cluster/${CLUSTER_NAME},Value=owned"
+               "Key=kubernetes.io/cluster/${CLUSTER_NAME},Value=owned" >/dev/null
     
     log_success "Created EFS security group: $sg_id"
     echo "$sg_id"
@@ -348,7 +591,6 @@ create_efs_filesystem() {
         --region "$AWS_REGION"
         --performance-mode "$PERFORMANCE_MODE"
         --throughput-mode "$THROUGHPUT_MODE"
-        --tags "Key=Name,Value=$EFS_NAME,Key=kubernetes.io/cluster/${CLUSTER_NAME},Value=owned"
     )
     
     if [[ "$THROUGHPUT_MODE" == "provisioned" ]]; then
@@ -356,6 +598,13 @@ create_efs_filesystem() {
     fi
     
     efs_id=$(aws efs create-file-system "${create_args[@]}" --query 'FileSystemId' --output text)
+    
+    # Add tags separately to handle permission issues
+    aws efs create-tags \
+        --region "$AWS_REGION" \
+        --file-system-id "$efs_id" \
+        --tags "Key=Name,Value=$EFS_NAME" "Key=kubernetes.io/cluster/${CLUSTER_NAME},Value=owned" >/dev/null 2>&1 || \
+        log_warning "Could not add tags to EFS filesystem (permission issue), but filesystem was created successfully"
     
     # Wait for EFS to be available
     log_info "Waiting for EFS filesystem to be available..."
@@ -602,7 +851,6 @@ show_summary() {
 # Main execution
 main() {
     log_info "Starting RWX PV creation for OpenShift on AWS"
-    
     # Check tools
     check_tools
     
@@ -618,6 +866,16 @@ main() {
     
     # Auto-detect cluster name
     detect_cluster_name
+    
+    # Auto-detect AWS region
+    detect_aws_region
+    
+    # Check AWS permissions
+    if [[ "$SKIP_PERMISSION_CHECK" != "true" ]]; then
+        check_aws_permissions
+    else
+        log_warning "Skipping AWS permission check (--skip-permission-check specified)"
+    fi
     
     # Get cluster network information
     local vpc_id
