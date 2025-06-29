@@ -197,6 +197,58 @@ var _ = Describe("SBDConfig Controller", func() {
 			Expect(result).To(Equal(reconcile.Result{}))
 		})
 
+		It("should configure sbd-device flag correctly for shared storage", func() {
+			By("creating an SBDConfig with shared storage")
+			resource := &medik8sv1alpha1.SBDConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: namespace,
+				},
+				Spec: medik8sv1alpha1.SBDConfigSpec{
+					SbdWatchdogPath:    "/dev/watchdog",
+					SharedStorageClass: "test-storage-class",
+					Image:              "test-sbd-agent:latest",
+				},
+			}
+
+			By("testing the buildSBDAgentArgs method")
+			args := controllerReconciler.buildSBDAgentArgs(resource)
+
+			By("verifying the sbd-device flag is set correctly")
+			expectedSBDDevice := "--sbd-device=/sbd-shared/sbd-device"
+			Expect(args).To(ContainElement(expectedSBDDevice))
+
+			By("verifying file locking is enabled for shared storage")
+			Expect(args).To(ContainElement("--sbd-file-locking=true"))
+		})
+
+		It("should not set sbd-device flag when shared storage is not configured", func() {
+			By("creating an SBDConfig without shared storage")
+			resource := &medik8sv1alpha1.SBDConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: namespace,
+				},
+				Spec: medik8sv1alpha1.SBDConfigSpec{
+					SbdWatchdogPath: "/dev/watchdog",
+					Image:           "test-sbd-agent:latest",
+				},
+			}
+
+			By("testing the buildSBDAgentArgs method")
+			args := controllerReconciler.buildSBDAgentArgs(resource)
+
+			By("verifying no sbd-device flag is set")
+			for _, arg := range args {
+				Expect(arg).NotTo(ContainSubstring("--sbd-device"))
+			}
+
+			By("verifying no file locking flag is set")
+			for _, arg := range args {
+				Expect(arg).NotTo(ContainSubstring("--sbd-file-locking"))
+			}
+		})
+
 		It("should successfully reconcile after resource deletion", func() {
 			By("creating the custom resource for the Kind SBDConfig")
 			resource := &medik8sv1alpha1.SBDConfig{

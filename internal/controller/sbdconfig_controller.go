@@ -1000,7 +1000,12 @@ func (r *SBDConfigReconciler) buildSBDAgentArgs(sbdConfig *medik8sv1alpha1.SBDCo
 
 	// Add shared storage arguments if configured
 	if sbdConfig.Spec.HasSharedStorage() {
-		args = append(args, fmt.Sprintf("--shared-storage=%s", sbdConfig.Spec.GetSharedStorageMountPath()))
+		// Set SBD device to a file within the shared storage mount
+		sbdDevicePath := fmt.Sprintf("%s/sbd-device", sbdConfig.Spec.GetSharedStorageMountPath())
+		args = append(args, fmt.Sprintf("--sbd-device=%s", sbdDevicePath))
+
+		// Enable file locking for shared storage safety
+		args = append(args, "--sbd-file-locking=true")
 	}
 
 	return args
