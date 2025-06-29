@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	medik8sv1alpha1 "github.com/medik8s/sbd-operator/api/v1alpha1"
+	agent "github.com/medik8s/sbd-operator/pkg/agent"
 )
 
 // MockEventRecorder is a mock implementation of record.EventRecorder for testing
@@ -215,11 +216,12 @@ var _ = Describe("SBDConfig Controller", func() {
 			args := controllerReconciler.buildSBDAgentArgs(resource)
 
 			By("verifying the sbd-device flag is set correctly")
-			expectedSBDDevice := "--sbd-device=/sbd-shared/sbd-device"
+			expectedSBDDevice := fmt.Sprintf("--%s=/sbd-shared/%s", agent.FlagSBDDevice, agent.SharedStorageSBDDeviceFile)
 			Expect(args).To(ContainElement(expectedSBDDevice))
 
 			By("verifying file locking is enabled for shared storage")
-			Expect(args).To(ContainElement("--sbd-file-locking=true"))
+			expectedFileLocking := fmt.Sprintf("--%s=true", agent.FlagSBDFileLocking)
+			Expect(args).To(ContainElement(expectedFileLocking))
 		})
 
 		It("should not set sbd-device flag when shared storage is not configured", func() {
@@ -240,12 +242,12 @@ var _ = Describe("SBDConfig Controller", func() {
 
 			By("verifying no sbd-device flag is set")
 			for _, arg := range args {
-				Expect(arg).NotTo(ContainSubstring("--sbd-device"))
+				Expect(arg).NotTo(ContainSubstring(fmt.Sprintf("--%s", agent.FlagSBDDevice)))
 			}
 
 			By("verifying no file locking flag is set")
 			for _, arg := range args {
-				Expect(arg).NotTo(ContainSubstring("--sbd-file-locking"))
+				Expect(arg).NotTo(ContainSubstring(fmt.Sprintf("--%s", agent.FlagSBDFileLocking)))
 			}
 		})
 

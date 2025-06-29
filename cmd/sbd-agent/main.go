@@ -37,6 +37,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
+	"github.com/medik8s/sbd-operator/pkg/agent"
 	"github.com/medik8s/sbd-operator/pkg/blockdevice"
 	"github.com/medik8s/sbd-operator/pkg/retry"
 	"github.com/medik8s/sbd-operator/pkg/sbdprotocol"
@@ -45,22 +46,22 @@ import (
 )
 
 var (
-	watchdogPath      = flag.String("watchdog-path", "/dev/watchdog", "Path to the watchdog device")
-	watchdogTimeout   = flag.Duration("watchdog-timeout", 60*time.Second, "Watchdog timeout duration (how long before watchdog triggers reboot)")
-	petInterval       = flag.Duration("pet-interval", 15*time.Second, "Pet interval (how often to pet the watchdog)")
-	watchdogTestMode  = flag.Bool("watchdog-test-mode", false, "Enable watchdog test mode (soft_noboot=1 for softdog, prevents actual reboots)")
-	sbdDevice         = flag.String("sbd-device", "", "Path to the SBD block device")
-	sbdFileLocking    = flag.Bool("sbd-file-locking", true, "Enable file locking for SBD device operations (recommended for shared storage)")
-	nodeName          = flag.String("node-name", "", "Name of this Kubernetes node")
-	clusterName       = flag.String("cluster-name", "default-cluster", "Name of the cluster for node mapping")
-	nodeID            = flag.Uint("node-id", 0, "Unique numeric ID for this node (1-255) - deprecated, use hash-based mapping")
-	sbdTimeoutSeconds = flag.Uint("sbd-timeout-seconds", 30, "SBD timeout in seconds (determines heartbeat interval)")
-	sbdUpdateInterval = flag.Duration("sbd-update-interval", 5*time.Second, "Interval for updating SBD device with node status")
-	peerCheckInterval = flag.Duration("peer-check-interval", 5*time.Second, "Interval for checking peer heartbeats")
-	logLevel          = flag.String("log-level", "info", "Log level (debug, info, warn, error)")
-	rebootMethod      = flag.String("reboot-method", "panic", "Method to use for self-fencing (panic, systemctl-reboot)")
-	metricsPort       = flag.Int("metrics-port", 8080, "Port for Prometheus metrics endpoint")
-	staleNodeTimeout  = flag.Duration("stale-node-timeout", 1*time.Hour, "Timeout for considering nodes stale and removing them from slot mapping")
+	watchdogPath      = flag.String(agent.FlagWatchdogPath, agent.DefaultWatchdogPath, "Path to the watchdog device")
+	watchdogTimeout   = flag.Duration(agent.FlagWatchdogTimeout, 60*time.Second, "Watchdog timeout duration (how long before watchdog triggers reboot)")
+	petInterval       = flag.Duration(agent.FlagPetInterval, 15*time.Second, "Pet interval (how often to pet the watchdog)")
+	watchdogTestMode  = flag.Bool(agent.FlagWatchdogTestMode, agent.DefaultWatchdogTestMode, "Enable watchdog test mode (soft_noboot=1 for softdog, prevents actual reboots)")
+	sbdDevice         = flag.String(agent.FlagSBDDevice, agent.DefaultSBDDevice, "Path to the SBD block device")
+	sbdFileLocking    = flag.Bool(agent.FlagSBDFileLocking, agent.DefaultSBDFileLocking, "Enable file locking for SBD device operations (recommended for shared storage)")
+	nodeName          = flag.String(agent.FlagNodeName, agent.DefaultNodeName, "Name of this Kubernetes node")
+	clusterName       = flag.String(agent.FlagClusterName, agent.DefaultClusterName, "Name of the cluster for node mapping")
+	nodeID            = flag.Uint(agent.FlagNodeID, agent.DefaultNodeID, "Unique numeric ID for this node (1-255) - deprecated, use hash-based mapping")
+	sbdTimeoutSeconds = flag.Uint(agent.FlagSBDTimeoutSeconds, agent.DefaultSBDTimeoutSeconds, "SBD timeout in seconds (determines heartbeat interval)")
+	sbdUpdateInterval = flag.Duration(agent.FlagSBDUpdateInterval, 5*time.Second, "Interval for updating SBD device with node status")
+	peerCheckInterval = flag.Duration(agent.FlagPeerCheckInterval, 5*time.Second, "Interval for checking peer heartbeats")
+	logLevel          = flag.String(agent.FlagLogLevel, agent.DefaultLogLevel, "Log level (debug, info, warn, error)")
+	rebootMethod      = flag.String(agent.FlagRebootMethod, agent.DefaultRebootMethod, "Method to use for self-fencing (panic, systemctl-reboot)")
+	metricsPort       = flag.Int(agent.FlagMetricsPort, agent.DefaultMetricsPort, "Port for Prometheus metrics endpoint")
+	staleNodeTimeout  = flag.Duration(agent.FlagStaleNodeTimeout, 1*time.Hour, "Timeout for considering nodes stale and removing them from slot mapping")
 )
 
 const (

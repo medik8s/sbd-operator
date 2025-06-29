@@ -40,7 +40,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/go-logr/logr"
+
 	medik8sv1alpha1 "github.com/medik8s/sbd-operator/api/v1alpha1"
+	"github.com/medik8s/sbd-operator/pkg/agent"
 	"github.com/medik8s/sbd-operator/pkg/retry"
 )
 
@@ -989,23 +991,23 @@ func (r *SBDConfigReconciler) buildSBDAgentArgs(sbdConfig *medik8sv1alpha1.SBDCo
 	watchdogTimeout := sbdConfig.Spec.GetWatchdogTimeout()
 	petInterval := sbdConfig.Spec.GetPetInterval()
 
-	// Base arguments
+	// Base arguments using shared flag constants
 	args := []string{
-		fmt.Sprintf("--watchdog-path=%s", sbdConfig.Spec.GetSbdWatchdogPath()),
-		fmt.Sprintf("--watchdog-timeout=%s", watchdogTimeout.String()),
-		fmt.Sprintf("--pet-interval=%s", petInterval.String()),
-		"--log-level=info",
-		fmt.Sprintf("--stale-node-timeout=%s", sbdConfig.Spec.GetStaleNodeTimeout().String()),
+		fmt.Sprintf("--%s=%s", agent.FlagWatchdogPath, sbdConfig.Spec.GetSbdWatchdogPath()),
+		fmt.Sprintf("--%s=%s", agent.FlagWatchdogTimeout, watchdogTimeout.String()),
+		fmt.Sprintf("--%s=%s", agent.FlagPetInterval, petInterval.String()),
+		fmt.Sprintf("--%s=%s", agent.FlagLogLevel, "info"),
+		fmt.Sprintf("--%s=%s", agent.FlagStaleNodeTimeout, sbdConfig.Spec.GetStaleNodeTimeout().String()),
 	}
 
 	// Add shared storage arguments if configured
 	if sbdConfig.Spec.HasSharedStorage() {
 		// Set SBD device to a file within the shared storage mount
-		sbdDevicePath := fmt.Sprintf("%s/sbd-device", sbdConfig.Spec.GetSharedStorageMountPath())
-		args = append(args, fmt.Sprintf("--sbd-device=%s", sbdDevicePath))
+		sbdDevicePath := fmt.Sprintf("%s/%s", sbdConfig.Spec.GetSharedStorageMountPath(), agent.SharedStorageSBDDeviceFile)
+		args = append(args, fmt.Sprintf("--%s=%s", agent.FlagSBDDevice, sbdDevicePath))
 
 		// Enable file locking for shared storage safety
-		args = append(args, "--sbd-file-locking=true")
+		args = append(args, fmt.Sprintf("--%s=true", agent.FlagSBDFileLocking))
 	}
 
 	return args
