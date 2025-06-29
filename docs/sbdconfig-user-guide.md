@@ -129,10 +129,7 @@ kubectl apply -f https://github.com/medik8s/sbd-operator/releases/latest/downloa
 - **Examples**: `"efs-sc"`, `"nfs-client"`, `"cephfs"`, `"glusterfs"`
 - **Behavior**: When specified, the controller automatically creates a PVC using this StorageClass
 
-#### `sharedStorageMountPath` (string, optional)
-- **Default**: `/sbd-block`
-- **Description**: Mount path for shared storage within sbd-agent containers
-- **Notes**: Must be an absolute path and should not conflict with system paths
+The controller automatically chooses a sensible mount path (`/sbd-shared`) for shared storage, eliminating the need for manual configuration and reducing potential conflicts.
 
 ### SBDConfig Status Fields
 
@@ -326,7 +323,6 @@ spec:
   
   # Shared storage configuration
   sharedStorageClass: "efs-sc"              # Required: StorageClass name
-  sharedStorageMountPath: "/sbd-block"      # Optional: Custom mount path
 ```
 
 #### How It Works
@@ -359,7 +355,6 @@ metadata:
 spec:
   # Use custom StorageClass with specific parameters
   sharedStorageClass: "custom-nfs-sc"
-  sharedStorageMountPath: "/shared/sbd"
   
   # Faster cleanup for dynamic environments
   staleNodeTimeout: "15m"

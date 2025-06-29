@@ -326,7 +326,7 @@ spec:
   
   # Shared storage configuration
   sharedStoragePVC: "sbd-shared-pvc"           # Name of RWX PVC
-  sharedStorageMountPath: "/sbd-block"         # Mount path (optional, defaults to /sbd-block)
+  
 ```
 
 ### Implementation in Controller

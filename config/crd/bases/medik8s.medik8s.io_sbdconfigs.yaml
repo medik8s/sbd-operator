@@ -88,13 +88,6 @@ spec:
                   in the agent DaemonSet for cross-node coordination, slot assignment, and shared configuration data.
                   The StorageClass must support ReadWriteMany (RWX) access mode.
                 type: string
-              sharedStorageMountPath:
-                default: /sbd-block
-                description: |-
-                  SharedStorageMountPath is the path where the shared storage PVC will be mounted
-                  in the sbd-agent containers. Defaults to "/sbd-block" if not specified.
-                  This path will be passed to the sbd-agent via command line arguments.
-                type: string
               staleNodeTimeout:
                 default: 1h
                 description: |-

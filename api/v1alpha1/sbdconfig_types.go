@@ -95,13 +95,6 @@ type SBDConfigSpec struct {
 	// +optional
 	SharedStorageClass string `json:"sharedStorageClass,omitempty"`
 
-	// SharedStorageMountPath is the path where the shared storage PVC will be mounted
-	// in the sbd-agent containers. Defaults to "/sbd-block" if not specified.
-	// This path will be passed to the sbd-agent via command line arguments.
-	// +kubebuilder:default="/sbd-block"
-	// +optional
-	SharedStorageMountPath string `json:"sharedStorageMountPath,omitempty"`
-
 	// NodeSelector is a selector which must be true for the SBD agent pod to fit on a node.
 	// This allows users to control which nodes the SBD agent runs on by specifying node labels.
 	// If not specified, defaults to worker nodes only (node-role.kubernetes.io/worker: "").
@@ -232,12 +225,10 @@ func (s *SBDConfigSpec) GetSharedStorageAccessModes() []string {
 	return []string{"ReadWriteMany"}
 }
 
-// GetSharedStorageMountPath returns the shared storage mount path with default fallback
+// GetSharedStorageMountPath returns the shared storage mount path
+// The controller automatically chooses a sensible path for mounting shared storage
 func (s *SBDConfigSpec) GetSharedStorageMountPath() string {
-	if s.SharedStorageMountPath != "" {
-		return s.SharedStorageMountPath
-	}
-	return "/sbd-block"
+	return "/sbd-shared"
 }
 
 // HasSharedStorage returns true if shared storage is configured
@@ -373,31 +364,6 @@ func (s *SBDConfigSpec) ValidateSharedStorageClass() error {
 	return nil
 }
 
-// ValidateSharedStorageMountPath validates the shared storage mount path
-func (s *SBDConfigSpec) ValidateSharedStorageMountPath() error {
-	mountPath := s.GetSharedStorageMountPath()
-
-	// Mount path must be an absolute path
-	if !strings.HasPrefix(mountPath, "/") {
-		return fmt.Errorf("shared storage mount path %q must be an absolute path", mountPath)
-	}
-
-	// Mount path cannot be just "/"
-	if mountPath == "/" {
-		return fmt.Errorf("shared storage mount path cannot be root directory '/'")
-	}
-
-	// Mount path should not conflict with common system paths
-	systemPaths := []string{"/dev", "/proc", "/sys", "/etc", "/var", "/usr", "/bin", "/sbin", "/lib", "/lib64"}
-	for _, sysPath := range systemPaths {
-		if strings.HasPrefix(mountPath, sysPath+"/") || mountPath == sysPath {
-			return fmt.Errorf("shared storage mount path %q conflicts with system path %q", mountPath, sysPath)
-		}
-	}
-
-	return nil
-}
-
 // ValidateAll validates all configuration values
 func (s *SBDConfigSpec) ValidateAll() error {
 	if err := s.ValidateStaleNodeTimeout(); err != nil {
@@ -422,10 +388,6 @@ func (s *SBDConfigSpec) ValidateAll() error {
 
 	if err := s.ValidateSharedStorageClass(); err != nil {
 		return fmt.Errorf("shared storage PVC validation failed: %w", err)
-	}
-
-	if err := s.ValidateSharedStorageMountPath(); err != nil {
-		return fmt.Errorf("shared storage mount path validation failed: %w", err)
 	}
 
 	return nil

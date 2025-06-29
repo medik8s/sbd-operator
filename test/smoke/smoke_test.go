@@ -1126,11 +1126,10 @@ allowVolumeExpansion: true`
 					Namespace: testNamespace,
 				},
 				Spec: medik8sv1alpha1.SBDConfigSpec{
-					SbdWatchdogPath:        "/dev/watchdog",
-					SharedStorageClass:     rwxStorageClass.Name,
-					SharedStorageMountPath: "/sbd-shared",
-					ImagePullPolicy:        "Always",
-					StaleNodeTimeout:       &metav1.Duration{Duration: 90 * time.Second},
+					SbdWatchdogPath:    "/dev/watchdog",
+					SharedStorageClass: rwxStorageClass.Name,
+					ImagePullPolicy:    "Always",
+					StaleNodeTimeout:   &metav1.Duration{Duration: 90 * time.Second},
 				},
 			}
 
@@ -1300,7 +1299,6 @@ allowVolumeExpansion: true`
 			}, retrievedConfig)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(retrievedConfig.Spec.SharedStorageClass).To(Equal(rwxStorageClass.Name))
-			Expect(retrievedConfig.Spec.SharedStorageMountPath).To(Equal("/sbd-shared"))
 
 			By("displaying final SBDConfig status for debugging")
 			yamlData, err := yaml.Marshal(retrievedConfig)

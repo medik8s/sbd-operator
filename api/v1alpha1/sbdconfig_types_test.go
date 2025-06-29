@@ -863,23 +863,9 @@ func TestSBDConfigSpec_GetSharedStorageMountPath(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "default mount path",
+			name:     "returns fixed path",
 			spec:     SBDConfigSpec{},
-			expected: "/sbd-block",
-		},
-		{
-			name: "explicit mount path",
-			spec: SBDConfigSpec{
-				SharedStorageMountPath: "/custom/shared",
-			},
-			expected: "/custom/shared",
-		},
-		{
-			name: "empty mount path returns default",
-			spec: SBDConfigSpec{
-				SharedStorageMountPath: "",
-			},
-			expected: "/sbd-block",
+			expected: "/sbd-shared",
 		},
 	}
 
@@ -888,107 +874,6 @@ func TestSBDConfigSpec_GetSharedStorageMountPath(t *testing.T) {
 			result := tt.spec.GetSharedStorageMountPath()
 			if result != tt.expected {
 				t.Errorf("GetSharedStorageMountPath() = %v, expected %v", result, tt.expected)
-			}
-		})
-	}
-}
-
-func TestSBDConfigSpec_ValidateSharedStorageMountPath(t *testing.T) {
-	tests := []struct {
-		name      string
-		spec      SBDConfigSpec
-		wantError bool
-		errorMsg  string
-	}{
-		{
-			name:      "default mount path is valid",
-			spec:      SBDConfigSpec{},
-			wantError: false,
-		},
-		{
-			name: "valid custom mount path",
-			spec: SBDConfigSpec{
-				SharedStorageMountPath: "/custom/shared",
-			},
-			wantError: false,
-		},
-		{
-			name: "relative path is invalid",
-			spec: SBDConfigSpec{
-				SharedStorageMountPath: "relative/path",
-			},
-			wantError: true,
-			errorMsg:  "must be an absolute path",
-		},
-		{
-			name: "root directory is invalid",
-			spec: SBDConfigSpec{
-				SharedStorageMountPath: "/",
-			},
-			wantError: true,
-			errorMsg:  "cannot be root directory",
-		},
-		{
-			name: "conflicts with /dev",
-			spec: SBDConfigSpec{
-				SharedStorageMountPath: "/dev",
-			},
-			wantError: true,
-			errorMsg:  "conflicts with system path",
-		},
-		{
-			name: "conflicts with /proc",
-			spec: SBDConfigSpec{
-				SharedStorageMountPath: "/proc/something",
-			},
-			wantError: true,
-			errorMsg:  "conflicts with system path",
-		},
-		{
-			name: "conflicts with /sys",
-			spec: SBDConfigSpec{
-				SharedStorageMountPath: "/sys/something",
-			},
-			wantError: true,
-			errorMsg:  "conflicts with system path",
-		},
-		{
-			name: "conflicts with /etc",
-			spec: SBDConfigSpec{
-				SharedStorageMountPath: "/etc/shared",
-			},
-			wantError: true,
-			errorMsg:  "conflicts with system path",
-		},
-		{
-			name: "valid path under /opt",
-			spec: SBDConfigSpec{
-				SharedStorageMountPath: "/opt/shared-storage",
-			},
-			wantError: false,
-		},
-		{
-			name: "valid path under /mnt",
-			spec: SBDConfigSpec{
-				SharedStorageMountPath: "/mnt/shared",
-			},
-			wantError: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := tt.spec.ValidateSharedStorageMountPath()
-			if tt.wantError {
-				if err == nil {
-					t.Errorf("ValidateSharedStorageMountPath() expected error but got none")
-				} else if tt.errorMsg != "" && !strings.Contains(err.Error(), tt.errorMsg) {
-					t.Errorf("ValidateSharedStorageMountPath() error = %v, expected to contain %v", err, tt.errorMsg)
-				}
-			} else {
-				if err != nil {
-					t.Errorf("ValidateSharedStorageMountPath() unexpected error = %v", err)
-				}
 			}
 		})
 	}
@@ -1020,17 +905,9 @@ func TestSBDConfigSpec_HasSharedStorage(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "mount path alone doesn't enable shared storage",
+			name: "only storage class enables shared storage",
 			spec: SBDConfigSpec{
-				SharedStorageMountPath: "/custom/path",
-			},
-			expected: false,
-		},
-		{
-			name: "both storage class and mount path configured",
-			spec: SBDConfigSpec{
-				SharedStorageClass:     "efs-sc",
-				SharedStorageMountPath: "/custom/path",
+				SharedStorageClass: "efs-sc",
 			},
 			expected: true,
 		},
@@ -1199,8 +1076,7 @@ func TestSBDConfigSpec_ValidateAll_WithSharedStorage(t *testing.T) {
 		{
 			name: "valid shared storage configuration",
 			spec: SBDConfigSpec{
-				SharedStorageClass:     "efs-sc",
-				SharedStorageMountPath: "/sbd-block",
+				SharedStorageClass: "efs-sc",
 			},
 			wantErr: false,
 		},
@@ -1211,15 +1087,6 @@ func TestSBDConfigSpec_ValidateAll_WithSharedStorage(t *testing.T) {
 			},
 			wantErr:  true,
 			errorMsg: "shared storage PVC validation failed",
-		},
-		{
-			name: "invalid mount path",
-			spec: SBDConfigSpec{
-				SharedStorageClass:     "efs-sc",
-				SharedStorageMountPath: "/dev/invalid",
-			},
-			wantErr:  true,
-			errorMsg: "shared storage mount path validation failed",
 		},
 	}
 
