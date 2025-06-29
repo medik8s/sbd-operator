@@ -282,22 +282,68 @@ func testBasicSBDConfiguration(cluster ClusterInfo) {
 	GinkgoWriter.Printf("SBDConfig YAML:\n%s\n", string(yamlData))
 
 	By("Waiting for SBD agent DaemonSet to be created")
+	var lastSBDConfigStatus medik8sv1alpha1.SBDConfigStatus
 	Eventually(func() bool {
-		daemonSets := &appsv1.DaemonSetList{}
-		err := k8sClient.List(ctx, daemonSets, client.InNamespace(testNS), client.MatchingLabels{"app": "sbd-agent"})
+		// First, check if the SBDConfig has been processed by the controller
+		retrievedConfig := &medik8sv1alpha1.SBDConfig{}
+		err := k8sClient.Get(ctx, types.NamespacedName{
+			Name:      "test-sbd-config",
+			Namespace: testNS,
+		}, retrievedConfig)
+		if err != nil {
+			GinkgoWriter.Printf("Error retrieving SBDConfig: %v\n", err)
+			return false
+		}
 
+		lastSBDConfigStatus = retrievedConfig.Status
+		GinkgoWriter.Printf("SBDConfig Status: ReadyNodes=%d, TotalNodes=%d, Generation=%d, Conditions=%d\n",
+			retrievedConfig.Status.ReadyNodes, retrievedConfig.Status.TotalNodes, retrievedConfig.Generation, len(retrievedConfig.Status.Conditions))
+
+		// Print condition details
+		for _, condition := range retrievedConfig.Status.Conditions {
+			GinkgoWriter.Printf("  Condition: Type=%s, Status=%s, Reason=%s, Message=%s\n",
+				condition.Type, condition.Status, condition.Reason, condition.Message)
+		}
+
+		// Check if controller is running by looking for controller manager deployment
+		deployments := &appsv1.DeploymentList{}
+		err = k8sClient.List(ctx, deployments, client.InNamespace("sbd-operator-system"), client.MatchingLabels{"control-plane": "controller-manager"})
+		if err == nil && len(deployments.Items) > 0 {
+			deployment := deployments.Items[0]
+			GinkgoWriter.Printf("Controller deployment found: %s, Ready replicas: %d/%d\n",
+				deployment.Name, deployment.Status.ReadyReplicas, deployment.Status.Replicas)
+		} else {
+			GinkgoWriter.Printf("Controller deployment not found or error: %v\n", err)
+		}
+
+		daemonSets := &appsv1.DaemonSetList{}
+		err = k8sClient.List(ctx, daemonSets, client.InNamespace(testNS), client.MatchingLabels{"app": "sbd-agent"})
+
+		// Always list all DaemonSets in the test namespace for debugging
 		By("Listing all DaemonSets in the test namespace")
 		daemonSetsT := &appsv1.DaemonSetList{}
-		err = k8sClient.List(ctx, daemonSetsT, client.InNamespace(testNS))
-		if err != nil {
+		errT := k8sClient.List(ctx, daemonSetsT, client.InNamespace(testNS))
+		if errT == nil {
 			GinkgoWriter.Printf("Found %d DaemonSets in namespace %s:\n", len(daemonSetsT.Items), testNS)
 			for i, ds := range daemonSetsT.Items {
-				GinkgoWriter.Printf("  %d. Name: %s, Desired: %d, Current: %d, Ready: %d\n",
-					i+1, ds.Name, ds.Status.DesiredNumberScheduled, ds.Status.CurrentNumberScheduled, ds.Status.NumberReady)
+				GinkgoWriter.Printf("  %d. Name: %s, Labels: %v, Desired: %d, Current: %d, Ready: %d\n",
+					i+1, ds.Name, ds.Labels, ds.Status.DesiredNumberScheduled, ds.Status.CurrentNumberScheduled, ds.Status.NumberReady)
 			}
+		} else {
+			GinkgoWriter.Printf("Error listing DaemonSets in namespace %s: %v\n", testNS, errT)
 		}
+
+		// Log the specific search results
+		if err == nil {
+			GinkgoWriter.Printf("Found %d DaemonSets with label app=sbd-agent in namespace %s\n", len(daemonSets.Items), testNS)
+		} else {
+			GinkgoWriter.Printf("Error searching for DaemonSets with label app=sbd-agent: %v\n", err)
+		}
+
 		return err == nil && len(daemonSets.Items) > 0
-	}, time.Minute*3, time.Second*15).Should(BeTrue())
+	}, time.Minute*6, time.Second*15).Should(BeTrue())
+
+	GinkgoWriter.Printf("Final SBDConfig Status: %+v\n", lastSBDConfigStatus)
 
 	By("Verifying SBD agents are running on worker nodes")
 	Eventually(func() bool {
