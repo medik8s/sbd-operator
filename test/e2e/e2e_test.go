@@ -859,15 +859,21 @@ func cleanupTestArtifacts() {
 
 // AWS helper functions for disruption testing
 
-// initAWS initializes AWS session and clients
+// initAWS initializes AWS session and clients with comprehensive validation
 func initAWS() error {
-	// Get AWS region from environment or detect from node names
-	awsRegion = os.Getenv("AWS_REGION")
-	if awsRegion == "" {
-		awsRegion = "ap-southeast-2" // Default based on node names
+	// First, validate this is an AWS-based cluster
+	if !isAWSCluster() {
+		return fmt.Errorf("cluster is not AWS-based, skipping AWS disruption tests")
 	}
 
+	// Auto-detect AWS region from cluster
 	var err error
+	awsRegion, err = detectAWSRegion()
+	if err != nil {
+		return fmt.Errorf("failed to detect AWS region: %w", err)
+	}
+
+	// Create AWS session
 	awsSession, err = session.NewSession(&aws.Config{
 		Region: aws.String(awsRegion),
 	})
@@ -876,7 +882,219 @@ func initAWS() error {
 	}
 
 	ec2Client = ec2.New(awsSession)
+
+	// Validate required AWS permissions
+	if err := validateAWSPermissions(); err != nil {
+		return fmt.Errorf("AWS permission validation failed: %w", err)
+	}
+
+	By(fmt.Sprintf("AWS initialization successful - Region: %s", awsRegion))
 	return nil
+}
+
+// isAWSCluster checks if the cluster is running on AWS
+func isAWSCluster() bool {
+	// Check if nodes have AWS provider IDs
+	nodes := &corev1.NodeList{}
+	err := k8sClient.List(ctx, nodes)
+	if err != nil {
+		return false
+	}
+
+	awsNodeCount := 0
+	for _, node := range nodes.Items {
+		if strings.HasPrefix(node.Spec.ProviderID, "aws://") {
+			awsNodeCount++
+		}
+	}
+
+	// Require at least 50% of nodes to be AWS-based
+	return awsNodeCount > 0 && float64(awsNodeCount)/float64(len(nodes.Items)) >= 0.5
+}
+
+// detectAWSRegion automatically detects the AWS region from cluster configuration
+func detectAWSRegion() (string, error) {
+	// Method 1: Check environment variable
+	if region := os.Getenv("AWS_REGION"); region != "" {
+		By(fmt.Sprintf("Using AWS region from environment: %s", region))
+		return region, nil
+	}
+
+	// Method 2: Extract from node names (e.g., ip-10-0-1-1.us-west-2.compute.internal)
+	nodes := &corev1.NodeList{}
+	err := k8sClient.List(ctx, nodes)
+	if err != nil {
+		return "", fmt.Errorf("failed to list nodes: %w", err)
+	}
+
+	for _, node := range nodes.Items {
+		// Extract region from node name
+		re := regexp.MustCompile(`\.([a-z]{2}-[a-z]+-\d+)\.compute\.internal`)
+		matches := re.FindStringSubmatch(node.Name)
+		if len(matches) >= 2 {
+			region := matches[1]
+			By(fmt.Sprintf("Detected AWS region from node name %s: %s", node.Name, region))
+			return region, nil
+		}
+
+		// Extract region from provider ID (aws:///us-west-2a/i-1234567890abcdef0)
+		re = regexp.MustCompile(`aws:///([a-z]{2}-[a-z]+-\d+)[a-z]/`)
+		matches = re.FindStringSubmatch(node.Spec.ProviderID)
+		if len(matches) >= 2 {
+			region := matches[1]
+			By(fmt.Sprintf("Detected AWS region from provider ID %s: %s", node.Spec.ProviderID, region))
+			return region, nil
+		}
+	}
+
+	// Method 3: Try to detect from cluster endpoint (for EKS)
+	// This would require additional cluster info, so we'll skip for now
+
+	return "", fmt.Errorf("could not auto-detect AWS region from cluster configuration")
+}
+
+// validateAWSPermissions checks if the required AWS permissions are available
+func validateAWSPermissions() error {
+	By("Validating required AWS permissions")
+
+	requiredPermissions := []struct {
+		name   string
+		testFn func() error
+	}{
+		{"ec2:DescribeInstances", testDescribeInstances},
+		{"ec2:DescribeVolumes", testDescribeVolumes},
+		{"ec2:DescribeSecurityGroups", testDescribeSecurityGroups},
+		{"ec2:CreateSecurityGroup", testCreateSecurityGroup},
+		{"ec2:DeleteSecurityGroup", testDeleteSecurityGroup},
+		{"ec2:ModifyInstanceAttribute", testModifyInstanceAttribute},
+		{"ec2:AttachVolume", testAttachVolume},
+		{"ec2:DetachVolume", testDetachVolume},
+		{"ec2:RevokeSecurityGroupEgress", testRevokeSecurityGroupEgress},
+	}
+
+	var failedPermissions []string
+	for _, perm := range requiredPermissions {
+		if err := perm.testFn(); err != nil {
+			failedPermissions = append(failedPermissions, perm.name)
+			By(fmt.Sprintf("Permission check failed for %s: %v", perm.name, err))
+		} else {
+			By(fmt.Sprintf("Permission check passed for %s", perm.name))
+		}
+	}
+
+	if len(failedPermissions) > 0 {
+		return fmt.Errorf("missing required AWS permissions: %s", strings.Join(failedPermissions, ", "))
+	}
+
+	By("All required AWS permissions validated successfully")
+	return nil
+}
+
+// Permission test functions
+func testDescribeInstances() error {
+	_, err := ec2Client.DescribeInstances(&ec2.DescribeInstancesInput{
+		MaxResults: aws.Int64(5),
+	})
+	return checkAWSPermissionError(err)
+}
+
+func testDescribeVolumes() error {
+	_, err := ec2Client.DescribeVolumes(&ec2.DescribeVolumesInput{
+		MaxResults: aws.Int64(5),
+	})
+	return checkAWSPermissionError(err)
+}
+
+func testDescribeSecurityGroups() error {
+	_, err := ec2Client.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+		MaxResults: aws.Int64(5),
+	})
+	return checkAWSPermissionError(err)
+}
+
+func testCreateSecurityGroup() error {
+	// Test with invalid parameters to check permission without actually creating
+	_, err := ec2Client.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+		GroupName:   aws.String("test-sg"),
+		Description: aws.String("test"),
+		VpcId:       aws.String("vpc-nonexistent"), // Non-existent VPC to trigger validation error
+	})
+	return checkAWSPermissionError(err)
+}
+
+func testDeleteSecurityGroup() error {
+	// Test with non-existent security group to check permission
+	_, err := ec2Client.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
+		GroupId: aws.String("sg-nonexistent"),
+	})
+	return checkAWSPermissionError(err)
+}
+
+func testModifyInstanceAttribute() error {
+	// Test with invalid instance ID to check permission
+	_, err := ec2Client.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+		InstanceId: aws.String("i-nonexistent"),
+		Groups:     []*string{aws.String("sg-nonexistent")},
+	})
+	return checkAWSPermissionError(err)
+}
+
+func testAttachVolume() error {
+	// Test with invalid parameters to check permission
+	_, err := ec2Client.AttachVolume(&ec2.AttachVolumeInput{
+		VolumeId:   aws.String("vol-nonexistent"),
+		InstanceId: aws.String("i-nonexistent"),
+		Device:     aws.String("/dev/sdf"),
+	})
+	return checkAWSPermissionError(err)
+}
+
+func testDetachVolume() error {
+	// Test with invalid parameters to check permission
+	_, err := ec2Client.DetachVolume(&ec2.DetachVolumeInput{
+		VolumeId: aws.String("vol-nonexistent"),
+	})
+	return checkAWSPermissionError(err)
+}
+
+func testRevokeSecurityGroupEgress() error {
+	// Test with invalid parameters to check permission
+	_, err := ec2Client.RevokeSecurityGroupEgress(&ec2.RevokeSecurityGroupEgressInput{
+		GroupId: aws.String("sg-nonexistent"),
+		IpPermissions: []*ec2.IpPermission{
+			{
+				IpProtocol: aws.String("tcp"),
+				FromPort:   aws.Int64(80),
+				ToPort:     aws.Int64(80),
+			},
+		},
+	})
+	return checkAWSPermissionError(err)
+}
+
+// checkAWSPermissionError distinguishes between permission errors and validation errors
+func checkAWSPermissionError(err error) error {
+	if err != nil {
+		// Check for permission-related errors
+		if strings.Contains(err.Error(), "UnauthorizedOperation") {
+			return err
+		}
+		// For describe operations, no error means permission exists
+		// For other operations, validation errors are expected and mean permission exists
+		if strings.Contains(err.Error(), "InvalidParameterValue") ||
+			strings.Contains(err.Error(), "InvalidGroupId") ||
+			strings.Contains(err.Error(), "InvalidInstanceID") ||
+			strings.Contains(err.Error(), "InvalidVolumeID") ||
+			strings.Contains(err.Error(), "InvalidParameter") ||
+			strings.Contains(err.Error(), "InvalidVpcID") ||
+			strings.Contains(err.Error(), "InvalidVpcId") ||
+			strings.Contains(err.Error(), "MissingParameter") {
+			return nil // Permission exists, got validation error
+		}
+		// Other errors might indicate permission issues
+		return err
+	}
+	return nil // No error means permission exists and call succeeded
 }
 
 // getInstanceIDFromNode extracts AWS instance ID from node provider ID
