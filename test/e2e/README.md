@@ -154,10 +154,12 @@ Before running disruption tests, the system validates all required AWS permissio
 
 ### Automatic Skipping
 Tests are automatically skipped when:
-- Cluster is not AWS-based
+- Individual AWS-based tests skip when cluster is not AWS-based or AWS initialization fails
 - Insufficient nodes for safe testing
 - AWS region cannot be determined
 - Required AWS permissions are missing
+
+**Note**: The test suite will run non-AWS tests (like basic configuration and agent crash tests) even when AWS is not available. Only the network and storage disruption tests require AWS.
 
 ### Expected Failures
 Some test scenarios are designed to trigger failures:
@@ -169,11 +171,11 @@ Some test scenarios are designed to trigger failures:
 
 ### Common Issues
 
-#### 1. "Cluster is not AWS-based"
+#### 1. "Cluster is not AWS-based" 
 ```
-Error: cluster is not AWS-based, skipping AWS disruption tests
+AWS not available for disruption tests: cluster is not AWS-based, skipping AWS disruption tests
 ```
-**Solution:** Ensure you're running on an AWS-based Kubernetes cluster with proper provider IDs.
+**Solution:** This is informational. Non-AWS tests will still run. For AWS disruption tests, ensure you're running on an AWS-based Kubernetes cluster with proper provider IDs.
 
 #### 2. "Failed to detect AWS region"
 ```

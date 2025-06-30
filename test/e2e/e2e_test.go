@@ -67,11 +67,12 @@ type NodeCondition struct {
 }
 
 var (
-	clusterInfo ClusterInfo
-	testNS      string
-	awsSession  *session.Session
-	ec2Client   *ec2.EC2
-	awsRegion   string
+	clusterInfo    ClusterInfo
+	testNS         string
+	awsSession     *session.Session
+	ec2Client      *ec2.EC2
+	awsRegion      string
+	awsInitialized bool // Track if AWS was successfully initialized
 )
 
 var _ = Describe("SBD Operator E2E Tests", func() {
@@ -79,11 +80,15 @@ var _ = Describe("SBD Operator E2E Tests", func() {
 		// Generate unique namespace for each test
 		testNS = fmt.Sprintf("sbd-e2e-test-%d", rand.Intn(10000))
 
-		// Initialize AWS clients for disruption testing
-		By("Initializing AWS clients")
+		// Try to initialize AWS clients for disruption testing
+		By("Checking AWS availability for disruption tests")
+		awsInitialized = false // Reset flag
 		err := initAWS()
 		if err != nil {
-			Skip(fmt.Sprintf("Skipping AWS-based tests: %v", err))
+			By(fmt.Sprintf("AWS not available for disruption tests: %v", err))
+			// Don't skip - some tests can run without AWS
+		} else {
+			By("AWS initialized successfully for disruption tests")
 		}
 
 		// Create test namespace
@@ -383,6 +388,11 @@ func testBasicSBDConfiguration(cluster ClusterInfo) {
 }
 
 func testStorageAccessInterruption(cluster ClusterInfo) {
+	// Skip if AWS is not available
+	if !awsInitialized {
+		Skip("Storage access interruption test requires AWS - skipping")
+	}
+
 	By("Setting up SBD configuration for storage access test")
 	testBasicSBDConfiguration(cluster)
 
@@ -496,6 +506,11 @@ func testStorageAccessInterruption(cluster ClusterInfo) {
 }
 
 func testKubeletCommunicationFailure(cluster ClusterInfo) {
+	// Skip if AWS is not available
+	if !awsInitialized {
+		Skip("Kubelet communication failure test requires AWS - skipping")
+	}
+
 	By("Setting up SBD configuration for kubelet communication test")
 	testBasicSBDConfiguration(cluster)
 
@@ -889,6 +904,7 @@ func initAWS() error {
 	}
 
 	By(fmt.Sprintf("AWS initialization successful - Region: %s", awsRegion))
+	awsInitialized = true
 	return nil
 }
 
