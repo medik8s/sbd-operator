@@ -123,26 +123,27 @@ Before running disruption tests, the system validates all required AWS permissio
 The e2e tests include several scenarios to validate SBD operator functionality:
 
 ### 1. Storage Access Interruption
-- **Purpose**: Tests SBD fencing when storage becomes unavailable
+- **Purpose**: Tests SBD self-fencing when storage becomes unavailable
 - **Method**: Detaches non-root EBS volumes from target EC2 instance
 - **Validation**: 
   - Node becomes NotReady due to storage issues
-  - **Test creates SBDRemediation CR (simulating Node Healthcheck Operator)**
-  - SBD remediation is triggered and processed
-  - **Node actually panics/reboots (actual fencing verification)**
+  - **Node self-fences automatically when it loses SBD device access**
+  - **Node actually panics/reboots (self-fencing verification)**
   - Storage is restored and node recovers
 - **Safety**: Only detaches additional volumes, never touches root volume
+- **Note**: No SBDRemediation CR needed - node detects storage loss and self-fences
 
 ### 2. Network Communication Failure  
-- **Purpose**: Tests SBD fencing when kubelet communication is blocked
+- **Purpose**: Tests SBD operator-initiated fencing when kubelet communication is blocked
 - **Method**: Creates temporary security group blocking all outbound traffic
 - **Validation**:
   - Node becomes NotReady due to kubelet communication failure
   - **Test creates SBDRemediation CR (simulating Node Healthcheck Operator)**
-  - SBD remediation is triggered and processed
-  - **Node actually panics/reboots (actual fencing verification)**
+  - SBD remediation is triggered and processed by operator
+  - **Node actually panics/reboots (operator-initiated fencing verification)**
   - Network access is restored and node recovers
 - **Safety**: Preserves existing security groups, only adds temporary blocking group
+- **Note**: SBDRemediation CR required - node has SBD access but needs external trigger
 
 ### 3. Other Test Scenarios
 - **Basic Configuration**: Tests SBD configuration and agent deployment
@@ -186,9 +187,18 @@ The e2e tests include several scenarios to validate SBD operator functionality:
    - Provides watchdog functionality
 
 ### Test Architecture:
-Since the e2e tests don't have a Node Healthcheck Operator, **the tests simulate this external component** by:
-- Creating SBDRemediation CRs after detecting node issues
-- This simulates what would happen in a real cluster with monitoring
+The e2e tests validate two different SBD fencing scenarios:
+
+1. **Self-Fencing (Storage Disruption Test)**:
+   - Node loses access to SBD device
+   - SBD Agent detects storage loss and initiates self-fencing
+   - No external intervention required
+
+2. **Operator-Initiated Fencing (Network Disruption Test)**:
+   - Node loses network connectivity but retains SBD device access
+   - External monitoring (simulated by test) creates SBDRemediation CR
+   - SBD Operator processes CR and writes fence message to SBD device
+   - SBD Agent detects fence message and initiates fencing
 
 ## Test Skipping and Failures
 
