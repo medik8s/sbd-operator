@@ -44,10 +44,10 @@ Your AWS credentials must have the following permissions:
 
 ```bash
 # Basic setup with defaults
-./scripts/create-rwx-pv.sh
+./scripts/setup-shared-storage.sh
 
 # Custom configuration
-./scripts/create-rwx-pv.sh \
+./scripts/setup-shared-storage.sh \
   --name "sbd-shared-storage" \
   --size "20Gi" \
   --namespace "sbd-system" \
@@ -252,7 +252,7 @@ oc logs -n kube-system -l app=efs-csi-controller
 
 ```bash
 # Use the cleanup option
-./scripts/create-rwx-pv.sh --cleanup
+./scripts/setup-shared-storage.sh --cleanup
 
 # Manual cleanup if needed
 oc delete pvc sbd-shared-pvc -n sbd-system
