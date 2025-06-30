@@ -18,6 +18,7 @@ package watchdog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -27,7 +28,12 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/medik8s/sbd-operator/pkg/retry"
-	"golang.org/x/sys/unix"
+)
+
+// Errors for watchdog operations
+var (
+	// ErrIoctlNotSupported indicates that the watchdog driver doesn't support ioctl operations
+	ErrIoctlNotSupported = errors.New("ioctl not supported by watchdog driver")
 )
 
 // Linux watchdog ioctl constants
@@ -397,17 +403,13 @@ func (w *Watchdog) Pet() error {
 	ctx := context.Background()
 	err := retry.Do(ctx, w.retryConfig, "pet watchdog", func() error {
 		// Primary method: Use WDIOC_KEEPALIVE ioctl to reset the watchdog timer
-		// The third parameter (0) is ignored for WDIOC_KEEPALIVE
-		_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(w.file.Fd()), WDIOC_KEEPALIVE, 0)
-		if errno == 0 {
-			// Success with ioctl method
-			w.logger.V(3).Info("Watchdog pet successful using WDIOC_KEEPALIVE ioctl")
-			return nil
+		err := w.petWatchdogIoctl()
+		if err == nil {
+			return nil // Success with ioctl method
 		}
 
-		// Check if the error is ENOTTY (inappropriate ioctl for device)
-		// This indicates the watchdog driver doesn't support WDIOC_KEEPALIVE
-		if errno == unix.ENOTTY {
+		// Check if the error indicates ioctl is not supported
+		if errors.Is(err, ErrIoctlNotSupported) {
 			w.logger.V(2).Info("WDIOC_KEEPALIVE not supported, falling back to write-based keep-alive")
 
 			// Fallback method: Use write-based keep-alive
@@ -426,8 +428,7 @@ func (w *Watchdog) Pet() error {
 		}
 
 		// Other ioctl error - treat as retryable
-		syscallErr := fmt.Errorf("ioctl WDIOC_KEEPALIVE failed: %w", errno)
-		return retry.NewRetryableError(syscallErr, retry.IsTransientError(errno), "pet watchdog")
+		return retry.NewRetryableError(err, retry.IsTransientError(err), "pet watchdog")
 	})
 
 	if err != nil {
