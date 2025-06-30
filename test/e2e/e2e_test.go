@@ -474,15 +474,83 @@ func testStorageAccessInterruption(cluster ClusterInfo) {
 		return false
 	}, time.Minute*5, time.Second*30).Should(BeTrue())
 
-	// Restore storage early to allow recovery testing
-	By("Restoring storage access to test node recovery")
+	// Wait for node to actually panic/reboot (the actual SBD fencing)
+	By("Waiting for node to panic/reboot due to SBD fencing")
+	originalBootTime := ""
+
+	// Get original boot time/uptime if possible
+	Eventually(func() bool {
+		node := &corev1.Node{}
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: targetNode.Metadata.Name}, node)
+		if err == nil {
+			// Try to get boot time from node info
+			originalBootTime = node.Status.NodeInfo.BootID
+			return originalBootTime != ""
+		}
+		return false
+	}, time.Minute*1, time.Second*10).Should(BeTrue())
+
+	// Monitor for node disappearing (panic/reboot) or boot ID change
+	Eventually(func() bool {
+		node := &corev1.Node{}
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: targetNode.Metadata.Name}, node)
+
+		// Node completely unreachable (likely panicked/rebooting)
+		if err != nil {
+			By(fmt.Sprintf("Node %s is unreachable - likely panicked/rebooting", targetNode.Metadata.Name))
+			return true
+		}
+
+		// Check if boot ID changed (indicating reboot)
+		currentBootID := node.Status.NodeInfo.BootID
+		if originalBootTime != "" && currentBootID != originalBootTime {
+			By(fmt.Sprintf("Node %s boot ID changed - node has rebooted", targetNode.Metadata.Name))
+			return true
+		}
+
+		// Check for extended NotReady state with specific reasons indicating panic
+		for _, condition := range node.Status.Conditions {
+			if condition.Type == corev1.NodeReady && condition.Status != corev1.ConditionTrue {
+				// Look for reasons that indicate the node is completely unresponsive
+				if strings.Contains(strings.ToLower(condition.Reason), "unreachable") ||
+					strings.Contains(strings.ToLower(condition.Reason), "unknown") {
+					By(fmt.Sprintf("Node %s is unreachable/unknown - likely fenced", targetNode.Metadata.Name))
+					return true
+				}
+			}
+		}
+
+		return false
+	}, time.Minute*10, time.Second*30).Should(BeTrue())
+
+	// Only restore storage after confirming node has been fenced
+	By("Node has been fenced - now restoring storage access to test recovery")
 	err = restoreStorageDisruption(instanceID, detachedVolumes)
 	Expect(err).NotTo(HaveOccurred())
 	detachedVolumes = nil // Prevent double cleanup in defer
 
-	// Wait for node to potentially recover (though it may need manual intervention)
-	By("Monitoring node recovery after storage restoration")
-	time.Sleep(60 * time.Second) // Give time for recovery
+	// Wait longer for node to come back online after reboot
+	By("Waiting for node to come back online after reboot")
+	Eventually(func() bool {
+		node := &corev1.Node{}
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: targetNode.Metadata.Name}, node)
+		if err != nil {
+			return false // Node still not reachable
+		}
+
+		// Check if node is Ready again
+		for _, condition := range node.Status.Conditions {
+			if condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue {
+				By(fmt.Sprintf("Node %s has come back online after reboot", targetNode.Metadata.Name))
+				return true
+			}
+		}
+		return false
+	}, time.Minute*10, time.Second*30).Should(BeTrue())
+
+	// Verify node recovery (instead of the old immediate recovery test)
+	By("Verifying node has fully recovered after fencing and storage restoration")
+	time.Sleep(30 * time.Second) // Give additional time for full recovery
 
 	// Verify other nodes remained stable during storage disruption
 	By("Verifying other nodes remained stable during storage disruption")
@@ -585,30 +653,83 @@ func testKubeletCommunicationFailure(cluster ClusterInfo) {
 		return false
 	}, time.Minute*5, time.Second*30).Should(BeTrue())
 
-	// Remove network disruption early to allow recovery
-	By("Removing network disruption to allow node recovery")
+	// Wait for node to actually panic/reboot (the actual SBD fencing)
+	By("Waiting for node to panic/reboot due to SBD fencing")
+	originalBootTime := ""
+
+	// Get original boot time/uptime if possible
+	Eventually(func() bool {
+		node := &corev1.Node{}
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: targetNode.Metadata.Name}, node)
+		if err == nil {
+			// Try to get boot time from node info
+			originalBootTime = node.Status.NodeInfo.BootID
+			return originalBootTime != ""
+		}
+		return false
+	}, time.Minute*1, time.Second*10).Should(BeTrue())
+
+	// Monitor for node disappearing (panic/reboot) or boot ID change
+	Eventually(func() bool {
+		node := &corev1.Node{}
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: targetNode.Metadata.Name}, node)
+
+		// Node completely unreachable (likely panicked/rebooting)
+		if err != nil {
+			By(fmt.Sprintf("Node %s is unreachable - likely panicked/rebooting", targetNode.Metadata.Name))
+			return true
+		}
+
+		// Check if boot ID changed (indicating reboot)
+		currentBootID := node.Status.NodeInfo.BootID
+		if originalBootTime != "" && currentBootID != originalBootTime {
+			By(fmt.Sprintf("Node %s boot ID changed - node has rebooted", targetNode.Metadata.Name))
+			return true
+		}
+
+		// Check for extended NotReady state with specific reasons indicating panic
+		for _, condition := range node.Status.Conditions {
+			if condition.Type == corev1.NodeReady && condition.Status != corev1.ConditionTrue {
+				// Look for reasons that indicate the node is completely unresponsive
+				if strings.Contains(strings.ToLower(condition.Reason), "unreachable") ||
+					strings.Contains(strings.ToLower(condition.Reason), "unknown") {
+					By(fmt.Sprintf("Node %s is unreachable/unknown - likely fenced", targetNode.Metadata.Name))
+					return true
+				}
+			}
+		}
+
+		return false
+	}, time.Minute*10, time.Second*30).Should(BeTrue())
+
+	// Only remove network disruption after confirming node has been fenced
+	By("Node has been fenced - now removing network disruption to allow recovery")
 	err = removeNetworkDisruption(securityGroupID, instanceID)
 	Expect(err).NotTo(HaveOccurred())
 	securityGroupID = nil // Prevent double cleanup in defer
 
-	// Wait for node to recover
-	By("Waiting for node to recover after network disruption is removed")
+	// Wait longer for node to come back online after reboot
+	By("Waiting for node to come back online after reboot")
 	Eventually(func() bool {
 		node := &corev1.Node{}
 		err := k8sClient.Get(ctx, types.NamespacedName{Name: targetNode.Metadata.Name}, node)
 		if err != nil {
-			return false
+			return false // Node still not reachable
 		}
 
 		// Check if node is Ready again
 		for _, condition := range node.Status.Conditions {
 			if condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue {
-				By(fmt.Sprintf("Node %s has recovered and is Ready", targetNode.Metadata.Name))
+				By(fmt.Sprintf("Node %s has come back online after reboot", targetNode.Metadata.Name))
 				return true
 			}
 		}
 		return false
-	}, time.Minute*5, time.Second*30).Should(BeTrue())
+	}, time.Minute*10, time.Second*30).Should(BeTrue())
+
+	// Verify node recovery (instead of the old immediate recovery test)
+	By("Verifying node has fully recovered after fencing and network restoration")
+	time.Sleep(30 * time.Second) // Give additional time for full recovery
 
 	// Verify other nodes remain stable during the disruption
 	By("Verifying other nodes remained stable during network disruption")

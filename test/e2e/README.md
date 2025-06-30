@@ -120,35 +120,47 @@ Before running disruption tests, the system validates all required AWS permissio
 
 ## Test Scenarios
 
-### Network Disruption Test
+The e2e tests include several scenarios to validate SBD operator functionality:
 
-**What it does:**
-1. Creates a temporary AWS Security Group with no outbound rules
-2. Attaches the security group to a target worker node
-3. Verifies the node becomes `NotReady` due to network isolation
-4. Confirms SBD remediation is triggered
-5. Removes the security group and verifies node recovery
+### 1. Storage Access Interruption
+- **Purpose**: Tests SBD fencing when storage becomes unavailable
+- **Method**: Detaches non-root EBS volumes from target EC2 instance
+- **Validation**: 
+  - Node becomes NotReady due to storage issues
+  - SBD remediation is triggered
+  - **Node actually panics/reboots (actual fencing verification)**
+  - Storage is restored and node recovers
+- **Safety**: Only detaches additional volumes, never touches root volume
 
-**Safety measures:**
-- Only affects one worker node at a time
-- Preserves existing security groups
-- Automatic cleanup even if test fails
-- Skips control plane nodes
+### 2. Network Communication Failure  
+- **Purpose**: Tests SBD fencing when kubelet communication is blocked
+- **Method**: Creates temporary security group blocking all outbound traffic
+- **Validation**:
+  - Node becomes NotReady due to kubelet communication failure
+  - SBD remediation is triggered
+  - **Node actually panics/reboots (actual fencing verification)**
+  - Network access is restored and node recovers
+- **Safety**: Preserves existing security groups, only adds temporary blocking group
 
-### Storage Disruption Test
+### 3. Other Test Scenarios
+- **Basic Configuration**: Tests SBD configuration and agent deployment
+- **Agent Crash Recovery**: Tests SBD agent resilience and automatic restart
+- **Non-Fencing Failures**: Tests that non-critical issues don't trigger fencing
+- **Large Cluster Coordination**: Tests SBD behavior in larger clusters (8+ nodes)
 
-**What it does:**
-1. Identifies non-root EBS volumes attached to a target worker node
-2. Detaches the volumes to simulate storage failure
-3. Verifies the node experiences storage issues
-4. Confirms SBD remediation for storage failures
-5. Reattaches volumes and monitors recovery
+## Test Timing and Expectations
 
-**Safety measures:**
-- Never detaches root volumes (avoids complete system failure)
-- Only detaches additional EBS volumes
-- Graceful detachment attempted first, forced as fallback
-- Automatic volume reattachment with proper device mapping
+**Important**: The disruption tests now wait for **actual node fencing** (panic/reboot) before cleanup:
+
+- **Expected Duration**: Each disruption test may take 15-20 minutes
+- **Timeout Settings**: Tests wait up to 10 minutes for node fencing to occur
+- **What You'll See**:
+  1. Node becomes NotReady (1-3 minutes)
+  2. SBD remediation is created (1-2 minutes)  
+  3. **Node panics/reboots due to SBD fencing (5-10 minutes)**
+  4. Disruption is removed and node recovers (5-10 minutes)
+
+**This is the correct behavior** - SBD is designed to fence (reboot) unresponsive nodes, and the tests now properly validate this critical functionality.
 
 ## Test Skipping and Failures
 
