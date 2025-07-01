@@ -23,7 +23,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,15 +30,19 @@ import (
 	"sigs.k8s.io/yaml"
 
 	medik8sv1alpha1 "github.com/medik8s/sbd-operator/api/v1alpha1"
+	"github.com/medik8s/sbd-operator/test/utils"
 )
 
 var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog"), func() {
 	const watchdogTestNamespace = "sbd-watchdog-smoke-test"
 
+	var testNS *utils.TestNamespace
+
 	BeforeAll(func() {
 		By("initializing Kubernetes clients for watchdog tests if needed")
-		if k8sClient == nil {
-			err := setupKubernetesClients()
+		if testClients == nil {
+			var err error
+			testClients, err = utils.SetupKubernetesClients()
 			Expect(err).NotTo(HaveOccurred(), "Failed to setup Kubernetes clients")
 		}
 
@@ -49,104 +52,63 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 				Name: watchdogTestNamespace,
 			},
 		}
-		err := k8sClient.Create(ctx, ns)
+		err := testClients.Client.Create(testClients.Context, ns)
 		if err != nil && !errors.IsAlreadyExists(err) {
 			Expect(err).NotTo(HaveOccurred(), "Failed to create watchdog test namespace")
+		}
+
+		// Create test namespace wrapper for utilities
+		testNS = &utils.TestNamespace{
+			Name:    watchdogTestNamespace,
+			Clients: testClients,
 		}
 	})
 
 	AfterAll(func() {
 		By("cleaning up watchdog smoke test namespace")
-		ns := &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: watchdogTestNamespace,
-			},
+		if testNS != nil {
+			_ = testNS.Cleanup()
 		}
-		_ = k8sClient.Delete(ctx, ns)
 	})
 
 	Context("Watchdog Compatibility and Stability", func() {
 		var sbdConfig *medik8sv1alpha1.SBDConfig
 
 		BeforeEach(func() {
-			// Create a minimal SBD configuration for watchdog testing
-			sbdConfig = &medik8sv1alpha1.SBDConfig{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "watchdog-smoke-test",
-					Namespace: watchdogTestNamespace,
-				},
-				Spec: medik8sv1alpha1.SBDConfigSpec{
-					SbdWatchdogPath: "/dev/watchdog",
-					WatchdogTimeout: &metav1.Duration{Duration: 90 * time.Second}, // Longer timeout for safety
-					PetIntervalMultiple: func() *int32 {
-						val := int32(6) // Conservative 15-second pet interval
-						return &val
-					}(),
-					// Note: The agent now always runs with testMode=false for production behavior
-				},
-			}
+			// Create a minimal SBD configuration for watchdog testing using utility
+			var err error
+			sbdConfig, err = testNS.CreateSBDConfig("watchdog-smoke-test", func(config *medik8sv1alpha1.SBDConfig) {
+				config.Spec.WatchdogTimeout = &metav1.Duration{Duration: 90 * time.Second} // Longer timeout for safety
+				config.Spec.PetIntervalMultiple = func() *int32 {
+					val := int32(6) // Conservative 15-second pet interval
+					return &val
+				}()
+				// Note: The agent now always runs with testMode=false for production behavior
+			})
+			Expect(err).NotTo(HaveOccurred())
 		})
 
 		AfterEach(func() {
 			By("cleaning up SBD configuration and waiting for agents to terminate")
 			if sbdConfig != nil {
-				// Delete the SBDConfig
-				_ = k8sClient.Delete(ctx, sbdConfig)
-
-				// Wait for SBDConfig to be fully deleted
-				Eventually(func() bool {
-					config := &medik8sv1alpha1.SBDConfig{}
-					err := k8sClient.Get(ctx, client.ObjectKey{
-						Name:      sbdConfig.Name,
-						Namespace: watchdogTestNamespace,
-					}, config)
-					return errors.IsNotFound(err)
-				}, time.Minute*2, time.Second*5).Should(BeTrue())
-
-				// Wait for all agent pods with specific sbdconfig label to be terminated
-				Eventually(func() int {
-					pods := &corev1.PodList{}
-					err := k8sClient.List(ctx, pods,
-						client.InNamespace(watchdogTestNamespace),
-						client.MatchingLabels{"sbdconfig": sbdConfig.Name})
-					if err != nil {
-						GinkgoWriter.Printf("Failed to list pods during cleanup: %v\n", err)
-						return -1
-					}
-					podCount := len(pods.Items)
-					if podCount > 0 {
-						GinkgoWriter.Printf("Still waiting for %d pods to terminate\n", podCount)
-					}
-					return podCount
-				}, time.Minute*2, time.Second*5).Should(Equal(0))
-
-				// Also wait for any DaemonSets to be deleted
-				Eventually(func() int {
-					daemonSets := &appsv1.DaemonSetList{}
-					err := k8sClient.List(ctx, daemonSets,
-						client.InNamespace(watchdogTestNamespace),
-						client.MatchingLabels{"sbdconfig": sbdConfig.Name})
-					if err != nil {
-						return -1
-					}
-					return len(daemonSets.Items)
-				}, time.Minute*2, time.Second*5).Should(Equal(0))
+				err := testNS.CleanupSBDConfig(sbdConfig)
+				Expect(err).NotTo(HaveOccurred())
 			}
 		})
 
 		It("should successfully deploy SBD agents without causing node instability", func() {
 			By("cleaning up any existing SBDConfig with the same name")
 			existingConfig := &medik8sv1alpha1.SBDConfig{}
-			err := k8sClient.Get(ctx, client.ObjectKey{
+			err := testClients.Client.Get(testClients.Context, client.ObjectKey{
 				Name:      sbdConfig.Name,
 				Namespace: watchdogTestNamespace,
 			}, existingConfig)
 			if err == nil {
 				GinkgoWriter.Printf("Found existing SBDConfig %s, deleting it first\n", sbdConfig.Name)
-				_ = k8sClient.Delete(ctx, existingConfig)
+				_ = testClients.Client.Delete(testClients.Context, existingConfig)
 				// Wait for deletion to complete
 				Eventually(func() bool {
-					err := k8sClient.Get(ctx, client.ObjectKey{
+					err := testClients.Client.Get(testClients.Context, client.ObjectKey{
 						Name:      sbdConfig.Name,
 						Namespace: watchdogTestNamespace,
 					}, existingConfig)
@@ -155,101 +117,35 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 			}
 
 			By("creating SBD configuration with watchdog enabled")
-			err = k8sClient.Create(ctx, sbdConfig)
+			err = testClients.Client.Create(testClients.Context, sbdConfig)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("waiting for SBD agent DaemonSet to be created")
-			var daemonSet *appsv1.DaemonSet
-			Eventually(func() bool {
-				daemonSets := &appsv1.DaemonSetList{}
-				err := k8sClient.List(ctx, daemonSets,
-					client.InNamespace(watchdogTestNamespace),
-					client.MatchingLabels{"sbdconfig": sbdConfig.Name})
-				if err != nil {
-					GinkgoWriter.Printf("Failed to list DaemonSets: %v\n", err)
-					return false
-				}
-				if len(daemonSets.Items) == 0 {
-					GinkgoWriter.Printf("No DaemonSets found with label sbdconfig=%s\n", sbdConfig.Name)
-					return false
-				}
-				daemonSet = &daemonSets.Items[0]
-				GinkgoWriter.Printf("Found DaemonSet: %s\n", daemonSet.Name)
-				return true
-			}, time.Minute*2, time.Second*10).Should(BeTrue())
+			dsChecker := testNS.NewDaemonSetChecker()
+			daemonSet, err := dsChecker.WaitForDaemonSet(map[string]string{"sbdconfig": sbdConfig.Name}, time.Minute*2)
+			Expect(err).NotTo(HaveOccurred())
 
 			By("verifying DaemonSet has correct watchdog configuration")
-			Expect(daemonSet.Spec.Template.Spec.Containers).To(HaveLen(1))
-			container := daemonSet.Spec.Template.Spec.Containers[0]
-
-			// Verify watchdog-related arguments are present
-			argsStr := strings.Join(container.Args, " ")
-			GinkgoWriter.Printf("DaemonSet container args: %s\n", argsStr)
-			Expect(argsStr).To(ContainSubstring("--watchdog-path=/dev/watchdog"))
-			Expect(argsStr).To(ContainSubstring("--watchdog-timeout=1m30s"))
+			expectedArgs := []string{
+				"--watchdog-path=/dev/watchdog",
+				"--watchdog-timeout=1m30s",
+			}
+			err = dsChecker.CheckDaemonSetArgs(daemonSet, expectedArgs)
+			Expect(err).NotTo(HaveOccurred())
 
 			By("waiting for SBD agent pods to become ready")
-			Eventually(func() int {
-				pods := &corev1.PodList{}
-				err := k8sClient.List(ctx, pods,
-					client.InNamespace(watchdogTestNamespace),
-					client.MatchingLabels{"sbdconfig": sbdConfig.Name})
-				if err != nil {
-					GinkgoWriter.Printf("Failed to list pods: %v\n", err)
-					return 0
-				}
-
-				readyPods := 0
-				for _, pod := range pods.Items {
-					if pod.Status.Phase == corev1.PodRunning {
-						// Check if the pod has been ready for a reasonable time
-						for _, condition := range pod.Status.Conditions {
-							if condition.Type == corev1.PodReady &&
-								condition.Status == corev1.ConditionTrue {
-								readyPods++
-								break
-							}
-						}
-					}
-				}
-				GinkgoWriter.Printf("Found %d SBD agent pods\n", readyPods)
-				return readyPods
-			}, time.Minute*5, time.Second*15).Should(BeNumerically(">=", 1))
+			podChecker := testNS.NewPodStatusChecker(map[string]string{"sbdconfig": sbdConfig.Name})
+			err = podChecker.WaitForPodsReady(1, time.Minute*5)
+			Expect(err).NotTo(HaveOccurred())
 
 			By("verifying nodes remain stable and don't experience reboots")
-			// Monitor node stability for a reasonable period
-			Consistently(func() bool {
-				nodes := &corev1.NodeList{}
-				err := k8sClient.List(ctx, nodes)
-				if err != nil {
-					GinkgoWriter.Printf("Failed to list nodes: %v\n", err)
-					return false
-				}
-
-				// Check that all nodes remain Ready
-				readyNodeCount := 0
-				for _, node := range nodes.Items {
-					isReady := false
-					for _, condition := range node.Status.Conditions {
-						if condition.Type == corev1.NodeReady &&
-							condition.Status == corev1.ConditionTrue {
-							isReady = true
-							readyNodeCount++
-							break
-						}
-					}
-					if !isReady {
-						GinkgoWriter.Printf("Node %s is not ready: %+v\n", node.Name, node.Status.Conditions)
-						return false
-					}
-				}
-				GinkgoWriter.Printf("All %d nodes remain ready\n", readyNodeCount)
-				return true
-			}, time.Minute*3, time.Second*15).Should(BeTrue())
+			nodeChecker := testClients.NewNodeStabilityChecker()
+			err = nodeChecker.WaitForNodesStable(time.Minute * 3)
+			Expect(err).NotTo(HaveOccurred())
 
 			By("checking if SBD agent pods exist and examining their status")
 			pods := &corev1.PodList{}
-			err = k8sClient.List(ctx, pods,
+			err = testClients.Client.List(testClients.Context, pods,
 				client.InNamespace(watchdogTestNamespace),
 				client.MatchingLabels{"sbdconfig": sbdConfig.Name})
 			Expect(err).NotTo(HaveOccurred())
@@ -261,15 +157,11 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 
 			// Try to get logs but don't fail the test if pod isn't ready or logs are empty
 			Eventually(func() string {
-				logs, err := clientset.CoreV1().Pods(watchdogTestNamespace).
-					GetLogs(podName, &corev1.PodLogOptions{
-						TailLines: func() *int64 { val := int64(20); return &val }(),
-					}).DoRaw(ctx)
+				logStr, err := podChecker.GetPodLogs(podName, func() *int64 { val := int64(20); return &val }())
 				if err != nil {
 					GinkgoWriter.Printf("Failed to get logs from pod %s: %v\n", podName, err)
 					return "ERROR_GETTING_LOGS"
 				}
-				logStr := string(logs)
 				if logStr == "" {
 					return "NO_LOGS_YET"
 				}
@@ -287,17 +179,14 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 			))
 
 			By("verifying no critical errors in agent logs")
-			logs, err := clientset.CoreV1().Pods(watchdogTestNamespace).
-				GetLogs(podName, &corev1.PodLogOptions{}).DoRaw(ctx)
+			fullLogStr, err := podChecker.GetPodLogs(podName, nil)
 			Expect(err).NotTo(HaveOccurred())
-
-			logStr := string(logs)
 			// These errors would indicate problems with our fix
-			Expect(logStr).NotTo(ContainSubstring("Failed to pet watchdog after retries"))
-			Expect(logStr).NotTo(ContainSubstring("watchdog device is not open"))
+			Expect(fullLogStr).NotTo(ContainSubstring("Failed to pet watchdog after retries"))
+			Expect(fullLogStr).NotTo(ContainSubstring("watchdog device is not open"))
 
 			// The agent should show successful operation during normal startup
-			Expect(logStr).To(SatisfyAny(
+			Expect(fullLogStr).To(SatisfyAny(
 				ContainSubstring("Watchdog pet successful"),
 				ContainSubstring("SBD Agent started successfully"),
 			))
@@ -315,16 +204,16 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 
 			By("cleaning up any existing SBDConfig with the same name")
 			existingConfig := &medik8sv1alpha1.SBDConfig{}
-			err := k8sClient.Get(ctx, client.ObjectKey{
+			err := testClients.Client.Get(testClients.Context, client.ObjectKey{
 				Name:      compatConfig.Name,
 				Namespace: watchdogTestNamespace,
 			}, existingConfig)
 			if err == nil {
 				GinkgoWriter.Printf("Found existing SBDConfig %s, deleting it first\n", compatConfig.Name)
-				_ = k8sClient.Delete(ctx, existingConfig)
+				_ = testClients.Client.Delete(testClients.Context, existingConfig)
 				// Wait for deletion to complete
 				Eventually(func() bool {
-					err := k8sClient.Get(ctx, client.ObjectKey{
+					err := testClients.Client.Get(testClients.Context, client.ObjectKey{
 						Name:      compatConfig.Name,
 						Namespace: watchdogTestNamespace,
 					}, existingConfig)
@@ -332,14 +221,14 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 				}, time.Second*30, time.Second*2).Should(BeTrue())
 			}
 
-			err = k8sClient.Create(ctx, compatConfig)
+			err = testClients.Client.Create(testClients.Context, compatConfig)
 			Expect(err).NotTo(HaveOccurred())
-			defer func() { _ = k8sClient.Delete(ctx, compatConfig) }()
+			defer func() { _ = testClients.Client.Delete(testClients.Context, compatConfig) }()
 
 			By("waiting for agent deployment and monitoring for compatibility issues")
 			Eventually(func() int {
 				pods := &corev1.PodList{}
-				err := k8sClient.List(ctx, pods,
+				err := testClients.Client.List(testClients.Context, pods,
 					client.InNamespace(watchdogTestNamespace),
 					client.MatchingLabels{"sbdconfig": compatConfig.Name})
 				if err != nil {
@@ -360,7 +249,7 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 			// Monitor for a longer period to catch any delayed issues
 			Consistently(func() bool {
 				pods := &corev1.PodList{}
-				err := k8sClient.List(ctx, pods,
+				err := testClients.Client.List(testClients.Context, pods,
 					client.InNamespace(watchdogTestNamespace),
 					client.MatchingLabels{"sbdconfig": compatConfig.Name})
 				if err != nil {
@@ -380,7 +269,7 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 
 						// Get pod events to understand restart reason
 						events := &corev1.EventList{}
-						err := k8sClient.List(ctx, events,
+						err := testClients.Client.List(testClients.Context, events,
 							client.InNamespace(watchdogTestNamespace),
 							client.MatchingFields{"involvedObject.name": pod.Name})
 						if err == nil {
@@ -406,7 +295,7 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 			By("verifying SBDConfig status shows healthy operation")
 			Eventually(func() bool {
 				updatedConfig := &medik8sv1alpha1.SBDConfig{}
-				err := k8sClient.Get(ctx, client.ObjectKey{
+				err := testClients.Client.Get(testClients.Context, client.ObjectKey{
 					Name:      compatConfig.Name,
 					Namespace: watchdogTestNamespace,
 				}, updatedConfig)
@@ -421,13 +310,13 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 
 		It("should display SBDConfig YAML correctly and maintain stability", func() {
 			By("creating and retrieving SBDConfig for YAML validation")
-			err := k8sClient.Create(ctx, sbdConfig)
+			err := testClients.Client.Create(testClients.Context, sbdConfig)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("retrieving and displaying SBDConfig YAML")
 			retrievedConfig := &medik8sv1alpha1.SBDConfig{}
 			Eventually(func() error {
-				return k8sClient.Get(ctx, client.ObjectKey{
+				return testClients.Client.Get(testClients.Context, client.ObjectKey{
 					Name:      sbdConfig.Name,
 					Namespace: watchdogTestNamespace,
 				}, retrievedConfig)
@@ -448,7 +337,7 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 			Consistently(func() bool {
 				// Verify configuration remains stable
 				currentConfig := &medik8sv1alpha1.SBDConfig{}
-				err := k8sClient.Get(ctx, client.ObjectKey{
+				err := testClients.Client.Get(testClients.Context, client.ObjectKey{
 					Name:      sbdConfig.Name,
 					Namespace: watchdogTestNamespace,
 				}, currentConfig)

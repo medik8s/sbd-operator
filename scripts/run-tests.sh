@@ -623,7 +623,8 @@ run_tests() {
     if [[ "$VERBOSE" == "true" ]]; then
         test_cmd="$test_cmd -ginkgo.v"
     fi
-    
+
+    echo $test_cmd    
     if $test_cmd; then
         log_success "$TEST_TYPE tests passed"
         return 0

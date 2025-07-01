@@ -36,16 +36,12 @@ import (
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
 	medik8sv1alpha1 "github.com/medik8s/sbd-operator/api/v1alpha1"
 	"github.com/medik8s/sbd-operator/test/utils"
-	authenticationv1 "k8s.io/api/authentication/v1"
 )
 
 // namespace where the project is deployed in
@@ -64,53 +60,13 @@ const metricsServiceName = "sbd-operator-controller-manager-metrics-service"
 const metricsRoleBindingName = "sbd-operator-metrics-binding"
 
 var (
-	// Kubernetes clients
+	// Kubernetes clients - now using shared utilities
+	testClients *utils.TestClients
+	// Legacy clients for backward compatibility
 	k8sClient client.Client
 	clientset *kubernetes.Clientset
 	ctx       = context.Background()
 )
-
-// setupKubernetesClients initializes the Kubernetes clients
-func setupKubernetesClients() error {
-	// Load kubeconfig - try environment variable first, then default location
-	kubeconfig := os.Getenv("KUBECONFIG")
-	if kubeconfig == "" {
-		homeDir, err := os.UserHomeDir()
-		if err == nil {
-			kubeconfig = filepath.Join(homeDir, ".kube", "config")
-		}
-	}
-
-	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
-	if err != nil {
-		return fmt.Errorf("failed to build kubeconfig: %w", err)
-	}
-
-	// Create scheme with core Kubernetes types and add our CRDs
-	clientScheme := runtime.NewScheme()
-	err = scheme.AddToScheme(clientScheme)
-	if err != nil {
-		return fmt.Errorf("failed to add core types to scheme: %w", err)
-	}
-	err = medik8sv1alpha1.AddToScheme(clientScheme)
-	if err != nil {
-		return fmt.Errorf("failed to add SBD types to scheme: %w", err)
-	}
-
-	// Create controller-runtime client
-	k8sClient, err = client.New(config, client.Options{Scheme: clientScheme})
-	if err != nil {
-		return fmt.Errorf("failed to create controller-runtime client: %w", err)
-	}
-
-	// Create standard clientset
-	clientset, err = kubernetes.NewForConfig(config)
-	if err != nil {
-		return fmt.Errorf("failed to create kubernetes clientset: %w", err)
-	}
-
-	return nil
-}
 
 var _ = Describe("SBD Operator Smoke Tests", Ordered, Label("Smoke"), func() {
 	var controllerPodName string
@@ -118,8 +74,14 @@ var _ = Describe("SBD Operator Smoke Tests", Ordered, Label("Smoke"), func() {
 	// Verify the environment is set up correctly (setup handled by Makefile)
 	BeforeAll(func() {
 		By("initializing Kubernetes clients")
-		err := setupKubernetesClients()
+		var err error
+		testClients, err = utils.SetupKubernetesClients()
 		Expect(err).NotTo(HaveOccurred(), "Failed to setup Kubernetes clients")
+
+		// Set legacy clients for backward compatibility
+		k8sClient = testClients.Client
+		clientset = testClients.Clientset
+		ctx = testClients.Context
 	})
 
 	// Clean up test-specific resources (overall cleanup handled by Makefile)
@@ -153,39 +115,17 @@ var _ = Describe("SBD Operator Smoke Tests", Ordered, Label("Smoke"), func() {
 	AfterEach(func() {
 		specReport := CurrentSpecReport()
 		if specReport.Failed() {
-			By("Fetching controller manager pod logs")
-			req := clientset.CoreV1().Pods(namespace).GetLogs(controllerPodName, &corev1.PodLogOptions{})
-			podLogs, err := req.Stream(ctx)
-			if err == nil {
-				defer podLogs.Close()
-				buf := new(bytes.Buffer)
-				_, _ = io.Copy(buf, podLogs)
-				_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", buf.String())
-			} else {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Controller logs: %s", err)
-			}
+			debugCollector := testClients.NewDebugCollector()
 
-			By("Fetching Kubernetes events")
-			events, err := clientset.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{})
-			if err == nil {
-				eventsOutput := ""
-				for _, event := range events.Items {
-					eventsOutput += fmt.Sprintf("%s  %s     %s  %s/%s  %s\n",
-						event.LastTimestamp.Format("2006-01-02T15:04:05Z"),
-						event.Type,
-						event.Reason,
-						event.InvolvedObject.Kind,
-						event.InvolvedObject.Name,
-						event.Message)
-				}
-				_, _ = fmt.Fprintf(GinkgoWriter, "Kubernetes events:\n%s", eventsOutput)
-			} else {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Kubernetes events: %s", err)
-			}
+			// Collect controller logs
+			debugCollector.CollectControllerLogs(namespace, controllerPodName)
+
+			// Collect Kubernetes events
+			debugCollector.CollectKubernetesEvents(namespace)
 
 			By("Fetching curl-metrics logs")
-			req = clientset.CoreV1().Pods(namespace).GetLogs("curl-metrics", &corev1.PodLogOptions{})
-			podLogs, err = req.Stream(ctx)
+			req := clientset.CoreV1().Pods(namespace).GetLogs("curl-metrics", &corev1.PodLogOptions{})
+			podLogs, err := req.Stream(ctx)
 			if err == nil {
 				defer podLogs.Close()
 				buf := new(bytes.Buffer)
@@ -195,15 +135,8 @@ var _ = Describe("SBD Operator Smoke Tests", Ordered, Label("Smoke"), func() {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get curl-metrics logs: %s", err)
 			}
 
-			By("Fetching controller manager pod description")
-			pod := &corev1.Pod{}
-			err = k8sClient.Get(ctx, client.ObjectKey{Name: controllerPodName, Namespace: namespace}, pod)
-			if err == nil {
-				podYAML, _ := yaml.Marshal(pod)
-				fmt.Println("Pod description:\n", string(podYAML))
-			} else {
-				fmt.Println("Failed to describe controller pod:", err)
-			}
+			// Collect controller pod description
+			debugCollector.CollectPodDescription(namespace, controllerPodName)
 		}
 	})
 
@@ -1377,33 +1310,10 @@ allowVolumeExpansion: true`
 })
 
 // serviceAccountToken returns a token for the specified service account in the given namespace.
-// It uses the Kubernetes TokenRequest API to generate a token by directly sending a request
-// and parsing the resulting token from the API response.
+// It uses the shared token generator utility.
 func serviceAccountToken() (string, error) {
-	var out string
-	verifyTokenCreation := func(g Gomega) {
-		// Create TokenRequest using the typed client
-		tokenRequest := &authenticationv1.TokenRequest{
-			Spec: authenticationv1.TokenRequestSpec{
-				// Set a reasonable expiration time (1 hour)
-				ExpirationSeconds: func() *int64 {
-					val := int64(3600)
-					return &val
-				}(),
-			},
-		}
-
-		// Use the authentication client to create the token
-		result, err := clientset.CoreV1().ServiceAccounts(namespace).CreateToken(
-			ctx, serviceAccountName, tokenRequest, metav1.CreateOptions{})
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(result.Status.Token).NotTo(BeEmpty(), "Token should not be empty")
-
-		out = result.Status.Token
-	}
-	Eventually(verifyTokenCreation).Should(Succeed())
-
-	return out, nil
+	tokenGenerator := testClients.NewServiceAccountTokenGenerator()
+	return tokenGenerator.GenerateToken(namespace, serviceAccountName)
 }
 
 // getMetricsOutput retrieves and returns the logs from the curl pod used to access the metrics endpoint.

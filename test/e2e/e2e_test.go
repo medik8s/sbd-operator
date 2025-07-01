@@ -31,12 +31,15 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
 	medik8sv1alpha1 "github.com/medik8s/sbd-operator/api/v1alpha1"
+	"github.com/medik8s/sbd-operator/test/utils"
 )
 
 // ClusterInfo holds information about the test cluster
@@ -73,25 +76,35 @@ var (
 	ec2Client      *ec2.EC2
 	awsRegion      string
 	awsInitialized bool // Track if AWS was successfully initialized
+
+	// Kubernetes clients - now using shared utilities
+	testClients *utils.TestClients
 )
 
-var _ = Describe("SBD Operator E2E Tests", func() {
-	BeforeEach(func() {
-		// Seed random number generator for node selection
-		rand.Seed(time.Now().UnixNano())
+// These tests use Ginkgo (BDD-style Go testing framework). Refer to
+// http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
 
-		// Generate unique namespace for each test
-		testNS = fmt.Sprintf("sbd-e2e-test-%d", rand.Intn(10000))
+var _ = Describe("SBD Operator", Ordered, Label("e2e"), func() {
+	const namespace = "sbd-e2e-test"
 
-		// Create test namespace
-		By(fmt.Sprintf("Creating test namespace %s", testNS))
-		namespace := &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: testNS,
-			},
-		}
-		err := k8sClient.Create(ctx, namespace)
-		Expect(err).NotTo(HaveOccurred())
+	var testNamespace *utils.TestNamespace
+
+	BeforeAll(func() {
+		By("initializing Kubernetes clients")
+		var err error
+		testClients, err = utils.SetupKubernetesClients()
+		Expect(err).NotTo(HaveOccurred(), "Failed to setup Kubernetes clients")
+
+		// Update global clients for backward compatibility
+		k8sClient = testClients.Client
+		ctx = testClients.Context
+
+		By("creating e2e test namespace")
+		testNamespace, err = testClients.CreateTestNamespace("sbd-e2e-test")
+		Expect(err).NotTo(HaveOccurred(), "Failed to create e2e test namespace")
+
+		// Update the global testNS variable to use the new namespace name
+		testNS = testNamespace.Name
 
 		// Discover cluster topology
 		discoverClusterTopology()
@@ -100,22 +113,11 @@ var _ = Describe("SBD Operator E2E Tests", func() {
 			clusterInfo.TotalNodes, len(clusterInfo.WorkerNodes), len(clusterInfo.ControlNodes)))
 	})
 
-	AfterEach(func() {
-		// Clean up test namespace and any test artifacts
-		By(fmt.Sprintf("Cleaning up test namespace %s", testNS))
-		namespace := &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: testNS,
-			},
+	AfterAll(func() {
+		By("cleaning up e2e test namespace")
+		if testNamespace != nil {
+			_ = testNamespace.Cleanup()
 		}
-		err := k8sClient.Delete(ctx, namespace)
-		if err != nil {
-			// Ignore not found errors
-			_, _ = fmt.Fprintf(GinkgoWriter, "Warning: failed to delete namespace %s: %v\n", testNS, err)
-		}
-
-		// Clean up any test pods or disruptions
-		cleanupTestArtifacts()
 	})
 
 	Context("SBD E2E Failure Simulation Tests", func() {
@@ -236,19 +238,58 @@ func discoverClusterTopology() {
 
 func testBasicSBDConfiguration(cluster ClusterInfo) {
 	By("Creating SBDConfig with proper agent deployment")
+
+	// Look for a storage class that supports RWX (ReadWriteMany) access mode
+	By("Looking for RWX-compatible storage class")
+	storageClasses := &storagev1.StorageClassList{}
+	err := k8sClient.List(ctx, storageClasses)
+	Expect(err).NotTo(HaveOccurred())
+
+	var rwxStorageClass *storagev1.StorageClass
+	for _, sc := range storageClasses.Items {
+		// Check if this storage class supports RWX access mode
+		// Most cloud providers have storage classes that support RWX
+		if strings.Contains(strings.ToLower(sc.Name), "nfs") ||
+			strings.Contains(strings.ToLower(sc.Name), "efs") ||
+			strings.Contains(strings.ToLower(sc.Name), "azurefile") ||
+			strings.Contains(strings.ToLower(sc.Name), "gce") ||
+			strings.Contains(strings.ToLower(sc.Name), "ceph") ||
+			strings.Contains(strings.ToLower(sc.Name), "gluster") {
+			rwxStorageClass = &sc
+			GinkgoWriter.Printf("Found RWX-compatible storage class: %s\n", sc.Name)
+			break
+		}
+	}
+
+	if rwxStorageClass == nil {
+		// If no obvious RWX storage class found, try to use the default
+		// or any available storage class (some may support RWX even if not obvious from name)
+		if len(storageClasses.Items) > 0 {
+			rwxStorageClass = &storageClasses.Items[0]
+			GinkgoWriter.Printf("Using storage class: %s (RWX support unknown)\n", rwxStorageClass.Name)
+		} else {
+			Skip("No storage classes available - skipping storage-dependent tests")
+		}
+	}
+
+	// Store the storage class name for use in tests
+	testStorageClassName := rwxStorageClass.Name
+	GinkgoWriter.Printf("Selected storage class for testing: %s\n", testStorageClassName)
+
 	sbdConfig := &medik8sv1alpha1.SBDConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-sbd-config",
 			Namespace: testNS,
 		},
 		Spec: medik8sv1alpha1.SBDConfigSpec{
-			SbdWatchdogPath:  "/dev/watchdog",
-			StaleNodeTimeout: &metav1.Duration{Duration: 90 * time.Second},
+			SbdWatchdogPath:    "/dev/watchdog",
+			SharedStorageClass: testStorageClassName,
+			StaleNodeTimeout:   &metav1.Duration{Duration: 90 * time.Second},
 		},
 	}
 
 	// Create the SBDConfig
-	err := k8sClient.Create(ctx, sbdConfig)
+	err = k8sClient.Create(ctx, sbdConfig)
 	Expect(err).NotTo(HaveOccurred())
 
 	By("Verifying SBDConfig was created and processed")
