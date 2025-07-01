@@ -36,14 +36,22 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 	const watchdogTestNamespace = "sbd-watchdog-smoke-test"
 
 	BeforeAll(func() {
-		By("creating test namespace for watchdog smoke tests")
+		By("initializing Kubernetes clients for watchdog tests if needed")
+		if k8sClient == nil {
+			err := setupKubernetesClients()
+			Expect(err).NotTo(HaveOccurred(), "Failed to setup Kubernetes clients")
+		}
+
+		By("creating test namespace for watchdog smoke tests if it doesn't exist")
 		ns := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: watchdogTestNamespace,
 			},
 		}
 		err := k8sClient.Create(ctx, ns)
-		Expect(err).NotTo(HaveOccurred())
+		if err != nil && !strings.Contains(err.Error(), "already exists") {
+			Expect(err).NotTo(HaveOccurred())
+		}
 	})
 
 	AfterAll(func() {
@@ -73,9 +81,7 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 						val := int32(6) // Conservative 15-second pet interval
 						return &val
 					}(),
-					// Note: Watchdog test mode is controlled via agent command line flags,
-					// not via CRD spec fields. The controller will automatically enable
-					// test mode in development environments.
+					// Note: The agent now always runs with testMode=false for production behavior
 				},
 			}
 		})
@@ -100,7 +106,7 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 		})
 
 		It("should successfully deploy SBD agents without causing node instability", func() {
-			By("creating SBD configuration with watchdog test mode enabled")
+			By("creating SBD configuration with watchdog enabled")
 			err := k8sClient.Create(ctx, sbdConfig)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -126,7 +132,6 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 			argsStr := strings.Join(container.Args, " ")
 			Expect(argsStr).To(ContainSubstring("--watchdog-path=/dev/watchdog"))
 			Expect(argsStr).To(ContainSubstring("--watchdog-timeout=1m30s"))
-			Expect(argsStr).To(ContainSubstring("--watchdog-test-mode=true"))
 
 			By("waiting for SBD agent pods to become ready")
 			Eventually(func() int {
@@ -220,7 +225,7 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 			Expect(logStr).NotTo(ContainSubstring("Failed to pet watchdog after retries"))
 			Expect(logStr).NotTo(ContainSubstring("watchdog device is not open"))
 
-			// In test mode, we should see successful operation
+			// The agent should show successful operation during normal startup
 			Expect(logStr).To(SatisfyAny(
 				ContainSubstring("Watchdog pet successful"),
 				ContainSubstring("SBD Agent started successfully"),
@@ -345,7 +350,7 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 			Expect(retrievedConfig.Spec.SbdWatchdogPath).To(Equal("/dev/watchdog"))
 			Expect(retrievedConfig.Spec.WatchdogTimeout.Duration).To(Equal(90 * time.Second))
 			Expect(*retrievedConfig.Spec.PetIntervalMultiple).To(Equal(int32(6)))
-			// Note: Watchdog test mode is not part of the CRD spec but is handled by the controller
+			// Note: Watchdog configuration is handled entirely through the CRD spec
 
 			By("monitoring system stability with configuration changes")
 			Consistently(func() bool {

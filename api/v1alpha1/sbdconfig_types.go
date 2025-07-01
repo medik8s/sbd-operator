@@ -107,7 +107,7 @@ type SBDConfigSpec struct {
 	// Nodes that haven't updated their heartbeat within this duration will be considered stale and their slots
 	// will be freed for reuse by new nodes. The value must be at least 1 minute.
 	// +kubebuilder:validation:Type=string
-	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(m|h))+$"
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(s|m|h))+$"
 	// +kubebuilder:default="1h"
 	// +optional
 	StaleNodeTimeout *metav1.Duration `json:"staleNodeTimeout,omitempty"`

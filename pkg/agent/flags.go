@@ -30,9 +30,6 @@ const (
 	// FlagPetInterval specifies the pet interval (how often to pet the watchdog)
 	FlagPetInterval = "pet-interval"
 
-	// FlagWatchdogTestMode enables watchdog test mode (prevents actual reboots)
-	FlagWatchdogTestMode = "watchdog-test-mode"
-
 	// FlagSBDDevice specifies the path to the SBD block device
 	FlagSBDDevice = "sbd-device"
 
@@ -81,9 +78,6 @@ const (
 
 	// DefaultPetInterval is the default pet interval
 	DefaultPetInterval = "15s"
-
-	// DefaultWatchdogTestMode is the default watchdog test mode setting
-	DefaultWatchdogTestMode = false
 
 	// DefaultSBDDevice is the default SBD device path (empty means no SBD device)
 	DefaultSBDDevice = ""

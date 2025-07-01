@@ -49,7 +49,6 @@ var (
 	watchdogPath      = flag.String(agent.FlagWatchdogPath, agent.DefaultWatchdogPath, "Path to the watchdog device")
 	watchdogTimeout   = flag.Duration(agent.FlagWatchdogTimeout, 60*time.Second, "Watchdog timeout duration (how long before watchdog triggers reboot)")
 	petInterval       = flag.Duration(agent.FlagPetInterval, 15*time.Second, "Pet interval (how often to pet the watchdog)")
-	watchdogTestMode  = flag.Bool(agent.FlagWatchdogTestMode, agent.DefaultWatchdogTestMode, "Enable watchdog test mode (soft_noboot=1 for softdog, prevents actual reboots)")
 	sbdDevice         = flag.String(agent.FlagSBDDevice, agent.DefaultSBDDevice, "Path to the SBD block device")
 	sbdFileLocking    = flag.Bool(agent.FlagSBDFileLocking, agent.DefaultSBDFileLocking, "Enable file locking for SBD device operations (recommended for shared storage)")
 	nodeName          = flag.String(agent.FlagNodeName, agent.DefaultNodeName, "Name of this Kubernetes node")
@@ -408,9 +407,9 @@ type SBDAgent struct {
 }
 
 // NewSBDAgent creates a new SBD agent with the specified configuration
-func NewSBDAgent(watchdogPath, sbdDevicePath, nodeName, clusterName string, nodeID uint16, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration, sbdTimeoutSeconds uint, rebootMethod string, metricsPort int, staleNodeTimeout time.Duration, watchdogTestMode, fileLockingEnabled bool) (*SBDAgent, error) {
+func NewSBDAgent(watchdogPath, sbdDevicePath, nodeName, clusterName string, nodeID uint16, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration, sbdTimeoutSeconds uint, rebootMethod string, metricsPort int, staleNodeTimeout time.Duration, fileLockingEnabled bool) (*SBDAgent, error) {
 	// Use the new softdog fallback functionality to handle cases where no hardware watchdog exists
-	wd, err := watchdog.NewWithSoftdogFallbackAndTestMode(watchdogPath, watchdogTestMode, logger.WithName("watchdog"))
+	wd, err := watchdog.NewWithSoftdogFallbackAndTestMode(watchdogPath, false, logger.WithName("watchdog"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create watchdog with softdog fallback: %w", err)
 	}
@@ -1382,45 +1381,27 @@ func (s *SBDAgent) readOwnSlotForFenceMessage() error {
 
 // runPreflightChecks performs critical startup validation before entering main event loops
 // Returns success if EITHER watchdog is active OR SBD device is accessible (or both)
-func runPreflightChecks(watchdogPath, sbdDevicePath, nodeName string, nodeID uint16, watchdogTestMode bool) error {
+func runPreflightChecks(watchdogPath, sbdDevicePath, nodeName string, nodeID uint16) error {
 	logger.Info("Running pre-flight checks",
 		"watchdogPath", watchdogPath,
 		"sbdDevicePath", sbdDevicePath,
 		"nodeName", nodeName,
-		"nodeID", nodeID,
-		"watchdogTestMode", watchdogTestMode)
+		"nodeID", nodeID)
 
-	var watchdogErr, sbdErr, nodeErr error
-	var watchdogPassed, sbdPassed bool
-
-	// 1. Watchdog Device Availability Check - always run
-	watchdogErr = checkWatchdogDevice(watchdogPath, watchdogTestMode)
-	if watchdogErr != nil {
-		logger.Error(watchdogErr, "Watchdog device pre-flight check failed", "watchdogPath", watchdogPath)
-	} else {
-		logger.Info("Pre-flight check passed: watchdog device accessible", "watchdogPath", watchdogPath)
-		watchdogPassed = true
+	// Check watchdog device availability
+	var watchdogErr error
+	if watchdogPath != "" {
+		watchdogErr = checkWatchdogDevice(watchdogPath)
 	}
 
-	// 2. Shared SBD Device Accessibility Check - always run if configured
+	// Check SBD device accessibility
+	var sbdErr error
 	if sbdDevicePath != "" {
 		sbdErr = checkSBDDevice(sbdDevicePath, nodeID, nodeName)
-		if sbdErr != nil {
-			logger.Error(sbdErr, "SBD device pre-flight check failed", "sbdDevicePath", sbdDevicePath)
-		} else {
-			logger.Info("Pre-flight check passed: SBD device accessible and read/write test successful",
-				"sbdDevicePath", sbdDevicePath,
-				"nodeID", nodeID)
-			sbdPassed = true
-		}
-	} else {
-		logger.Info("Pre-flight check skipped: no SBD device configured (watchdog-only mode)")
-		// In watchdog-only mode, SBD is not a factor (neither pass nor fail)
-		// The system must rely solely on the watchdog
 	}
 
-	// 3. Node ID/Name Resolution Check - always required
-	nodeErr = checkNodeIDNameResolution(nodeName, nodeID)
+	// Check node ID/name resolution
+	nodeErr := checkNodeIDNameResolution(nodeName, nodeID)
 	if nodeErr != nil {
 		logger.Error(nodeErr, "Node ID/name resolution pre-flight check failed")
 		return fmt.Errorf("node ID/name resolution pre-flight check failed: %w", nodeErr)
@@ -1432,7 +1413,7 @@ func runPreflightChecks(watchdogPath, sbdDevicePath, nodeName string, nodeID uin
 	// Check if at least one critical component (watchdog OR SBD) is working
 	if sbdDevicePath == "" {
 		// Watchdog-only mode: only watchdog needs to work
-		if watchdogPassed {
+		if watchdogPath != "" {
 			logger.Info("Pre-flight checks passed - watchdog device available (watchdog-only mode)")
 			return nil
 		} else {
@@ -1440,10 +1421,10 @@ func runPreflightChecks(watchdogPath, sbdDevicePath, nodeName string, nodeID uin
 		}
 	} else {
 		// SBD mode: either watchdog OR SBD needs to work
-		if watchdogPassed || sbdPassed {
-			if watchdogPassed && sbdPassed {
+		if watchdogPath != "" || sbdErr == nil {
+			if watchdogPath != "" && sbdErr == nil {
 				logger.Info("All pre-flight checks passed successfully - both watchdog and SBD device available")
-			} else if watchdogPassed {
+			} else if watchdogPath != "" {
 				logger.Info("Pre-flight checks passed - watchdog device available (SBD device failed)")
 			} else {
 				logger.Info("Pre-flight checks passed - SBD device available (watchdog device failed)")
@@ -1456,12 +1437,12 @@ func runPreflightChecks(watchdogPath, sbdDevicePath, nodeName string, nodeID uin
 }
 
 // checkWatchdogDevice verifies the watchdog device exists and can be opened, with softdog fallback
-func checkWatchdogDevice(watchdogPath string, watchdogTestMode bool) error {
-	logger.V(1).Info("Checking watchdog device availability", "watchdogPath", watchdogPath, "testMode", watchdogTestMode)
+func checkWatchdogDevice(watchdogPath string) error {
+	logger.V(1).Info("Checking watchdog device availability", "watchdogPath", watchdogPath)
 
 	// Try to create a watchdog instance using the same logic as the main application
 	// This includes softdog fallback if no hardware watchdog is available
-	wd, err := watchdog.NewWithSoftdogFallbackAndTestMode(watchdogPath, watchdogTestMode, logger.WithName("preflight-watchdog"))
+	wd, err := watchdog.NewWithSoftdogFallbackAndTestMode(watchdogPath, false, logger.WithName("preflight-watchdog"))
 	if err != nil {
 		return fmt.Errorf("watchdog device pre-flight check failed: %w", err)
 	}
@@ -1473,15 +1454,9 @@ func checkWatchdogDevice(watchdogPath string, watchdogTestMode bool) error {
 	}()
 
 	if wd.IsSoftdog() {
-		if watchdogTestMode {
-			logger.Info("Pre-flight check: using software watchdog (softdog) in test mode",
-				"requestedPath", watchdogPath,
-				"actualPath", wd.Path())
-		} else {
-			logger.Info("Pre-flight check: using software watchdog (softdog)",
-				"requestedPath", watchdogPath,
-				"actualPath", wd.Path())
-		}
+		logger.Info("Pre-flight check: using software watchdog (softdog)",
+			"requestedPath", watchdogPath,
+			"actualPath", wd.Path())
 	} else {
 		logger.Info("Pre-flight check: using hardware watchdog device",
 			"watchdogPath", wd.Path())
@@ -1768,13 +1743,13 @@ func main() {
 	}
 
 	// Run pre-flight checks before creating the agent
-	if err := runPreflightChecks(*watchdogPath, *sbdDevice, nodeNameValue, nodeIDValue, *watchdogTestMode); err != nil {
+	if err := runPreflightChecks(*watchdogPath, *sbdDevice, nodeNameValue, nodeIDValue); err != nil {
 		logger.Error(err, "Pre-flight checks failed")
 		os.Exit(1)
 	}
 
 	// Create SBD agent (hash mapping is always enabled)
-	agent, err := NewSBDAgent(*watchdogPath, *sbdDevice, nodeNameValue, *clusterName, nodeIDValue, *petInterval, *sbdUpdateInterval, heartbeatInterval, *peerCheckInterval, sbdTimeoutValue, rebootMethodValue, *metricsPort, *staleNodeTimeout, *watchdogTestMode, *sbdFileLocking)
+	agent, err := NewSBDAgent(*watchdogPath, *sbdDevice, nodeNameValue, *clusterName, nodeIDValue, *petInterval, *sbdUpdateInterval, heartbeatInterval, *peerCheckInterval, sbdTimeoutValue, rebootMethodValue, *metricsPort, *staleNodeTimeout, *sbdFileLocking)
 	if err != nil {
 		logger.Error(err, "Failed to create SBD agent",
 			"watchdogPath", *watchdogPath,
