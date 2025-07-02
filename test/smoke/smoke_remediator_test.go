@@ -17,10 +17,8 @@ limitations under the License.
 package smoke
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,7 +27,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -66,21 +63,6 @@ var _ = Describe("SBD Remediation Smoke Tests", Ordered, Label("Smoke", "Remedia
 
 			// Collect Kubernetes events
 			debugCollector.CollectKubernetesEvents(namespace)
-
-			By("Fetching curl-metrics logs")
-			req := testClients.Clientset.CoreV1().Pods(namespace).GetLogs("curl-metrics", &corev1.PodLogOptions{})
-			podLogs, err := req.Stream(testClients.Context)
-			if err == nil {
-				defer podLogs.Close()
-				buf := new(bytes.Buffer)
-				_, _ = io.Copy(buf, podLogs)
-				_, _ = fmt.Fprintf(GinkgoWriter, "Metrics logs:\n %s", buf.String())
-			} else {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get curl-metrics logs: %s", err)
-			}
-
-			// Collect controller pod description
-			debugCollector.CollectPodDescription(namespace, controllerPodName)
 		}
 
 	})

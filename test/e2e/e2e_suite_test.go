@@ -23,7 +23,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/medik8s/sbd-operator/test/utils"
@@ -36,9 +35,8 @@ var (
 	projectImage = utils.GetProjectImage()
 
 	// Kubernetes clients
-	k8sClient    client.Client
-	k8sClientset *kubernetes.Clientset
-	ctx          context.Context
+	k8sClient client.Client
+	ctx       context.Context
 )
 
 // TestE2E runs the e2e test suite for the project. These tests execute in an isolated,

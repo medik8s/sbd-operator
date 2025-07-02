@@ -45,11 +45,6 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 
 	// Verify the environment is set up correctly (setup handled by Makefile)
 	BeforeAll(func() {
-		By("initializing Kubernetes clients")
-		var err error
-		testClients, err = utils.SetupKubernetesClients()
-		Expect(err).NotTo(HaveOccurred(), "Failed to setup Kubernetes clients")
-
 		utils.CleanupSBDConfigs(testClients.Client, *testNamespace, testClients.Context)
 	})
 

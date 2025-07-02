@@ -871,7 +871,7 @@ func cleanupTestArtifacts() {
 	// Clean up temporary SCCs that might be left over from failed tests
 	tempSCCs := []string{"sbd-e2e-network-test", "sbd-e2e-storage-test"}
 	for _, sccName := range tempSCCs {
-		err := k8sClientset.RESTClient().
+		err := testClients.Clientset.RESTClient().
 			Delete().
 			AbsPath("/apis/security.openshift.io/v1/securitycontextconstraints/" + sccName).
 			Do(ctx).
