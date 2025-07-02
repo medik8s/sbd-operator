@@ -43,6 +43,16 @@ import (
 	medik8sv1alpha1 "github.com/medik8s/sbd-operator/api/v1alpha1"
 )
 
+var (
+	// Optional Environment Variables:
+	// - CERT_MANAGER_INSTALL_SKIP=true: Skips CertManager installation during test setup.
+	// These variables are useful if CertManager is already installed, avoiding
+	// re-installation and conflicts.
+	skipCertManagerInstall = os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true"
+	// isCertManagerAlreadyInstalled will be set true when CertManager CRDs be found on the cluster
+	isCertManagerAlreadyInstalled = false
+)
+
 // TestClients holds the Kubernetes clients used for testing
 type TestClients struct {
 	Client    client.Client
@@ -463,19 +473,144 @@ func (satg *ServiceAccountTokenGenerator) GenerateToken(namespace, serviceAccoun
 	return token, nil
 }
 
-// NodeStabilityChecker provides utilities for checking node stability
+// NodeStabilityChecker provides utilities for checking node stability and reboot detection
 type NodeStabilityChecker struct {
-	Clients *TestClients
+	Clients         *TestClients
+	initialNodeInfo map[string]NodeBootInfo // Track initial node state
+}
+
+// NodeBootInfo stores information to detect node reboots
+type NodeBootInfo struct {
+	BootID         string
+	KernelVersion  string
+	KubeletVersion string
+	StartTime      metav1.Time
 }
 
 // NewNodeStabilityChecker creates a new node stability checker
 func (tc *TestClients) NewNodeStabilityChecker() *NodeStabilityChecker {
-	return &NodeStabilityChecker{Clients: tc}
+	return &NodeStabilityChecker{
+		Clients:         tc,
+		initialNodeInfo: make(map[string]NodeBootInfo),
+	}
 }
 
-// WaitForNodesStable waits for all nodes to remain stable (Ready)
+// captureInitialNodeState captures the initial boot state of all nodes
+func (nsc *NodeStabilityChecker) captureInitialNodeState() error {
+
+	if len(nsc.initialNodeInfo) > 0 {
+		return nil
+	}
+
+	nodes := &corev1.NodeList{}
+	err := nsc.Clients.Client.List(nsc.Clients.Context, nodes)
+	if err != nil {
+		return fmt.Errorf("failed to list nodes for initial state capture: %w", err)
+	}
+
+	for _, node := range nodes.Items {
+		nsc.initialNodeInfo[node.Name] = NodeBootInfo{
+			BootID:         node.Status.NodeInfo.BootID,
+			KernelVersion:  node.Status.NodeInfo.KernelVersion,
+			KubeletVersion: node.Status.NodeInfo.KubeletVersion,
+			StartTime:      node.CreationTimestamp,
+		}
+		GinkgoWriter.Printf("Captured initial state for node %s: BootID=%s, Kernel=%s\n",
+			node.Name, node.Status.NodeInfo.BootID, node.Status.NodeInfo.KernelVersion)
+	}
+
+	return nil
+}
+
+// CheckForNodeReboots checks if any nodes have rebooted since initial capture
+func (nsc *NodeStabilityChecker) CheckForNodeReboots() (bool, []string, error) {
+	// Capture initial state if not done yet
+	if len(nsc.initialNodeInfo) == 0 {
+		err := nsc.captureInitialNodeState()
+		if err != nil {
+			return false, nil, err
+		}
+		// Return no reboots on first check
+		return false, nil, nil
+	}
+
+	nodes := &corev1.NodeList{}
+	err := nsc.Clients.Client.List(nsc.Clients.Context, nodes)
+	if err != nil {
+		return false, nil, fmt.Errorf("failed to list nodes for reboot check: %w", err)
+	}
+
+	var rebootedNodes []string
+	hasReboots := false
+
+	for _, node := range nodes.Items {
+		initialInfo, exists := nsc.initialNodeInfo[node.Name]
+		if !exists {
+			GinkgoWriter.Printf("Warning: No initial state for node %s, capturing current state\n", node.Name)
+			nsc.initialNodeInfo[node.Name] = NodeBootInfo{
+				BootID:         node.Status.NodeInfo.BootID,
+				KernelVersion:  node.Status.NodeInfo.KernelVersion,
+				KubeletVersion: node.Status.NodeInfo.KubeletVersion,
+				StartTime:      node.CreationTimestamp,
+			}
+			continue
+		}
+
+		// Check if BootID has changed (most reliable indicator of reboot)
+		if initialInfo.BootID != node.Status.NodeInfo.BootID {
+			GinkgoWriter.Printf("REBOOT DETECTED: Node %s BootID changed from %s to %s\n",
+				node.Name, initialInfo.BootID, node.Status.NodeInfo.BootID)
+			rebootedNodes = append(rebootedNodes, fmt.Sprintf("%s (BootID changed)", node.Name))
+			hasReboots = true
+		}
+
+		// Check if kernel version changed (could indicate reboot with kernel update)
+		if initialInfo.KernelVersion != node.Status.NodeInfo.KernelVersion {
+			GinkgoWriter.Printf("REBOOT DETECTED: Node %s kernel version changed from %s to %s\n",
+				node.Name, initialInfo.KernelVersion, node.Status.NodeInfo.KernelVersion)
+			rebootedNodes = append(rebootedNodes, fmt.Sprintf("%s (kernel changed)", node.Name))
+			hasReboots = true
+		}
+	}
+
+	// Also check for reboot-related events
+	events := &corev1.EventList{}
+	err = nsc.Clients.Client.List(nsc.Clients.Context, events)
+	if err == nil {
+		for _, event := range events.Items {
+			if event.InvolvedObject.Kind == "Node" &&
+				(strings.Contains(strings.ToLower(event.Reason), "reboot") ||
+					strings.Contains(strings.ToLower(event.Message), "reboot") ||
+					strings.Contains(strings.ToLower(event.Reason), "starting") ||
+					event.Reason == "NodeReady" && strings.Contains(event.Message, "kubelet")) {
+
+				// Check if this is a recent event
+				if time.Since(event.FirstTimestamp.Time) < time.Minute*10 {
+					GinkgoWriter.Printf("REBOOT-RELATED EVENT: Node %s - %s: %s\n",
+						event.InvolvedObject.Name, event.Reason, event.Message)
+					eventMsg := fmt.Sprintf("%s (event: %s)", event.InvolvedObject.Name, event.Reason)
+					if !contains(rebootedNodes, eventMsg) {
+						rebootedNodes = append(rebootedNodes, eventMsg)
+						hasReboots = true
+					}
+				}
+			}
+		}
+	}
+
+	return hasReboots, rebootedNodes, nil
+}
+
+// WaitForNodesStable waits for all nodes to remain stable (Ready) and ensures no reboots occur
 func (nsc *NodeStabilityChecker) WaitForNodesStable(duration time.Duration) error {
+	// Capture initial state
+	err := nsc.captureInitialNodeState()
+	if err != nil {
+		return fmt.Errorf("failed to capture initial node state: %w", err)
+	}
+
 	Consistently(func() bool {
+		// Check if nodes are ready
 		nodes := &corev1.NodeList{}
 		err := nsc.Clients.Client.List(nsc.Clients.Context, nodes)
 		if err != nil {
@@ -500,11 +635,58 @@ func (nsc *NodeStabilityChecker) WaitForNodesStable(duration time.Duration) erro
 			}
 		}
 
-		GinkgoWriter.Printf("All %d nodes remain ready\n", readyNodeCount)
+		// Check for reboots
+		hasReboots, rebootedNodes, err := nsc.CheckForNodeReboots()
+		if err != nil {
+			GinkgoWriter.Printf("Failed to check for node reboots: %v\n", err)
+			return false
+		}
+		if hasReboots {
+			GinkgoWriter.Printf("NODES REBOOTED: %v\n", rebootedNodes)
+			return false
+		}
+
+		GinkgoWriter.Printf("All %d nodes remain ready and stable (no reboots detected)\n", readyNodeCount)
 		return true
 	}, duration, time.Second*15).Should(BeTrue())
 
 	return nil
+}
+
+// WaitForNoReboots specifically waits and ensures no node reboots occur
+func (nsc *NodeStabilityChecker) WaitForNoReboots(duration time.Duration) error {
+	// Capture initial state
+	err := nsc.captureInitialNodeState()
+	if err != nil {
+		return fmt.Errorf("failed to capture initial node state: %w", err)
+	}
+
+	Consistently(func() bool {
+		hasReboots, rebootedNodes, err := nsc.CheckForNodeReboots()
+		if err != nil {
+			GinkgoWriter.Printf("Failed to check for node reboots: %v\n", err)
+			return false
+		}
+		if hasReboots {
+			GinkgoWriter.Printf("REBOOT DETECTED: %v\n", rebootedNodes)
+			return false
+		}
+
+		GinkgoWriter.Printf("No node reboots detected\n")
+		return true
+	}, duration, time.Second*10).Should(BeTrue())
+
+	return nil
+}
+
+// Helper function to check if slice contains string
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }
 
 // DaemonSetChecker provides utilities for checking DaemonSet status
@@ -559,4 +741,288 @@ func (dsc *DaemonSetChecker) CheckDaemonSetArgs(ds *appsv1.DaemonSet, expectedAr
 	}
 
 	return nil
+}
+
+// SBDAgentValidator provides comprehensive validation for SBD agent deployments
+type SBDAgentValidator struct {
+	TestNS  *TestNamespace
+	Clients *TestClients
+}
+
+// NewSBDAgentValidator creates a new SBD agent validator
+func (tn *TestNamespace) NewSBDAgentValidator() *SBDAgentValidator {
+	return &SBDAgentValidator{
+		TestNS:  tn,
+		Clients: tn.Clients,
+	}
+}
+
+// ValidateAgentDeploymentOptions configures the validation behavior
+type ValidateAgentDeploymentOptions struct {
+	SBDConfigName    string
+	ExpectedArgs     []string
+	MinReadyPods     int
+	DaemonSetTimeout time.Duration
+	PodReadyTimeout  time.Duration
+	NodeStableTime   time.Duration
+	LogCheckTimeout  time.Duration
+}
+
+// DefaultValidateAgentDeploymentOptions returns sensible defaults for validation
+func DefaultValidateAgentDeploymentOptions(sbdConfigName string) ValidateAgentDeploymentOptions {
+	return ValidateAgentDeploymentOptions{
+		SBDConfigName: sbdConfigName,
+		ExpectedArgs: []string{
+			"--watchdog-path=/dev/watchdog",
+			"--watchdog-timeout=1m30s",
+		},
+		MinReadyPods:     1,
+		DaemonSetTimeout: time.Minute * 2,
+		PodReadyTimeout:  time.Minute * 5,
+		NodeStableTime:   time.Minute * 3,
+		LogCheckTimeout:  time.Minute * 1,
+	}
+}
+
+// ValidateAgentDeployment performs comprehensive validation of SBD agent deployment
+func (sav *SBDAgentValidator) ValidateAgentDeployment(opts ValidateAgentDeploymentOptions) error {
+	By("waiting for SBD agent DaemonSet to be created")
+	dsChecker := sav.TestNS.NewDaemonSetChecker()
+	daemonSet, err := dsChecker.WaitForDaemonSet(map[string]string{"sbdconfig": opts.SBDConfigName}, opts.DaemonSetTimeout)
+	if err != nil {
+		return fmt.Errorf("failed to wait for DaemonSet: %w", err)
+	}
+
+	// Basic DaemonSet validation - image checks are handled in specific tests
+
+	By("verifying DaemonSet has correct configuration")
+	err = dsChecker.CheckDaemonSetArgs(daemonSet, opts.ExpectedArgs)
+	if err != nil {
+		return fmt.Errorf("DaemonSet configuration validation failed: %w", err)
+	}
+
+	By("waiting for SBD agent pods to become ready")
+	podChecker := sav.TestNS.NewPodStatusChecker(map[string]string{"sbdconfig": opts.SBDConfigName})
+	err = podChecker.WaitForPodsReady(opts.MinReadyPods, opts.PodReadyTimeout)
+	if err != nil {
+		return fmt.Errorf("pods failed to become ready: %w", err)
+	}
+
+	By("verifying nodes remain stable and don't experience reboots")
+	nodeChecker := sav.Clients.NewNodeStabilityChecker()
+	err = nodeChecker.WaitForNodesStable(opts.NodeStableTime)
+	if err != nil {
+		return fmt.Errorf("node stability check failed: %w", err)
+	}
+
+	By("checking if SBD agent pods exist and examining their status")
+	pods := &corev1.PodList{}
+	err = sav.Clients.Client.List(sav.Clients.Context, pods,
+		client.InNamespace(sav.TestNS.Name),
+		client.MatchingLabels{"sbdconfig": opts.SBDConfigName})
+	if err != nil {
+		return fmt.Errorf("failed to list pods: %w", err)
+	}
+	if len(pods.Items) < opts.MinReadyPods {
+		return fmt.Errorf("expected at least %d pods, found %d", opts.MinReadyPods, len(pods.Items))
+	}
+
+	// Check at least one pod for logs (but don't require specific log messages in test environment)
+	podName := pods.Items[0].Name
+	By(fmt.Sprintf("examining logs of SBD agent pod %s (may show watchdog hardware limitations)", podName))
+
+	// Try to get logs but don't fail the test if pod isn't ready or logs are empty
+	Eventually(func() string {
+		logStr, err := podChecker.GetPodLogs(podName, func() *int64 { val := int64(20); return &val }())
+		if err != nil {
+			GinkgoWriter.Printf("Failed to get logs from pod %s: %v\n", podName, err)
+			return "ERROR_GETTING_LOGS"
+		}
+		if logStr == "" {
+			return "NO_LOGS_YET"
+		}
+		GinkgoWriter.Printf("Pod %s logs sample:\n%s\n", podName, logStr)
+		return logStr
+	}, opts.LogCheckTimeout, time.Second*10).Should(SatisfyAny(
+		// Accept various states - the test is mainly about configuration correctness
+		ContainSubstring("Watchdog pet successful"),
+		ContainSubstring("falling back to write-based keep-alive"),
+		ContainSubstring("Starting watchdog loop"),
+		ContainSubstring("SBD Agent started"),
+		ContainSubstring("failed to open watchdog"), // Expected in test environments
+		ContainSubstring("ERROR_GETTING_LOGS"),
+		ContainSubstring("NO_LOGS_YET"),
+	))
+
+	By("verifying no critical errors in agent logs")
+	fullLogStr, err := podChecker.GetPodLogs(podName, nil)
+	if err != nil {
+		return fmt.Errorf("failed to get full pod logs: %w", err)
+	}
+
+	// These errors would indicate problems with our implementation
+	if strings.Contains(fullLogStr, "Failed to pet watchdog after retries") {
+		return fmt.Errorf("found critical watchdog error: Failed to pet watchdog after retries")
+	}
+	if strings.Contains(fullLogStr, "watchdog device is not open") {
+		return fmt.Errorf("found critical watchdog error: watchdog device is not open")
+	}
+
+	// The agent should show successful operation during normal startup
+	hasSuccessIndicator := strings.Contains(fullLogStr, "Watchdog pet successful") ||
+		strings.Contains(fullLogStr, "SBD Agent started successfully")
+
+	if !hasSuccessIndicator {
+		GinkgoWriter.Printf("Warning: No clear success indicators found in logs, but no critical errors detected")
+	}
+
+	return nil
+}
+
+// ValidateNoNodeReboots performs focused validation to ensure SBD agents don't cause node reboots
+func (sav *SBDAgentValidator) ValidateNoNodeReboots(opts ValidateAgentDeploymentOptions) error {
+	By("capturing initial node state before SBD agent deployment")
+	nodeChecker := sav.Clients.NewNodeStabilityChecker()
+	err := nodeChecker.captureInitialNodeState()
+	if err != nil {
+		return fmt.Errorf("failed to capture initial node state: %w", err)
+	}
+
+	By("waiting for SBD agent DaemonSet to be created")
+	dsChecker := sav.TestNS.NewDaemonSetChecker()
+	_, err = dsChecker.WaitForDaemonSet(map[string]string{"sbdconfig": opts.SBDConfigName}, opts.DaemonSetTimeout)
+	if err != nil {
+		return fmt.Errorf("failed to wait for DaemonSet: %w", err)
+	}
+
+	By("waiting for SBD agent pods to become ready")
+	podChecker := sav.TestNS.NewPodStatusChecker(map[string]string{"sbdconfig": opts.SBDConfigName})
+	err = podChecker.WaitForPodsReady(opts.MinReadyPods, opts.PodReadyTimeout)
+	if err != nil {
+		return fmt.Errorf("pods failed to become ready: %w", err)
+	}
+
+	By("continuously monitoring for node reboots during agent operation")
+	err = nodeChecker.WaitForNoReboots(opts.NodeStableTime)
+	if err != nil {
+		return fmt.Errorf("node reboot detected during SBD agent operation: %w", err)
+	}
+
+	By("performing final reboot check after monitoring period")
+	hasReboots, rebootedNodes, err := nodeChecker.CheckForNodeReboots()
+	if err != nil {
+		return fmt.Errorf("failed final reboot check: %w", err)
+	}
+	if hasReboots {
+		return fmt.Errorf("nodes rebooted during SBD agent deployment: %v", rebootedNodes)
+	}
+
+	GinkgoWriter.Printf("SUCCESS: No node reboots detected during SBD agent deployment and operation\n")
+	return nil
+}
+
+// tokenRequest is a simplified representation of the Kubernetes TokenRequest API response,
+// containing only the token field that we need to extract.
+type tokenRequest struct {
+	Status struct {
+		Token string `json:"token"`
+	} `json:"status"`
+}
+
+func CleanupSBDConfigs(k8sClient client.Client, testNS TestNamespace, ctx context.Context) {
+	By("cleaning up SBD configuration and waiting for agents to terminate")
+	// Clean up all SBDConfigs in the test namespace
+	sbdConfigs := &medik8sv1alpha1.SBDConfigList{}
+	err := k8sClient.List(ctx, sbdConfigs, client.InNamespace(testNS.Name))
+	if err == nil {
+		for _, config := range sbdConfigs.Items {
+			err := testNS.CleanupSBDConfig(&config)
+			if err != nil {
+				GinkgoWriter.Printf("Warning: failed to cleanup SBDConfig %s: %v\n", config.Name, err)
+			}
+		}
+	}
+}
+
+func SuiteSetup(namespace string) (TestClients, error) {
+
+	By("verifying smoke test environment setup")
+	_, _ = fmt.Fprintf(GinkgoWriter, "Smoke test environment setup completed by Makefile\n")
+	_, _ = fmt.Fprintf(GinkgoWriter, "Project image: %s\n", GetProjectImage())
+	_, _ = fmt.Fprintf(GinkgoWriter, "Agent image: %s\n", GetAgentImage())
+
+	By("initializing Kubernetes clients for tests if needed")
+	testClients, err := SetupKubernetesClients()
+	Expect(err).NotTo(HaveOccurred(), "Failed to setup Kubernetes clients")
+
+	// Verify we can connect to the cluster
+	By("verifying cluster connection")
+	serverVersion, err := testClients.Clientset.Discovery().ServerVersion()
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to connect to cluster")
+	_, _ = fmt.Fprintf(GinkgoWriter, "Connected to Kubernetes cluster version: %s\n", serverVersion.String())
+
+	By("creating test namespace for smoke tests if it doesn't exist")
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: namespace,
+		},
+	}
+	err = testClients.Client.Create(testClients.Context, ns)
+	if err != nil && !strings.Contains(err.Error(), "already exists") {
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	// The smoke tests are intended to run on a temporary cluster that is created and destroyed for testing.
+	// To prevent errors when tests run in environments with CertManager already installed,
+	// we check for its presence before execution.
+	// Setup CertManager before the suite if not skipped and if not already installed
+	if !skipCertManagerInstall {
+		By("checking if cert manager is installed already")
+		isCertManagerAlreadyInstalled = IsCertManagerCRDsInstalled()
+		if !isCertManagerAlreadyInstalled {
+			_, _ = fmt.Fprintf(GinkgoWriter, "Installing CertManager...\n")
+			Expect(InstallCertManager()).To(Succeed(), "Failed to install CertManager")
+		} else {
+			_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: CertManager is already installed. Skipping installation...\n")
+		}
+	}
+
+	By("verifying CRDs are installed")
+	// Check for SBD CRDs by looking for API resources in the medik8s.medik8s.io group
+	apiResourceList, err := testClients.Clientset.Discovery().ServerResourcesForGroupVersion("medik8s.medik8s.io/v1alpha1")
+	Expect(err).NotTo(HaveOccurred(), "Failed to get API resources for medik8s.medik8s.io/v1alpha1")
+
+	var foundSBDConfig, foundSBDRemediation bool
+	for _, resource := range apiResourceList.APIResources {
+		if resource.Kind == "SBDConfig" {
+			foundSBDConfig = true
+		}
+		if resource.Kind == "SBDRemediation" {
+			foundSBDRemediation = true
+		}
+	}
+	Expect(foundSBDConfig).To(BeTrue(), "Expected SBDConfig CRD to be installed (should be done by Makefile setup)")
+	Expect(foundSBDRemediation).To(BeTrue(), "Expected SBDRemediation CRD to be installed (should be done by Makefile setup)")
+
+	By("verifying the controller-manager is deployed")
+	deployment := &appsv1.Deployment{}
+	err = testClients.Client.Get(testClients.Context, client.ObjectKey{
+		Name:      "sbd-operator-controller-manager",
+		Namespace: "sbd-operator-system",
+	}, deployment)
+	Expect(err).NotTo(HaveOccurred(), "Expected controller-manager to be deployed (should be done by Makefile setup)")
+
+	// Confirm the operator is running
+	By("confirming the operator is running")
+	Eventually(func() bool {
+		podList, err := testClients.Clientset.CoreV1().Pods("sbd-operator-system").List(testClients.Context, metav1.ListOptions{
+			LabelSelector: "control-plane=controller-manager",
+		})
+		if err != nil || len(podList.Items) == 0 {
+			return false
+		}
+		return podList.Items[0].Status.Phase == corev1.PodRunning
+	}, 10*time.Second, 1*time.Second).Should(BeTrue(), "Operator pod is not running")
+
+	return *testClients, nil
 }

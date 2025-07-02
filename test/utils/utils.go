@@ -107,10 +107,13 @@ func IsPrometheusCRDsInstalled() bool {
 
 // UninstallCertManager uninstalls the cert manager
 func UninstallCertManager() {
-	url := fmt.Sprintf(certmanagerURLTmpl, certmanagerVersion)
-	cmd := exec.Command("kubectl", "delete", "-f", url)
-	if _, err := Run(cmd); err != nil {
-		warnError(err)
+	if !skipCertManagerInstall && !isCertManagerAlreadyInstalled {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Uninstalling CertManager...\n")
+		url := fmt.Sprintf(certmanagerURLTmpl, certmanagerVersion)
+		cmd := exec.Command("kubectl", "delete", "-f", url)
+		if _, err := Run(cmd); err != nil {
+			warnError(err)
+		}
 	}
 }
 
@@ -374,4 +377,56 @@ func UncommentCode(filename, target, prefix string) error {
 	}
 
 	return nil
+}
+
+// getProjectImage returns the project image name based on environment variables.
+// It uses the same pattern as the Makefile QUAY_* variables, with sensible defaults for local testing.
+func GetProjectImage() string {
+	// Allow complete override via OPERATOR_IMG environment variable
+	if testImg := os.Getenv("OPERATOR_IMG"); testImg != "" {
+		return testImg
+	}
+
+	registry := os.Getenv("QUAY_REGISTRY")
+	if registry == "" {
+		registry = "localhost:5000" // Local registry for testing
+	}
+
+	org := os.Getenv("QUAY_ORG")
+	if org == "" {
+		org = "sbd-operator"
+	}
+
+	version := os.Getenv("TAG")
+	if version == "" {
+		version = "smoke-test"
+	}
+
+	return fmt.Sprintf("%s/%s/sbd-operator:%s", registry, org, version)
+}
+
+// getAgentImage returns the agent image name based on environment variables.
+// It uses the same pattern as the Makefile QUAY_* variables, with sensible defaults for local testing.
+func GetAgentImage() string {
+	// Allow complete override via AGENT_IMG environment variable
+	if agentImg := os.Getenv("AGENT_IMG"); agentImg != "" {
+		return agentImg
+	}
+
+	registry := os.Getenv("QUAY_REGISTRY")
+	if registry == "" {
+		registry = "localhost:5000" // Local registry for testing
+	}
+
+	org := os.Getenv("QUAY_ORG")
+	if org == "" {
+		org = "sbd-operator"
+	}
+
+	version := os.Getenv("TAG")
+	if version == "" {
+		version = "smoke-test"
+	}
+
+	return fmt.Sprintf("%s/%s/sbd-agent:%s", registry, org, version)
 }
