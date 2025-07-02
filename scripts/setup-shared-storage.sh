@@ -33,6 +33,7 @@ CLEANUP="false"
 DRY_RUN="false"
 CREATE_EFS="true"
 SKIP_CSI_INSTALL="false"
+SKIP_PERMISSION_CHECKS="false"
 
 # Functions
 log_info() {
@@ -68,6 +69,7 @@ OPTIONS:
     --cluster-name NAME        Override cluster name detection
     --aws-region REGION        Override AWS region detection
     --cleanup                  Clean up all created resources
+    --skip-permission-checks   Skip AWS permission validation (use with caution)
     --dry-run                  Show what would be done without executing
     --verbose                  Enable verbose logging
     --help                     Show this help message
@@ -103,11 +105,12 @@ REQUIREMENTS:
 
 The script automatically:
     1. Detects cluster name and AWS region
-    2. Installs/verifies EFS CSI driver
-    3. Creates EFS filesystem with proper tags
-    4. Sets up complete networking (VPC, subnets, security groups, mount targets)
-    5. Creates StorageClass for ReadWriteMany (RWX) access
-    6. Provides comprehensive cleanup functionality
+    2. Validates AWS permissions for EFS and EC2 operations
+    3. Installs/verifies EFS CSI driver
+    4. Creates EFS filesystem with proper tags
+    5. Sets up complete networking (VPC, subnets, security groups, mount targets)
+    6. Creates StorageClass with EFS Access Point provisioning for ReadWriteMany (RWX) access
+    7. Provides comprehensive cleanup functionality
 
 EOF
 }
@@ -152,6 +155,10 @@ while [[ $# -gt 0 ]]; do
             CREATE_EFS="true"
             shift
             ;;
+        --no-create-efs)
+            CREATE_EFS="false"
+            shift
+            ;;
         --cleanup)
             CLEANUP="true"
             shift
@@ -160,8 +167,16 @@ while [[ $# -gt 0 ]]; do
             SKIP_CSI_INSTALL="true"
             shift
             ;;
+        --skip-permission-checks)
+            SKIP_PERMISSION_CHECKS="true"
+            shift
+            ;;
         --dry-run)
             DRY_RUN="true"
+            shift
+            ;;
+        --verbose)
+            set -x  # Enable verbose mode
             shift
             ;;
         -h|--help)
@@ -211,6 +226,205 @@ check_tools() {
     fi
     
     log_success "All required tools are available"
+}
+
+# Function to check AWS permissions
+check_aws_permissions() {
+    log_info "Checking AWS permissions..."
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[DRY RUN] Skipping AWS permission checks"
+        return
+    fi
+    
+    if [[ "$SKIP_PERMISSION_CHECKS" == "true" ]]; then
+        log_warning "Skipping AWS permission checks (--skip-permission-checks specified)"
+        return
+    fi
+    
+    local permission_errors=()
+    local test_efs_id=""
+    
+    # Test basic EFS permissions
+    log_info "Testing EFS permissions..."
+    
+    # Check if we can describe file systems
+    if ! aws efs describe-file-systems --region "$AWS_REGION" --max-items 1 >/dev/null 2>&1; then
+        permission_errors+=("elasticfilesystem:DescribeFileSystems")
+    fi
+    
+    # Check if we can describe mount targets (test with any existing EFS filesystem)
+    local test_efs_for_mount_targets
+    test_efs_for_mount_targets=$(aws efs describe-file-systems --region "$AWS_REGION" --query 'FileSystems[0].FileSystemId' --output text 2>/dev/null || echo "")
+    if [[ -n "$test_efs_for_mount_targets" && "$test_efs_for_mount_targets" != "None" ]]; then
+        if ! aws efs describe-mount-targets --region "$AWS_REGION" --file-system-id "$test_efs_for_mount_targets" >/dev/null 2>&1; then
+            permission_errors+=("elasticfilesystem:DescribeMountTargets")
+        fi
+    else
+        # No EFS exists to test mount targets, skip this check
+        log_info "No existing EFS filesystems found - skipping DescribeMountTargets test"
+    fi
+    
+    # Test EC2 VPC permissions
+    log_info "Testing EC2 VPC permissions..."
+    
+    # Check if we can describe VPCs (minimum max-results is 5)
+    if ! aws ec2 describe-vpcs --region "$AWS_REGION" --max-results 5 >/dev/null 2>&1; then
+        permission_errors+=("ec2:DescribeVpcs")
+    fi
+    
+    # Check if we can describe subnets (minimum max-results is 5)
+    if ! aws ec2 describe-subnets --region "$AWS_REGION" --max-results 5 >/dev/null 2>&1; then
+        permission_errors+=("ec2:DescribeSubnets")
+    fi
+    
+    # Check if we can describe security groups (minimum max-results is 5)
+    if ! aws ec2 describe-security-groups --region "$AWS_REGION" --max-results 5 >/dev/null 2>&1; then
+        permission_errors+=("ec2:DescribeSecurityGroups")
+    fi
+    
+    # Test EFS Access Point permissions (only if we're creating new EFS or using existing one)
+    if [[ "$CREATE_EFS" == "true" || -n "$EFS_FILESYSTEM_ID" ]]; then
+        log_info "Testing EFS Access Point permissions..."
+        
+        # Find a test EFS filesystem to test against
+        if [[ -n "$EFS_FILESYSTEM_ID" ]]; then
+            test_efs_id="$EFS_FILESYSTEM_ID"
+        else
+            # Try to find an existing EFS to test against
+            test_efs_id=$(aws efs describe-file-systems \
+                --region "$AWS_REGION" \
+                --query 'FileSystems[0].FileSystemId' \
+                --output text 2>/dev/null || echo "")
+        fi
+        
+        if [[ -n "$test_efs_id" && "$test_efs_id" != "None" ]]; then
+            # Test CreateAccessPoint permission by attempting a test creation (then immediately delete)
+            log_info "Testing CreateAccessPoint permission with filesystem: $test_efs_id"
+            local test_ap_id=""
+            local create_ap_error=""
+            
+            # First try with tags to test both CreateAccessPoint and TagResource
+            create_ap_error=$(aws efs create-access-point \
+                --region "$AWS_REGION" \
+                --file-system-id "$test_efs_id" \
+                --posix-user Uid=1001,Gid=1001 \
+                --root-directory Path="/permission-test-$(date +%s)",CreationInfo='{OwnerUid=1001,OwnerGid=1001,Permissions=755}' \
+                --tags Key=test,Value=permission-check \
+                --query 'AccessPointId' \
+                --output text 2>&1)
+            
+            if [[ -n "$create_ap_error" && "$create_ap_error" != "None" && ! "$create_ap_error" =~ error && ! "$create_ap_error" =~ "AccessDenied" ]]; then
+                test_ap_id="$create_ap_error"
+                log_info "✅ CreateAccessPoint and TagResource permissions verified"
+                
+                # Test DeleteAccessPoint permission
+                if aws efs delete-access-point --region "$AWS_REGION" --access-point-id "$test_ap_id" >/dev/null 2>&1; then
+                    log_info "✅ DeleteAccessPoint permission verified"
+                else
+                    permission_errors+=("elasticfilesystem:DeleteAccessPoint")
+                fi
+            else
+                # Check if the error is specifically about TagResource
+                if [[ "$create_ap_error" =~ TagResource ]]; then
+                    permission_errors+=("elasticfilesystem:TagResource")
+                    
+                    # Try without tags to test just CreateAccessPoint
+                    log_info "TagResource permission missing, testing CreateAccessPoint without tags..."
+                    test_ap_id=$(aws efs create-access-point \
+                        --region "$AWS_REGION" \
+                        --file-system-id "$test_efs_id" \
+                        --posix-user Uid=1001,Gid=1001 \
+                        --root-directory Path="/permission-test-$(date +%s)",CreationInfo='{OwnerUid=1001,OwnerGid=1001,Permissions=755}' \
+                        --query 'AccessPointId' \
+                        --output text 2>/dev/null || echo "")
+                    
+                    if [[ -n "$test_ap_id" && "$test_ap_id" != "None" ]]; then
+                        log_info "✅ CreateAccessPoint permission verified (without tags)"
+                        
+                        # Test DeleteAccessPoint permission
+                        if aws efs delete-access-point --region "$AWS_REGION" --access-point-id "$test_ap_id" >/dev/null 2>&1; then
+                            log_info "✅ DeleteAccessPoint permission verified"
+                        else
+                            permission_errors+=("elasticfilesystem:DeleteAccessPoint")
+                        fi
+                    else
+                        permission_errors+=("elasticfilesystem:CreateAccessPoint")
+                    fi
+                else
+                    # Some other CreateAccessPoint error
+                    permission_errors+=("elasticfilesystem:CreateAccessPoint")
+                fi
+            fi
+            
+            # Test DescribeAccessPoints permission (minimum max-results is 5)
+            if ! aws efs describe-access-points --region "$AWS_REGION" --file-system-id "$test_efs_id" --max-results 5 >/dev/null 2>&1; then
+                permission_errors+=("elasticfilesystem:DescribeAccessPoints")
+            fi
+        fi
+    fi
+    
+    # Test permissions needed for EFS creation (if applicable)
+    if [[ "$CREATE_EFS" == "true" ]]; then
+        log_info "Testing EFS creation permissions..."
+        
+        # We can't actually test CreateFileSystem without creating one, but we can check TagResource
+        # by trying to tag an existing resource (if any exist)
+        local existing_efs
+        existing_efs=$(aws efs describe-file-systems \
+            --region "$AWS_REGION" \
+            --query 'FileSystems[0].FileSystemId' \
+            --output text 2>/dev/null || echo "")
+        
+        if [[ -n "$existing_efs" && "$existing_efs" != "None" ]]; then
+            # Test tag permissions on existing filesystem
+            if ! aws efs list-tags-for-resource --region "$AWS_REGION" --resource-id "$existing_efs" >/dev/null 2>&1; then
+                permission_errors+=("elasticfilesystem:ListTagsForResource")
+            fi
+        fi
+        
+        # Test CreateMountTarget permission (we'll test this during actual mount target creation)
+        log_info "CreateMountTarget permission will be tested during mount target creation"
+    fi
+    
+    # Test Security Group creation permissions
+    log_info "Testing Security Group permissions..."
+    
+    # We'll test CreateSecurityGroup during actual security group creation
+    # But we can test AuthorizeSecurityGroupIngress on an existing group if needed
+    
+    # Report results
+    if [[ ${#permission_errors[@]} -eq 0 ]]; then
+        log_success "All required AWS permissions are available"
+    else
+        log_error "Missing AWS permissions:"
+        for perm in "${permission_errors[@]}"; do
+            log_error "  - $perm"
+        done
+        echo
+        log_error "Required AWS permissions for EFS setup:"
+        echo "  EFS Permissions:"
+        echo "    - elasticfilesystem:CreateFileSystem"
+        echo "    - elasticfilesystem:DescribeFileSystems"
+        echo "    - elasticfilesystem:CreateAccessPoint"
+        echo "    - elasticfilesystem:DeleteAccessPoint"
+        echo "    - elasticfilesystem:DescribeAccessPoints"
+        echo "    - elasticfilesystem:CreateMountTarget"
+        echo "    - elasticfilesystem:DescribeMountTargets"
+        echo "    - elasticfilesystem:DeleteMountTarget"
+        echo "    - elasticfilesystem:TagResource"
+        echo "    - elasticfilesystem:ListTagsForResource"
+        echo "  EC2 Permissions:"
+        echo "    - ec2:DescribeVpcs"
+        echo "    - ec2:DescribeSubnets"
+        echo "    - ec2:CreateSecurityGroup"
+        echo "    - ec2:DescribeSecurityGroups"
+        echo "    - ec2:DeleteSecurityGroup"
+        echo "    - ec2:AuthorizeSecurityGroupIngress"
+        echo "    - ec2:CreateTags"
+        echo
+        exit 1
+    fi
 }
 
 # Function to auto-detect cluster name
@@ -486,6 +700,42 @@ detect_cluster_vpc_and_subnets() {
     fi
     
     if [[ -z "$cluster_vpc_id" || "$cluster_vpc_id" == "None" ]]; then
+        # Fallback: find VPC by node IP addresses
+        log_info "No cluster tags found, detecting VPC from node IPs..."
+        local node_ip
+        node_ip=$($KUBECTL get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "")
+        
+        if [[ -n "$node_ip" ]]; then
+            log_info "Using node IP $node_ip to find VPC..."
+            # Find all subnets and check which one contains this IP
+            local all_subnets
+            all_subnets=$(aws ec2 describe-subnets --region "$AWS_REGION" --query 'Subnets[].{SubnetId:SubnetId,VpcId:VpcId,CidrBlock:CidrBlock}' --output json 2>/dev/null || echo "[]")
+            
+            # Use python to find matching subnet (more reliable than bash CIDR matching)
+            cluster_vpc_id=$(echo "$all_subnets" | python3 -c "
+import json
+import ipaddress
+import sys
+
+try:
+    subnets = json.load(sys.stdin)
+    node_ip = '$node_ip'
+    
+    for subnet in subnets:
+        try:
+            cidr = ipaddress.IPv4Network(subnet['CidrBlock'])
+            if ipaddress.IPv4Address(node_ip) in cidr:
+                print(subnet['VpcId'])
+                break
+        except:
+            continue
+except:
+    pass
+" 2>/dev/null || echo "")
+        fi
+    fi
+    
+    if [[ -z "$cluster_vpc_id" || "$cluster_vpc_id" == "None" ]]; then
         log_error "Could not detect cluster VPC. Ensure you're connected to the right cluster."
         exit 1
     fi
@@ -508,6 +758,43 @@ detect_cluster_vpc_and_subnets() {
                 "Name=tag:Name,Values=*private*" \
             --query 'Subnets[].SubnetId' \
             --output text 2>/dev/null || echo "")
+    fi
+    
+    if [[ -z "$cluster_subnets" || "$cluster_subnets" == "None" ]]; then
+        # Final fallback: get subnets that contain cluster nodes
+        log_info "No tagged private subnets found, detecting from node locations..."
+        local node_ips
+        node_ips=$($KUBECTL get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null | tr ' ' '\n' | sort -u || echo "")
+        
+        if [[ -n "$node_ips" ]]; then
+            local all_subnets
+            all_subnets=$(aws ec2 describe-subnets --region "$AWS_REGION" --filters "Name=vpc-id,Values=$cluster_vpc_id" --query 'Subnets[].{SubnetId:SubnetId,CidrBlock:CidrBlock}' --output json 2>/dev/null || echo "[]")
+            
+            # Find subnets containing our nodes
+            cluster_subnets=$(echo "$all_subnets" | python3 -c "
+import json
+import ipaddress
+import sys
+
+try:
+    subnets = json.load(sys.stdin)
+    node_ips = '''$node_ips'''.strip().split('\n')
+    found_subnets = set()
+    
+    for subnet in subnets:
+        try:
+            cidr = ipaddress.IPv4Network(subnet['CidrBlock'])
+            for node_ip in node_ips:
+                if node_ip and ipaddress.IPv4Address(node_ip.strip()) in cidr:
+                    found_subnets.add(subnet['SubnetId'])
+        except:
+            continue
+    
+    print(' '.join(found_subnets))
+except:
+    pass
+" 2>/dev/null || echo "")
+        fi
     fi
     
     if [[ -z "$cluster_subnets" || "$cluster_subnets" == "None" ]]; then
@@ -700,7 +987,8 @@ EOF
         return
     fi
     
-    # Create StorageClass
+    # Create StorageClass with EFS Access Point provisioning
+    # AWS permissions have been verified for elasticfilesystem:CreateAccessPoint
     cat << EOF | $KUBECTL apply -f -
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
@@ -718,6 +1006,7 @@ allowVolumeExpansion: true
 EOF
     
     log_success "Created StorageClass: $STORAGE_CLASS_NAME"
+    log_info "Using EFS Access Point provisioning for dynamic PVC management"
 }
 
 # Function to cleanup resources
@@ -850,6 +1139,9 @@ main() {
     # Auto-detect cluster and region
     detect_cluster_name
     detect_aws_region
+    
+    # Check AWS permissions (after region is detected)
+    check_aws_permissions
     
     # Handle cleanup
     if [[ "$CLEANUP" == "true" ]]; then
