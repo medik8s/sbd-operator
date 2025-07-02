@@ -24,6 +24,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -67,6 +68,8 @@ const (
 	ReasonCleanupError              = "CleanupError"
 	ReasonPVCManaged                = "PVCManaged"
 	ReasonPVCError                  = "PVCError"
+	ReasonSBDDeviceInitialized      = "SBDDeviceInitialized"
+	ReasonSBDDeviceInitError        = "SBDDeviceInitError"
 
 	// Finalizer for cleanup operations
 	SBDConfigFinalizerName = "sbd-operator.medik8s.io/cleanup"
@@ -412,10 +415,181 @@ func (r *SBDConfigReconciler) ensurePVC(ctx context.Context, sbdConfig *medik8sv
 	return nil
 }
 
+// ensureSBDDevice ensures that the SBD device file exists in shared storage when SharedStorageClass is specified
+func (r *SBDConfigReconciler) ensureSBDDevice(ctx context.Context, sbdConfig *medik8sv1alpha1.SBDConfig, logger logr.Logger) error {
+	if !sbdConfig.Spec.HasSharedStorage() {
+		// No shared storage configured, nothing to do
+		return nil
+	}
+
+	pvcName := sbdConfig.Spec.GetSharedStoragePVCName(sbdConfig.Name)
+	jobName := fmt.Sprintf("%s-sbd-device-init", sbdConfig.Name)
+
+	logger = logger.WithValues(
+		"job.name", jobName,
+		"job.namespace", sbdConfig.Namespace,
+		"pvc.name", pvcName,
+	)
+
+	// Define the desired Job for SBD device initialization
+	desiredJob := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      jobName,
+			Namespace: sbdConfig.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":       "sbd-operator",
+				"app.kubernetes.io/component":  "sbd-device-init",
+				"app.kubernetes.io/managed-by": "sbd-operator",
+				"sbdconfig":                    sbdConfig.Name,
+			},
+		},
+		Spec: batchv1.JobSpec{
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"app.kubernetes.io/name":       "sbd-operator",
+						"app.kubernetes.io/component":  "sbd-device-init",
+						"app.kubernetes.io/managed-by": "sbd-operator",
+						"sbdconfig":                    sbdConfig.Name,
+					},
+				},
+				Spec: corev1.PodSpec{
+					RestartPolicy: corev1.RestartPolicyNever,
+					Containers: []corev1.Container{
+						{
+							Name:    "sbd-device-init",
+							Image:   "registry.access.redhat.com/ubi8/ubi-minimal:latest",
+							Command: []string{"sh", "-c"},
+							Args: []string{
+								fmt.Sprintf(`
+set -e
+SBD_DEVICE_PATH="/sbd-shared/%s"
+SBD_DEVICE_SIZE_KB=1024
+
+echo "Initializing SBD device at $SBD_DEVICE_PATH"
+
+if [ -f "$SBD_DEVICE_PATH" ]; then
+    echo "SBD device already exists at $SBD_DEVICE_PATH"
+    # Verify the device is readable and has some content
+    if [ -s "$SBD_DEVICE_PATH" ]; then
+        echo "SBD device file is non-empty, initialization complete"
+        exit 0
+    else
+        echo "SBD device file exists but is empty, re-initializing..."
+    fi
+else
+    echo "SBD device does not exist, creating new device..."
+fi
+
+# Create the SBD device file with specific size (1MB = 1024KB)
+# This provides space for multiple node slots and metadata
+dd if=/dev/zero of="$SBD_DEVICE_PATH" bs=1024 count=$SBD_DEVICE_SIZE_KB
+
+# Set appropriate permissions for the SBD device
+chmod 664 "$SBD_DEVICE_PATH"
+
+# Verify the device was created successfully
+if [ -f "$SBD_DEVICE_PATH" ] && [ -s "$SBD_DEVICE_PATH" ]; then
+    echo "SBD device successfully initialized at $SBD_DEVICE_PATH"
+    echo "Device size: $(ls -lh "$SBD_DEVICE_PATH" | awk '{print $5}')"
+else
+    echo "ERROR: Failed to create SBD device at $SBD_DEVICE_PATH"
+    exit 1
+fi
+
+echo "SBD device initialization completed successfully"
+`, agent.SharedStorageSBDDeviceFile),
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "shared-storage",
+									MountPath: sbdConfig.Spec.GetSharedStorageMountPath(),
+								},
+							},
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceMemory: mustParseQuantity("64Mi"),
+									corev1.ResourceCPU:    mustParseQuantity("10m"),
+								},
+								Limits: corev1.ResourceList{
+									corev1.ResourceMemory: mustParseQuantity("128Mi"),
+									corev1.ResourceCPU:    mustParseQuantity("100m"),
+								},
+							},
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "shared-storage",
+							VolumeSource: corev1.VolumeSource{
+								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+									ClaimName: pvcName,
+								},
+							},
+						},
+					},
+				},
+			},
+			// Clean up completed jobs after 1 hour to avoid accumulation
+			TTLSecondsAfterFinished: func() *int32 { i := int32(3600); return &i }(),
+		},
+	}
+
+	// Set controller reference
+	if err := controllerutil.SetControllerReference(sbdConfig, desiredJob, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set controller reference on SBD device init job: %w", err)
+	}
+
+	// Check if job already exists and is completed
+	existingJob := &batchv1.Job{}
+	err := r.Get(ctx, types.NamespacedName{Name: jobName, Namespace: sbdConfig.Namespace}, existingJob)
+	if err == nil {
+		// Job exists, check if it's completed successfully
+		if existingJob.Status.Succeeded > 0 {
+			logger.V(1).Info("SBD device initialization job already completed successfully")
+			return nil
+		}
+
+		// If job failed, delete it so it can be recreated
+		if existingJob.Status.Failed > 0 {
+			logger.Info("SBD device initialization job failed, recreating...",
+				"failedCount", existingJob.Status.Failed)
+			if err := r.Delete(ctx, existingJob); err != nil {
+				logger.Error(err, "Failed to delete failed SBD device init job")
+				return fmt.Errorf("failed to delete failed SBD device init job: %w", err)
+			}
+			// Wait a bit for deletion to complete
+			return fmt.Errorf("recreating failed SBD device init job, will retry")
+		}
+
+		// Job is still running
+		logger.V(1).Info("SBD device initialization job is still running")
+		return nil
+	} else if !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to get SBD device init job: %w", err)
+	}
+
+	// Create the job
+	logger.Info("Creating SBD device initialization job")
+	if err := r.Create(ctx, desiredJob); err != nil {
+		logger.Error(err, "Failed to create SBD device initialization job")
+		r.emitEventf(sbdConfig, EventTypeWarning, ReasonSBDDeviceInitError,
+			"Failed to create SBD device initialization job: %v", err)
+		return fmt.Errorf("failed to create SBD device initialization job: %w", err)
+	}
+
+	logger.Info("SBD device initialization job created successfully")
+	r.emitEventf(sbdConfig, EventTypeNormal, ReasonSBDDeviceInitialized,
+		"SBD device initialization job '%s' created successfully", jobName)
+
+	return nil
+}
+
 // +kubebuilder:rbac:groups=medik8s.medik8s.io,resources=sbdconfigs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=medik8s.medik8s.io,resources=sbdconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=medik8s.medik8s.io,resources=sbdconfigs/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
@@ -564,6 +738,25 @@ func (r *SBDConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			"operation", "pvc-creation")
 		r.emitEventf(&sbdConfig, EventTypeWarning, ReasonPVCError,
 			"Failed to ensure PVC for shared storage in namespace '%s': %v", sbdConfig.Namespace, err)
+
+		// Return requeue with backoff for transient errors
+		if r.isTransientKubernetesError(err) {
+			return ctrl.Result{RequeueAfter: InitialSBDConfigRetryDelay}, err
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Ensure SBD device exists in shared storage
+	err = r.performKubernetesAPIOperationWithRetry(ctx, "ensure SBD device", func() error {
+		return r.ensureSBDDevice(ctx, &sbdConfig, logger)
+	}, logger)
+
+	if err != nil {
+		logger.Error(err, "Failed to ensure SBD device after retries",
+			"namespace", sbdConfig.Namespace,
+			"operation", "sbd-device-init")
+		r.emitEventf(&sbdConfig, EventTypeWarning, ReasonSBDDeviceInitError,
+			"Failed to ensure SBD device in shared storage in namespace '%s': %v", sbdConfig.Namespace, err)
 
 		// Return requeue with backoff for transient errors
 		if r.isTransientKubernetesError(err) {
