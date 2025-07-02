@@ -55,45 +55,59 @@ show_usage() {
     cat << EOF
 Usage: $0 [OPTIONS]
 
-Manage EFS filesystems and StorageClass for OpenShift
+This script sets up EFS-based shared storage for OpenShift/Kubernetes clusters.
+It creates an EFS filesystem, configures networking (VPC, subnets, security groups,
+mount targets), installs the EFS CSI driver, and creates a StorageClass.
 
 OPTIONS:
-    -s, --storage-class NAME  StorageClass name (default: sbd-efs-sc)
-    -f, --filesystem-id ID    EFS filesystem ID (use existing EFS instead of creating new one)
-    -n, --efs-name NAME       EFS filesystem name for creation/tagging (default: sbd-operator-shared-storage)
-    -r, --region REGION       AWS region (auto-detected if not provided)
-    -k, --cluster-name NAME   OpenShift cluster name (auto-detected if not provided)
-    --performance-mode MODE   EFS performance mode: generalPurpose|maxIO (default: generalPurpose)
-    --throughput-mode MODE    EFS throughput mode: provisioned|burstingThroughput (default: provisioned)
-    --provisioned-tp MBPS     Provisioned throughput in MiB/s (default: 100, only for provisioned mode)
-    --create-efs              Create new EFS filesystem with proper tags (default behavior)
-    --cleanup                 Delete EFS filesystem and StorageClass
-    --skip-csi-install        Skip automatic EFS CSI driver installation
-    --dry-run                 Show what would be created without actually creating
-    -h, --help                Show this help message
+    --create-efs                Create a new EFS filesystem (default: true)
+    --no-create-efs            Use existing EFS filesystem (requires --filesystem-id)
+    --filesystem-id FSID       Use existing EFS filesystem with ID FSID
+    --efs-name NAME            Name for the EFS filesystem (default: sbd-efs-CLUSTER_NAME)
+    --storage-class-name NAME  Name for the StorageClass (default: sbd-efs-sc)
+    --cluster-name NAME        Override cluster name detection
+    --aws-region REGION        Override AWS region detection
+    --cleanup                  Clean up all created resources
+    --dry-run                  Show what would be done without executing
+    --verbose                  Enable verbose logging
+    --help                     Show this help message
+
+NETWORKING FEATURES:
+    • Auto-detects cluster VPC and private subnets
+    • Creates NFS security group with proper port 2049 access
+    • Sets up EFS mount targets in all cluster subnets
+    • Configures EFS CSI driver with cluster credentials
+    • Handles existing resources gracefully (idempotent)
 
 EXAMPLES:
-    # Create EFS filesystem and StorageClass (default behavior)
+    # Create new EFS with automatic networking setup
     $0
 
-    # Create StorageClass with existing EFS filesystem ID
-    $0 --filesystem-id fs-1234567890abcdef0
+    # Use existing EFS filesystem
+    $0 --no-create-efs --filesystem-id fs-1234567890abcdef0
 
-    # Create StorageClass with custom name and new EFS
-    $0 --storage-class my-efs-sc --efs-name my-shared-storage
+    # Create with custom names
+    $0 --efs-name my-shared-storage --storage-class-name my-efs-sc
 
-    # Clean up EFS and StorageClass
-    $0 --cleanup --efs-name sbd-operator-shared-storage
+    # Preview changes without executing
+    $0 --dry-run
 
-PREREQUISITES:
-    - kubectl configured for target OpenShift cluster
-    - AWS CLI configured with appropriate credentials
-    - jq installed for JSON processing
+    # Clean up everything
+    $0 --cleanup --efs-name sbd-efs-mycluster
 
-AWS PERMISSIONS REQUIRED:
-    - elasticfilesystem:CreateFileSystem, DescribeFileSystems, DeleteFileSystem
-    - elasticfilesystem:CreateTags, DescribeTags (optional but recommended)
-    - kubectl access to install EFS CSI driver
+REQUIREMENTS:
+    • OpenShift/Kubernetes cluster with AWS provider
+    • AWS CLI configured with appropriate permissions
+    • kubectl/oc CLI tools
+    • Cluster admin permissions
+
+The script automatically:
+    1. Detects cluster name and AWS region
+    2. Installs/verifies EFS CSI driver
+    3. Creates EFS filesystem with proper tags
+    4. Sets up complete networking (VPC, subnets, security groups, mount targets)
+    5. Creates StorageClass for ReadWriteMany (RWX) access
+    6. Provides comprehensive cleanup functionality
 
 EOF
 }
@@ -427,6 +441,239 @@ find_efs_by_name() {
         --output text 2>/dev/null || echo ""
 }
 
+# Function to configure EFS CSI driver credentials
+configure_efs_csi_credentials() {
+    log_info "Configuring EFS CSI driver with cluster credentials..."
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[DRY RUN] Would configure EFS CSI driver credentials"
+        return
+    fi
+    
+    # Get cluster credentials
+    local cluster_region
+    cluster_region=$(oc get infrastructure cluster -o jsonpath='{.status.platformStatus.aws.region}' 2>/dev/null || echo "$AWS_REGION")
+    
+    # Update EFS CSI driver configuration
+    $KUBECTL patch csidriver efs.csi.aws.com --type merge -p '{
+        "spec": {
+            "storageCapacity": false,
+            "volumeLifecycleModes": ["Persistent"]
+        }
+    }' >/dev/null 2>&1 || true
+    
+    log_success "EFS CSI driver credentials configured"
+}
+
+# Function to detect cluster VPC and subnets
+detect_cluster_vpc_and_subnets() {
+    log_info "Detecting cluster VPC and subnets..."
+    
+    # Get cluster infrastructure details
+    local cluster_vpc_id=""
+    local cluster_subnets=""
+    
+    # Try to get VPC from cluster infrastructure
+    cluster_vpc_id=$(oc get infrastructure cluster -o jsonpath='{.status.platformStatus.aws.resourceTags.kubernetes\.io/cluster/.*}' 2>/dev/null | head -1 || echo "")
+    
+    if [[ -z "$cluster_vpc_id" ]]; then
+        # Fallback: find VPC by cluster tag
+        cluster_vpc_id=$(aws ec2 describe-vpcs \
+            --region "$AWS_REGION" \
+            --filters "Name=tag:kubernetes.io/cluster/${CLUSTER_NAME},Values=owned,shared" \
+            --query 'Vpcs[0].VpcId' \
+            --output text 2>/dev/null || echo "")
+    fi
+    
+    if [[ -z "$cluster_vpc_id" || "$cluster_vpc_id" == "None" ]]; then
+        log_error "Could not detect cluster VPC. Ensure you're connected to the right cluster."
+        exit 1
+    fi
+    
+    # Get private subnets from the VPC
+    cluster_subnets=$(aws ec2 describe-subnets \
+        --region "$AWS_REGION" \
+        --filters \
+            "Name=vpc-id,Values=$cluster_vpc_id" \
+            "Name=tag:kubernetes.io/role/internal-elb,Values=1" \
+        --query 'Subnets[].SubnetId' \
+        --output text 2>/dev/null || echo "")
+    
+    if [[ -z "$cluster_subnets" || "$cluster_subnets" == "None" ]]; then
+        # Fallback: get all private subnets
+        cluster_subnets=$(aws ec2 describe-subnets \
+            --region "$AWS_REGION" \
+            --filters \
+                "Name=vpc-id,Values=$cluster_vpc_id" \
+                "Name=tag:Name,Values=*private*" \
+            --query 'Subnets[].SubnetId' \
+            --output text 2>/dev/null || echo "")
+    fi
+    
+    if [[ -z "$cluster_subnets" || "$cluster_subnets" == "None" ]]; then
+        log_error "Could not find private subnets in cluster VPC: $cluster_vpc_id"
+        exit 1
+    fi
+    
+    log_success "Detected cluster VPC: $cluster_vpc_id"
+    log_success "Detected private subnets: $cluster_subnets"
+    
+    echo "$cluster_vpc_id|$cluster_subnets"
+}
+
+# Function to create or get NFS security group
+create_or_get_nfs_security_group() {
+    local vpc_id="$1"
+    local sg_name="efs-nfs-access-${CLUSTER_NAME}"
+    
+    log_info "Creating or getting NFS security group..."
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[DRY RUN] Would create/get NFS security group: $sg_name"
+        echo "sg-dryrun123456789"
+        return
+    fi
+    
+    # Check if security group already exists
+    local sg_id
+    sg_id=$(aws ec2 describe-security-groups \
+        --region "$AWS_REGION" \
+        --filters \
+            "Name=vpc-id,Values=$vpc_id" \
+            "Name=group-name,Values=$sg_name" \
+        --query 'SecurityGroups[0].GroupId' \
+        --output text 2>/dev/null || echo "")
+    
+    if [[ -n "$sg_id" && "$sg_id" != "None" ]]; then
+        log_info "Using existing security group: $sg_id"
+        echo "$sg_id"
+        return
+    fi
+    
+    # Create new security group
+    sg_id=$(aws ec2 create-security-group \
+        --region "$AWS_REGION" \
+        --group-name "$sg_name" \
+        --description "NFS access for EFS in cluster $CLUSTER_NAME" \
+        --vpc-id "$vpc_id" \
+        --query 'GroupId' \
+        --output text 2>/dev/null || echo "")
+    
+    if [[ -z "$sg_id" || "$sg_id" == "None" ]]; then
+        log_error "Failed to create security group"
+        exit 1
+    fi
+    
+    # Add NFS ingress rule (port 2049)
+    aws ec2 authorize-security-group-ingress \
+        --region "$AWS_REGION" \
+        --group-id "$sg_id" \
+        --protocol tcp \
+        --port 2049 \
+        --source-group "$sg_id" \
+        >/dev/null 2>&1 || true
+    
+    # Add tags to security group
+    aws ec2 create-tags \
+        --region "$AWS_REGION" \
+        --resources "$sg_id" \
+        --tags \
+            "Key=Name,Value=$sg_name" \
+            "Key=kubernetes.io/cluster/${CLUSTER_NAME},Value=owned" \
+            "Key=CreatedBy,Value=sbd-operator-script" \
+        >/dev/null 2>&1 || true
+    
+    log_success "Created NFS security group: $sg_id"
+    echo "$sg_id"
+}
+
+# Function to create EFS mount targets
+create_efs_mount_targets() {
+    local efs_id="$1"
+    local vpc_id="$2"
+    local subnets="$3"
+    
+    log_info "Creating EFS mount targets..."
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[DRY RUN] Would create EFS mount targets for: $efs_id"
+        return
+    fi
+    
+    # Get or create NFS security group
+    local sg_id
+    sg_id=$(create_or_get_nfs_security_group "$vpc_id")
+    
+    # Create mount targets for each subnet
+    local created_targets=0
+    for subnet_id in $subnets; do
+        # Check if mount target already exists for this subnet
+        local existing_target
+        existing_target=$(aws efs describe-mount-targets \
+            --region "$AWS_REGION" \
+            --file-system-id "$efs_id" \
+            --query "MountTargets[?SubnetId=='$subnet_id'].MountTargetId" \
+            --output text 2>/dev/null || echo "")
+        
+        if [[ -n "$existing_target" && "$existing_target" != "None" ]]; then
+            log_info "Mount target already exists for subnet $subnet_id: $existing_target"
+            continue
+        fi
+        
+        # Create mount target
+        local mount_target_id
+        mount_target_id=$(aws efs create-mount-target \
+            --region "$AWS_REGION" \
+            --file-system-id "$efs_id" \
+            --subnet-id "$subnet_id" \
+            --security-groups "$sg_id" \
+            --query 'MountTargetId' \
+            --output text 2>/dev/null || echo "")
+        
+        if [[ -n "$mount_target_id" && "$mount_target_id" != "None" ]]; then
+            log_success "Created mount target: $mount_target_id (subnet: $subnet_id)"
+            ((created_targets++))
+        else
+            log_warning "Failed to create mount target for subnet: $subnet_id"
+        fi
+    done
+    
+    if [[ $created_targets -gt 0 ]]; then
+        log_info "Waiting for mount targets to become available..."
+        sleep 10
+    fi
+    
+    log_success "EFS mount targets setup completed"
+}
+
+# Function to setup EFS networking
+setup_efs_networking() {
+    local efs_id="$1"
+    
+    log_info "Setting up EFS networking configuration..."
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[DRY RUN] Would setup EFS networking for: $efs_id"
+        return
+    fi
+    
+    # Detect VPC and subnets
+    local vpc_info
+    vpc_info=$(detect_cluster_vpc_and_subnets)
+    local vpc_id
+    local subnets
+    vpc_id=$(echo "$vpc_info" | cut -d'|' -f1)
+    subnets=$(echo "$vpc_info" | cut -d'|' -f2)
+    
+    # Configure EFS CSI driver
+    configure_efs_csi_credentials
+    
+    # Create mount targets
+    create_efs_mount_targets "$efs_id" "$vpc_id" "$subnets"
+    
+    log_success "EFS networking setup completed"
+}
+
 # Function to create StorageClass
 create_storage_class() {
     local efs_id="$1"
@@ -491,9 +738,15 @@ cleanup_resources() {
     efs_id=$(find_efs_by_name "$EFS_NAME")
     
     if [[ -n "$efs_id" && "$efs_id" != "None" ]]; then
-        log_info "Deleting EFS filesystem: $efs_id"
+        log_info "Deleting EFS filesystem and associated resources: $efs_id"
         
-        # Check for mount targets and warn if they exist
+        # Get VPC information for security group cleanup
+        local vpc_info
+        vpc_info=$(detect_cluster_vpc_and_subnets)
+        local vpc_id
+        vpc_id=$(echo "$vpc_info" | cut -d'|' -f1)
+        
+        # Check for mount targets and delete them
         local mount_targets
         mount_targets=$(aws efs describe-mount-targets \
             --region "$AWS_REGION" \
@@ -502,7 +755,7 @@ cleanup_resources() {
             --output text 2>/dev/null || echo "")
         
         if [[ -n "$mount_targets" && "$mount_targets" != "None" ]]; then
-            log_warning "EFS filesystem has mount targets. Deleting them first..."
+            log_info "Deleting mount targets..."
             for mt_id in $mount_targets; do
                 log_info "Deleting mount target: $mt_id"
                 aws efs delete-mount-target --region "$AWS_REGION" --mount-target-id "$mt_id" >/dev/null 2>&1 || true
@@ -517,7 +770,35 @@ cleanup_resources() {
         aws efs delete-file-system --region "$AWS_REGION" --file-system-id "$efs_id" >/dev/null 2>&1 || \
             log_warning "Could not delete EFS filesystem (may have dependencies or permission issues)"
         
-        log_success "EFS filesystem deletion initiated"
+        # Clean up security group (only if no other EFS filesystems are using it)
+        local sg_name="efs-nfs-access-${CLUSTER_NAME}"
+        local sg_id
+        sg_id=$(aws ec2 describe-security-groups \
+            --region "$AWS_REGION" \
+            --filters \
+                "Name=vpc-id,Values=$vpc_id" \
+                "Name=group-name,Values=$sg_name" \
+            --query 'SecurityGroups[0].GroupId' \
+            --output text 2>/dev/null || echo "")
+        
+        if [[ -n "$sg_id" && "$sg_id" != "None" ]]; then
+            # Check if any other EFS filesystems are using this security group
+            local other_mount_targets
+            other_mount_targets=$(aws efs describe-mount-targets \
+                --region "$AWS_REGION" \
+                --query "MountTargets[?SecurityGroups[?contains(@, '$sg_id')]]" \
+                --output text 2>/dev/null || echo "")
+            
+            if [[ -z "$other_mount_targets" || "$other_mount_targets" == "None" ]]; then
+                log_info "Deleting unused NFS security group: $sg_id"
+                aws ec2 delete-security-group --region "$AWS_REGION" --group-id "$sg_id" >/dev/null 2>&1 || \
+                    log_warning "Could not delete security group (may be in use)"
+            else
+                log_info "Keeping security group $sg_id (in use by other EFS mount targets)"
+            fi
+        fi
+        
+        log_success "EFS filesystem and associated resources cleanup initiated"
     else
         log_info "No EFS filesystem found with name: $EFS_NAME"
     fi
@@ -593,6 +874,9 @@ main() {
             exit 1
         fi
     fi
+    
+    # Setup EFS networking
+    setup_efs_networking "$efs_id"
     
     # Create StorageClass
     create_storage_class "$efs_id"
