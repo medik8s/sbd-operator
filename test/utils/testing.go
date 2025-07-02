@@ -944,7 +944,7 @@ func CleanupSBDConfigs(k8sClient client.Client, testNS TestNamespace, ctx contex
 	}
 }
 
-func SuiteSetup(namespace string) (*TestClients, error) {
+func SuiteSetup(namespace string) (*TestNamespace, error) {
 
 	By("verifying smoke test environment setup")
 	_, _ = fmt.Fprintf(GinkgoWriter, "Smoke test environment setup completed by Makefile\n")
@@ -961,13 +961,8 @@ func SuiteSetup(namespace string) (*TestClients, error) {
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to connect to cluster")
 	_, _ = fmt.Fprintf(GinkgoWriter, "Connected to Kubernetes cluster version: %s\n", serverVersion.String())
 
-	By("creating test namespace for smoke tests if it doesn't exist")
-	ns := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: namespace,
-		},
-	}
-	err = testClients.Client.Create(testClients.Context, ns)
+	By("creating e2e test namespace")
+	testNamespace, err := testClients.CreateTestNamespace(namespace)
 	if err != nil && !strings.Contains(err.Error(), "already exists") {
 		Expect(err).NotTo(HaveOccurred())
 	}
@@ -1024,5 +1019,5 @@ func SuiteSetup(namespace string) (*TestClients, error) {
 		return podList.Items[0].Status.Phase == corev1.PodRunning
 	}, 10*time.Second, 1*time.Second).Should(BeTrue(), "Operator pod is not running")
 
-	return testClients, nil
+	return testNamespace, nil
 }

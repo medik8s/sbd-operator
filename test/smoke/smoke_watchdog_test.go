@@ -33,8 +33,6 @@ import (
 )
 
 var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog"), func() {
-	var testNS *utils.TestNamespace
-
 	BeforeAll(func() {
 		By("initializing Kubernetes clients for watchdog tests if needed")
 		if testClients == nil {
@@ -46,7 +44,7 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 		By("creating watchdog smoke test namespace")
 		ns := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: testNamespace,
+				Name: testNamespace.Name,
 			},
 		}
 		err := testClients.Client.Create(testClients.Context, ns)
@@ -55,19 +53,19 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 		}
 
 		// Create test namespace wrapper for utilities
-		testNS = &utils.TestNamespace{
-			Name:    testNamespace,
+		testNamespace = &utils.TestNamespace{
+			Name:    testNamespace.Name,
 			Clients: testClients,
 		}
-		utils.CleanupSBDConfigs(testClients.Client, *testNS, testClients.Context)
+		utils.CleanupSBDConfigs(testClients.Client, *testNamespace, testClients.Context)
 	})
 
 	AfterAll(func() {
-		utils.CleanupSBDConfigs(testClients.Client, *testNS, testClients.Context)
+		utils.CleanupSBDConfigs(testClients.Client, *testNamespace, testClients.Context)
 
 		By("cleaning up watchdog smoke test namespace")
-		if testNS != nil {
-			_ = testNS.Cleanup()
+		if testNamespace != nil {
+			_ = testNamespace.Cleanup()
 		}
 	})
 
@@ -83,10 +81,10 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 
 			// Clean up all SBDConfigs in the test namespace
 			sbdConfigs := &medik8sv1alpha1.SBDConfigList{}
-			err := testClients.Client.List(testClients.Context, sbdConfigs, client.InNamespace(testNamespace))
+			err := testClients.Client.List(testClients.Context, sbdConfigs, client.InNamespace(testNamespace.Name))
 			if err == nil {
 				for _, config := range sbdConfigs.Items {
-					err := testNS.CleanupSBDConfig(&config)
+					err := testNamespace.CleanupSBDConfig(&config)
 					if err != nil {
 						GinkgoWriter.Printf("Warning: failed to cleanup SBDConfig %s: %v\n", config.Name, err)
 					}
@@ -97,7 +95,7 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 		It("should successfully deploy SBD agents without causing node instability", func() {
 
 			// Create a minimal SBD configuration for watchdog testing using utility
-			sbdConfig, err := testNS.CreateSBDConfig(sbdConfigName, func(config *medik8sv1alpha1.SBDConfig) {
+			sbdConfig, err := testNamespace.CreateSBDConfig(sbdConfigName, func(config *medik8sv1alpha1.SBDConfig) {
 				config.Spec.WatchdogTimeout = &metav1.Duration{Duration: 90 * time.Second} // Longer timeout for safety
 				config.Spec.PetIntervalMultiple = func() *int32 {
 					val := int32(6) // Conservative 15-second pet interval
@@ -108,7 +106,7 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 			Expect(err).NotTo(HaveOccurred())
 
 			By("validating that SBD agents deploy without causing node reboots")
-			validator := testNS.NewSBDAgentValidator()
+			validator := testNamespace.NewSBDAgentValidator()
 			opts := utils.DefaultValidateAgentDeploymentOptions(sbdConfig.Name)
 			opts.ExpectedArgs = []string{
 				"--watchdog-path=/dev/watchdog",
@@ -123,7 +121,7 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 			Eventually(func() error {
 				return testClients.Client.Get(testClients.Context, client.ObjectKey{
 					Name:      sbdConfig.Name,
-					Namespace: testNamespace,
+					Namespace: testNamespace.Name,
 				}, retrievedConfig)
 			}, time.Minute*1, time.Second*5).Should(Succeed())
 

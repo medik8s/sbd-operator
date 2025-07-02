@@ -19,120 +19,27 @@ package e2e
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	medik8sv1alpha1 "github.com/medik8s/sbd-operator/api/v1alpha1"
 	"github.com/medik8s/sbd-operator/test/utils"
 )
 
 var (
-	// Optional Environment Variables:
-	// - CERT_MANAGER_INSTALL_SKIP=true: Skips CertManager installation during test setup.
-	// These variables are useful if CertManager is already installed, avoiding
-	// re-installation and conflicts.
-	skipCertManagerInstall = os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true"
-	// isCertManagerAlreadyInstalled will be set true when CertManager CRDs be found on the cluster
-	isCertManagerAlreadyInstalled = false
-
 	// projectImage is the name of the image which will be build and loaded
 	// with the code source changes to be tested.
 	// It uses environment variables that match the Makefile QUAY_* variables.
-	projectImage = getProjectImage()
+	projectImage = utils.GetProjectImage()
 
 	// Kubernetes clients
 	k8sClient    client.Client
 	k8sClientset *kubernetes.Clientset
 	ctx          context.Context
 )
-
-// getProjectImage returns the project image name based on environment variables.
-// It uses the same pattern as the Makefile QUAY_* variables, with sensible defaults for local testing.
-func getProjectImage() string {
-	registry := os.Getenv("QUAY_REGISTRY")
-	if registry == "" {
-		registry = "localhost:5000" // Local registry for testing
-	}
-
-	org := os.Getenv("QUAY_ORG")
-	if org == "" {
-		org = "sbd-operator"
-	}
-
-	version := os.Getenv("TAG")
-	if version == "" {
-		version = "e2e-test"
-	}
-
-	// Allow complete override via TEST_IMG environment variable
-	if testImg := os.Getenv("TEST_IMG"); testImg != "" {
-		return testImg
-	}
-
-	return fmt.Sprintf("%s/%s/sbd-operator:%s", registry, org, version)
-}
-
-// setupKubernetesClients initializes the Kubernetes clients for API calls
-func setupKubernetesClients() error {
-	var config *rest.Config
-	var err error
-
-	// Get kubeconfig path
-	kubeconfig := os.Getenv("KUBECONFIG")
-	if kubeconfig == "" {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("failed to get user home directory: %w", err)
-		}
-		kubeconfig = filepath.Join(homeDir, ".kube", "config")
-	}
-
-	// Build config from kubeconfig
-	config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
-	if err != nil {
-		return fmt.Errorf("failed to build config from kubeconfig: %w", err)
-	}
-
-	// Create scheme and add types
-	scheme := runtime.NewScheme()
-	err = corev1.AddToScheme(scheme)
-	if err != nil {
-		return fmt.Errorf("failed to add core types to scheme: %w", err)
-	}
-	err = appsv1.AddToScheme(scheme)
-	if err != nil {
-		return fmt.Errorf("failed to add apps types to scheme: %w", err)
-	}
-	err = medik8sv1alpha1.AddToScheme(scheme)
-	if err != nil {
-		return fmt.Errorf("failed to add SBD types to scheme: %w", err)
-	}
-
-	// Create controller-runtime client
-	k8sClient, err = client.New(config, client.Options{Scheme: scheme})
-	if err != nil {
-		return fmt.Errorf("failed to create controller-runtime client: %w", err)
-	}
-
-	// Create clientset for operations not available in controller-runtime
-	k8sClientset, err = kubernetes.NewForConfig(config)
-	if err != nil {
-		return fmt.Errorf("failed to create clientset: %w", err)
-	}
-
-	return nil
-}
 
 // TestE2E runs the e2e test suite for the project. These tests execute in an isolated,
 // temporary environment to validate project changes with the purposed to be used in CI jobs.
@@ -144,20 +51,15 @@ func TestE2E(t *testing.T) {
 	RunSpecs(t, "e2e suite")
 }
 
-const testNS = "sbd-test"
-
 var _ = BeforeSuite(func() {
 	var err error
-	testClients, err = utils.SuiteSetup(testNS)
+	testNamespace, err = utils.SuiteSetup("sbd-test-e2e")
 	Expect(err).NotTo(HaveOccurred(), "Failed to setup test clients")
+	testClients = testNamespace.Clients
 
 	// Update global clients for backward compatibility
 	k8sClient = testClients.Client
 	ctx = testClients.Context
-
-	By("creating e2e test namespace")
-	testNamespace, err = testClients.CreateTestNamespace(testNS)
-	Expect(err).NotTo(HaveOccurred(), "Failed to create e2e test namespace")
 
 	By("Checking AWS availability for disruption tests (one-time setup)")
 	if err := initAWS(); err != nil {

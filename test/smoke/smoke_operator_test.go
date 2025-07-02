@@ -41,27 +41,22 @@ var _ = Describe("SBD Operator Smoke Tests", Ordered, Label("Smoke", "Operator")
 		var err error
 		testClients, err = utils.SetupKubernetesClients()
 		Expect(err).NotTo(HaveOccurred(), "Failed to setup Kubernetes clients")
-
-		// Set legacy clients for backward compatibility
-		k8sClient = testClients.Client
-		clientset = testClients.Clientset
-		ctx = testClients.Context
 	})
 
 	// Clean up test-specific resources (overall cleanup handled by Makefile)
 	AfterAll(func() {
 		By("cleaning up the curl pod for metrics")
 		pod := &corev1.Pod{}
-		err := k8sClient.Get(ctx, client.ObjectKey{Name: "curl-metrics", Namespace: namespace}, pod)
+		err := testClients.Client.Get(testClients.Context, client.ObjectKey{Name: "curl-metrics", Namespace: namespace}, pod)
 		if err == nil {
-			_ = k8sClient.Delete(ctx, pod)
+			_ = testClients.Client.Delete(testClients.Context, pod)
 		}
 
 		By("cleaning up metrics ClusterRoleBinding")
 		clusterRoleBinding := &rbacv1.ClusterRoleBinding{}
-		err = k8sClient.Get(ctx, client.ObjectKey{Name: metricsRoleBindingName}, clusterRoleBinding)
+		err = testClients.Client.Get(testClients.Context, client.ObjectKey{Name: metricsRoleBindingName}, clusterRoleBinding)
 		if err == nil {
-			_ = k8sClient.Delete(ctx, clusterRoleBinding)
+			_ = testClients.Client.Delete(testClients.Context, clusterRoleBinding)
 		}
 
 	})
@@ -80,8 +75,8 @@ var _ = Describe("SBD Operator Smoke Tests", Ordered, Label("Smoke", "Operator")
 			debugCollector.CollectKubernetesEvents(namespace)
 
 			By("Fetching curl-metrics logs")
-			req := clientset.CoreV1().Pods(namespace).GetLogs("curl-metrics", &corev1.PodLogOptions{})
-			podLogs, err := req.Stream(ctx)
+			req := testClients.Clientset.CoreV1().Pods(namespace).GetLogs("curl-metrics", &corev1.PodLogOptions{})
+			podLogs, err := req.Stream(testClients.Context)
 			if err == nil {
 				defer podLogs.Close()
 				buf := new(bytes.Buffer)
@@ -106,7 +101,7 @@ var _ = Describe("SBD Operator Smoke Tests", Ordered, Label("Smoke", "Operator")
 			verifyControllerUp := func(g Gomega) {
 				// Get controller-manager pods
 				pods := &corev1.PodList{}
-				err := k8sClient.List(ctx, pods,
+				err := testClients.Client.List(testClients.Context, pods,
 					client.InNamespace(namespace),
 					client.MatchingLabels{"control-plane": "controller-manager"})
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve controller-manager pod information")
@@ -133,9 +128,9 @@ var _ = Describe("SBD Operator Smoke Tests", Ordered, Label("Smoke", "Operator")
 			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
 			// Clean up any existing clusterrolebinding first
 			existingCRB := &rbacv1.ClusterRoleBinding{}
-			err := k8sClient.Get(ctx, client.ObjectKey{Name: metricsRoleBindingName}, existingCRB)
+			err := testClients.Client.Get(testClients.Context, client.ObjectKey{Name: metricsRoleBindingName}, existingCRB)
 			if err == nil {
-				_ = k8sClient.Delete(ctx, existingCRB)
+				_ = testClients.Client.Delete(testClients.Context, existingCRB)
 			}
 
 			// Create ClusterRoleBinding
@@ -156,12 +151,12 @@ var _ = Describe("SBD Operator Smoke Tests", Ordered, Label("Smoke", "Operator")
 					},
 				},
 			}
-			err = k8sClient.Create(ctx, clusterRoleBinding)
+			err = testClients.Client.Create(testClients.Context, clusterRoleBinding)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create ClusterRoleBinding")
 
 			By("validating that the metrics service is available")
 			service := &corev1.Service{}
-			err = k8sClient.Get(ctx, client.ObjectKey{Name: metricsServiceName, Namespace: namespace}, service)
+			err = testClients.Client.Get(testClients.Context, client.ObjectKey{Name: metricsServiceName, Namespace: namespace}, service)
 			Expect(err).NotTo(HaveOccurred(), "Metrics service should exist")
 
 			By("getting the service account token")
@@ -173,7 +168,7 @@ var _ = Describe("SBD Operator Smoke Tests", Ordered, Label("Smoke", "Operator")
 			By("waiting for the metrics endpoint to be ready")
 			verifyMetricsEndpointReady := func(g Gomega) {
 				endpoints := &corev1.Endpoints{}
-				err := k8sClient.Get(ctx, client.ObjectKey{Name: metricsServiceName, Namespace: namespace}, endpoints)
+				err := testClients.Client.Get(testClients.Context, client.ObjectKey{Name: metricsServiceName, Namespace: namespace}, endpoints)
 				g.Expect(err).NotTo(HaveOccurred())
 
 				hasPort8443 := false
@@ -191,8 +186,8 @@ var _ = Describe("SBD Operator Smoke Tests", Ordered, Label("Smoke", "Operator")
 
 			By("verifying that the controller manager is serving the metrics server")
 			verifyMetricsServerStarted := func(g Gomega) {
-				req := clientset.CoreV1().Pods(namespace).GetLogs(controllerPodName, &corev1.PodLogOptions{})
-				podLogs, err := req.Stream(ctx)
+				req := testClients.Clientset.CoreV1().Pods(namespace).GetLogs(controllerPodName, &corev1.PodLogOptions{})
+				podLogs, err := req.Stream(testClients.Context)
 				g.Expect(err).NotTo(HaveOccurred())
 				defer podLogs.Close()
 
@@ -237,13 +232,13 @@ var _ = Describe("SBD Operator Smoke Tests", Ordered, Label("Smoke", "Operator")
 					},
 				},
 			}
-			err = k8sClient.Create(ctx, curlPod)
+			err = testClients.Client.Create(testClients.Context, curlPod)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create curl-metrics pod")
 
 			By("waiting for the curl-metrics pod to complete.")
 			verifyCurlUp := func(g Gomega) {
 				pod := &corev1.Pod{}
-				err := k8sClient.Get(ctx, client.ObjectKey{Name: "curl-metrics", Namespace: namespace}, pod)
+				err := testClients.Client.Get(testClients.Context, client.ObjectKey{Name: "curl-metrics", Namespace: namespace}, pod)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(pod.Status.Phase).To(Equal(corev1.PodSucceeded), "curl pod in wrong status")
 			}
@@ -263,8 +258,8 @@ var _ = Describe("SBD Operator Smoke Tests", Ordered, Label("Smoke", "Operator")
 // getMetricsOutput retrieves and returns the logs from the curl pod used to access the metrics endpoint.
 func getMetricsOutput() string {
 	By("getting the curl-metrics logs")
-	req := clientset.CoreV1().Pods(namespace).GetLogs("curl-metrics", &corev1.PodLogOptions{})
-	podLogs, err := req.Stream(ctx)
+	req := testClients.Clientset.CoreV1().Pods(namespace).GetLogs("curl-metrics", &corev1.PodLogOptions{})
+	podLogs, err := req.Stream(testClients.Context)
 	Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
 	defer podLogs.Close()
 

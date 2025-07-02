@@ -17,14 +17,11 @@ limitations under the License.
 package smoke
 
 import (
-	"context"
 	"fmt"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"k8s.io/client-go/kubernetes"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/medik8s/sbd-operator/test/utils"
 )
@@ -37,18 +34,12 @@ var (
 	agentImage   = utils.GetAgentImage()
 
 	// Kubernetes clients - now using shared utilities
-	testClients *utils.TestClients
-	// Legacy clients for backward compatibility
-	k8sClient client.Client
-	clientset *kubernetes.Clientset
-	ctx       = context.Background()
+	testClients   *utils.TestClients
+	testNamespace *utils.TestNamespace
 )
 
 // namespace where the project is deployed in
 const namespace = "sbd-operator-system"
-
-// testNamespace where SBDConfig resources and their DaemonSets are deployed
-const testNamespace = "sbd-test"
 
 // serviceAccountName created for the project
 const serviceAccountName = "sbd-operator-controller-manager"
@@ -65,8 +56,9 @@ func TestSmoke(t *testing.T) {
 
 var _ = BeforeSuite(func() {
 	var err error
-	testClients, err = utils.SuiteSetup(testNamespace)
+	testNamespace, err = utils.SuiteSetup("sbd-test")
 	Expect(err).NotTo(HaveOccurred(), "Failed to setup test clients")
+	testClients = testNamespace.Clients
 })
 
 var _ = AfterSuite(func() {

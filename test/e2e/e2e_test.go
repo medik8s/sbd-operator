@@ -510,7 +510,7 @@ func testKubeletCommunicationFailure(cluster ClusterInfo) {
 	sbdRemediation := &medik8sv1alpha1.SBDRemediation{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("network-remediation-%s", targetNode.Metadata.Name),
-			Namespace: testNS,
+			Namespace: testNamespace.Name,
 		},
 		Spec: medik8sv1alpha1.SBDRemediationSpec{
 			NodeName:       targetNode.Metadata.Name,
@@ -526,7 +526,7 @@ func testKubeletCommunicationFailure(cluster ClusterInfo) {
 	By("Verifying SBD remediation is triggered and processed for the disrupted node")
 	Eventually(func() bool {
 		remediations := &medik8sv1alpha1.SBDRemediationList{}
-		err := k8sClient.List(ctx, remediations, client.InNamespace(testNS))
+		err := k8sClient.List(ctx, remediations, client.InNamespace(testNamespace.Name))
 		if err != nil {
 			return false
 		}
@@ -653,7 +653,7 @@ func testSBDAgentCrash(cluster ClusterInfo) {
 	// Get the SBD agent pod on the target node
 	pods := &corev1.PodList{}
 	err := k8sClient.List(ctx, pods,
-		client.InNamespace(testNS),
+		client.InNamespace(testNamespace.Name),
 		client.MatchingLabels{"app": "sbd-agent"},
 		client.MatchingFields{"spec.nodeName": targetNode.Metadata.Name})
 	Expect(err).NotTo(HaveOccurred())
@@ -671,7 +671,7 @@ func testSBDAgentCrash(cluster ClusterInfo) {
 	Eventually(func() bool {
 		newPods := &corev1.PodList{}
 		err := k8sClient.List(ctx, newPods,
-			client.InNamespace(testNS),
+			client.InNamespace(testNamespace.Name),
 			client.MatchingLabels{"app": "sbd-agent"},
 			client.MatchingFields{"spec.nodeName": targetNode.Metadata.Name})
 		if err != nil {
@@ -764,7 +764,7 @@ spec:
       limits:
         cpu: "500m"
         memory: "256Mi"
-  restartPolicy: Never`, testNS)
+  restartPolicy: Never`, testNamespace.Name)
 
 	By("Creating resource constraint pod")
 	var resourcePod corev1.Pod
@@ -804,7 +804,7 @@ spec:
 	By("Verifying SBD agents continue running normally")
 	Consistently(func() bool {
 		pods := &corev1.PodList{}
-		err := k8sClient.List(ctx, pods, client.InNamespace(testNS), client.MatchingLabels{"app": "sbd-agent"})
+		err := k8sClient.List(ctx, pods, client.InNamespace(testNamespace.Name), client.MatchingLabels{"app": "sbd-agent"})
 		if err != nil {
 			return false
 		}
@@ -829,7 +829,7 @@ func testLargeClusterCoordination(cluster ClusterInfo) {
 	By("Verifying SBD agents coordinate across large cluster")
 	Eventually(func() bool {
 		pods := &corev1.PodList{}
-		err := k8sClient.List(ctx, pods, client.InNamespace(testNS), client.MatchingLabels{"app": "sbd-agent"})
+		err := k8sClient.List(ctx, pods, client.InNamespace(testNamespace.Name), client.MatchingLabels{"app": "sbd-agent"})
 		if err != nil {
 			return false
 		}
@@ -862,7 +862,7 @@ func cleanupTestArtifacts() {
 		pod := &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      podName,
-				Namespace: testNS,
+				Namespace: testNamespace.Name,
 			},
 		}
 		_ = k8sClient.Delete(ctx, pod)

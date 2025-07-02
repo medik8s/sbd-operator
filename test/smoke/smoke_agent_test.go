@@ -42,7 +42,6 @@ import (
 
 var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func() {
 	var controllerPodName string
-	var testNS utils.TestNamespace
 
 	// Verify the environment is set up correctly (setup handled by Makefile)
 	BeforeAll(func() {
@@ -51,23 +50,12 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 		testClients, err = utils.SetupKubernetesClients()
 		Expect(err).NotTo(HaveOccurred(), "Failed to setup Kubernetes clients")
 
-		// Set legacy clients for backward compatibility
-		k8sClient = testClients.Client
-		clientset = testClients.Clientset
-		ctx = testClients.Context
-
-		// Create test namespace wrapper for utilities
-		testNS = utils.TestNamespace{
-			Name:    testNamespace,
-			Clients: testClients,
-		}
-
-		utils.CleanupSBDConfigs(testClients.Client, testNS, testClients.Context)
+		utils.CleanupSBDConfigs(testClients.Client, *testNamespace, testClients.Context)
 	})
 
 	// Clean up test-specific resources (overall cleanup handled by Makefile)
 	AfterAll(func() {
-		utils.CleanupSBDConfigs(testClients.Client, testNS, testClients.Context)
+		utils.CleanupSBDConfigs(testClients.Client, *testNamespace, testClients.Context)
 	})
 
 	// After each test, check for failures and collect logs, events,
@@ -84,8 +72,8 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 			debugCollector.CollectKubernetesEvents(namespace)
 
 			By("Fetching curl-metrics logs")
-			req := clientset.CoreV1().Pods(namespace).GetLogs("curl-metrics", &corev1.PodLogOptions{})
-			podLogs, err := req.Stream(ctx)
+			req := testClients.Clientset.CoreV1().Pods(namespace).GetLogs("curl-metrics", &corev1.PodLogOptions{})
+			podLogs, err := req.Stream(testClients.Context)
 			if err == nil {
 				defer podLogs.Close()
 				buf := new(bytes.Buffer)
@@ -113,7 +101,7 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 		})
 
 		AfterEach(func() {
-			utils.CleanupSBDConfigs(testClients.Client, testNS, testClients.Context)
+			utils.CleanupSBDConfigs(testClients.Client, *testNamespace, testClients.Context)
 		})
 
 		It("should deploy SBD agent DaemonSet when SBDConfig is created", func() {
@@ -144,11 +132,12 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 			err = yaml.Unmarshal([]byte(sbdConfigYAML), &sbdConfig)
 			Expect(err).NotTo(HaveOccurred(), "Failed to unmarshal SBDConfig YAML")
 
-			sbdConfig.Namespace = testNamespace
-			err = k8sClient.Create(ctx, &sbdConfig)
+			sbdConfig.Namespace = testNamespace.Name
+
+			err = testClients.Client.Create(testClients.Context, &sbdConfig)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create SBDConfig")
 
-			validator := testNS.NewSBDAgentValidator()
+			validator := testNamespace.NewSBDAgentValidator()
 			opts := utils.DefaultValidateAgentDeploymentOptions(sbdConfig.Name)
 			opts.ExpectedArgs = []string{
 				"--watchdog-path=/dev/watchdog",
@@ -171,16 +160,16 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 		AfterEach(func() {
 			By("cleaning up test SBDConfig")
 			if sbdConfigName != "" {
-				cmd := exec.Command("kubectl", "delete", "-n", testNamespace, "sbdconfig", sbdConfigName, "--ignore-not-found=true")
+				cmd := exec.Command("kubectl", "delete", "-n", testNamespace.Name, "sbdconfig", sbdConfigName, "--ignore-not-found=true")
 				_, _ = utils.Run(cmd)
 
 				// Wait for SBDConfig deletion to complete (finalizer cleanup)
 				By("waiting for SBDConfig deletion to complete")
 				Eventually(func() bool {
 					sbdConfig := &medik8sv1alpha1.SBDConfig{}
-					err := k8sClient.Get(ctx, client.ObjectKey{
+					err := testClients.Client.Get(testClients.Context, client.ObjectKey{
 						Name:      sbdConfigName,
-						Namespace: testNamespace,
+						Namespace: testNamespace.Name,
 					}, sbdConfig)
 					return errors.IsNotFound(err) // Error means resource not found (deleted)
 				}, 30*time.Second, 2*time.Second).Should(BeTrue())
@@ -194,7 +183,7 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 
 		It("should pass preflight checks with working watchdog and failing SBD device", func() {
 			By("creating an SBDConfig with a non-existent SBD device path")
-			_, err := testNS.CreateSBDConfig(sbdConfigName, func(config *medik8sv1alpha1.SBDConfig) {
+			_, err := testNamespace.CreateSBDConfig(sbdConfigName, func(config *medik8sv1alpha1.SBDConfig) {
 				config.Spec.WatchdogTimeout = &metav1.Duration{Duration: 90 * time.Second}
 				config.Spec.SharedStorageClass = "non-existent-sc"
 				config.Spec.SbdWatchdogPath = "/dev/watchdog"
@@ -213,7 +202,7 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 		It("should discover and test SharedStorageClass functionality with RWX storage", func() {
 			By("looking for StorageClasses that support ReadWriteMany access mode")
 			storageClasses := &storagev1.StorageClassList{}
-			err := k8sClient.List(ctx, storageClasses)
+			err := testClients.Client.List(testClients.Context, storageClasses)
 			Expect(err).NotTo(HaveOccurred(), "Failed to list StorageClasses")
 
 			var rwxStorageClass *storagev1.StorageClass
@@ -238,7 +227,7 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 
 			By("creating an SBDConfig using the discovered StorageClass")
 
-			_, err = testNS.CreateSBDConfig(sbdConfigName, func(config *medik8sv1alpha1.SBDConfig) {
+			_, err = testNamespace.CreateSBDConfig(sbdConfigName, func(config *medik8sv1alpha1.SBDConfig) {
 				config.Spec.WatchdogTimeout = &metav1.Duration{Duration: 90 * time.Second}
 				config.Spec.SharedStorageClass = rwxStorageClass.Name
 				config.Spec.SbdWatchdogPath = "/dev/watchdog"
@@ -254,8 +243,8 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 			var createdDaemonSet *appsv1.DaemonSet
 			Eventually(func() bool {
 				daemonSets := &appsv1.DaemonSetList{}
-				err := k8sClient.List(ctx, daemonSets,
-					client.InNamespace(testNamespace),
+				err := testClients.Client.List(testClients.Context, daemonSets,
+					client.InNamespace(testNamespace.Name),
 					client.MatchingLabels{"sbdconfig": sbdConfigName})
 				if err != nil || len(daemonSets.Items) == 0 {
 					return false
@@ -270,9 +259,9 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 
 			Eventually(func() bool {
 				pvc := &corev1.PersistentVolumeClaim{}
-				err := k8sClient.Get(ctx, client.ObjectKey{
+				err := testClients.Client.Get(testClients.Context, client.ObjectKey{
 					Name:      expectedPVCName,
-					Namespace: testNamespace,
+					Namespace: testNamespace.Name,
 				}, pvc)
 				if err != nil {
 					return false
@@ -330,9 +319,9 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 			By("checking SBDConfig status conditions for shared storage readiness")
 			Eventually(func() bool {
 				retrievedConfig := &medik8sv1alpha1.SBDConfig{}
-				err := k8sClient.Get(ctx, client.ObjectKey{
+				err := testClients.Client.Get(testClients.Context, client.ObjectKey{
 					Name:      sbdConfigName,
-					Namespace: testNamespace,
+					Namespace: testNamespace.Name,
 				}, retrievedConfig)
 				if err != nil {
 					return false
@@ -344,9 +333,9 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 
 			By("verifying the SharedStorageClass field is correctly configured")
 			retrievedConfig := &medik8sv1alpha1.SBDConfig{}
-			err = k8sClient.Get(ctx, client.ObjectKey{
+			err = testClients.Client.Get(testClients.Context, client.ObjectKey{
 				Name:      sbdConfigName,
-				Namespace: testNamespace,
+				Namespace: testNamespace.Name,
 			}, retrievedConfig)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(retrievedConfig.Spec.SharedStorageClass).To(Equal(rwxStorageClass.Name))

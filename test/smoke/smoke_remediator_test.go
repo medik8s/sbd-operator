@@ -45,27 +45,14 @@ const metricsRoleBindingName = "sbd-operator-metrics-binding"
 
 var _ = Describe("SBD Remediation Smoke Tests", Ordered, Label("Smoke", "Remediation"), func() {
 	var controllerPodName string
-	var testNS utils.TestNamespace
 
 	// Verify the environment is set up correctly (setup handled by Makefile)
-	BeforeAll(func() {
-		By("initializing Kubernetes clients for watchdog tests if needed")
-		if testClients == nil {
-			var err error
-			testClients, err = utils.SetupKubernetesClients()
-			Expect(err).NotTo(HaveOccurred(), "Failed to setup Kubernetes clients")
-		}
-
-		testNS = utils.TestNamespace{
-			Name:    testNamespace,
-			Clients: testClients,
-		}
-		utils.CleanupSBDConfigs(testClients.Client, testNS, testClients.Context)
-	})
+	//	BeforeAll(func() {
+	//	})
 
 	// Clean up test-specific resources (overall cleanup handled by Makefile)
-	AfterAll(func() {
-	})
+	//	AfterAll(func() {
+	//	})
 
 	// After each test, check for failures and collect logs, events,
 	// and pod descriptions for debugging.
@@ -81,8 +68,8 @@ var _ = Describe("SBD Remediation Smoke Tests", Ordered, Label("Smoke", "Remedia
 			debugCollector.CollectKubernetesEvents(namespace)
 
 			By("Fetching curl-metrics logs")
-			req := clientset.CoreV1().Pods(namespace).GetLogs("curl-metrics", &corev1.PodLogOptions{})
-			podLogs, err := req.Stream(ctx)
+			req := testClients.Clientset.CoreV1().Pods(namespace).GetLogs("curl-metrics", &corev1.PodLogOptions{})
+			podLogs, err := req.Stream(testClients.Context)
 			if err == nil {
 				defer podLogs.Close()
 				buf := new(bytes.Buffer)
@@ -113,16 +100,16 @@ var _ = Describe("SBD Remediation Smoke Tests", Ordered, Label("Smoke", "Remedia
 			// Clean up SBDRemediation
 			By("cleaning up SBDRemediation resource")
 			sbdRemediation := &medik8sv1alpha1.SBDRemediation{}
-			err := testClients.Client.Get(ctx, client.ObjectKey{Name: sbdRemediationName, Namespace: testNamespace}, sbdRemediation)
+			err := testClients.Client.Get(testClients.Context, client.ObjectKey{Name: sbdRemediationName, Namespace: testNamespace.Name}, sbdRemediation)
 			if err == nil {
-				_ = testClients.Client.Delete(ctx, sbdRemediation)
+				_ = testClients.Client.Delete(testClients.Context, sbdRemediation)
 			}
 
 			// Wait for SBDRemediation deletion to complete
 			By("waiting for SBDRemediation deletion to complete")
 			Eventually(func() bool {
 				sbdRemediation := &medik8sv1alpha1.SBDRemediation{}
-				err := testClients.Client.Get(ctx, client.ObjectKey{Name: sbdRemediationName, Namespace: testNamespace}, sbdRemediation)
+				err := testClients.Client.Get(testClients.Context, client.ObjectKey{Name: sbdRemediationName, Namespace: testNamespace.Name}, sbdRemediation)
 				return errors.IsNotFound(err) // Error means resource not found (deleted)
 			}, 30*time.Second, 2*time.Second).Should(BeTrue())
 
@@ -151,13 +138,13 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 
 			// Apply the SBDRemediation
-			cmd := exec.Command("kubectl", "apply", "-f", tmpFile, "-n", testNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", tmpFile, "-n", testNamespace.Name)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create SBDRemediation")
 
 			By("verifying the SBDRemediation resource exists")
 			verifySBDRemediationExists := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "-n", testNamespace, "sbdremediation", sbdRemediationName, "-o", "jsonpath={.metadata.name}")
+				cmd := exec.Command("kubectl", "get", "-n", testNamespace.Name, "sbdremediation", sbdRemediationName, "-o", "jsonpath={.metadata.name}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal(sbdRemediationName))
@@ -166,7 +153,7 @@ spec:
 
 			By("verifying the SBDRemediation has conditions")
 			verifySBDRemediationConditions := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "-n", testNamespace, "sbdremediation", sbdRemediationName, "-o", "jsonpath={.status.conditions}")
+				cmd := exec.Command("kubectl", "get", "-n", testNamespace.Name, "sbdremediation", sbdRemediationName, "-o", "jsonpath={.status.conditions}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).ToNot(BeEmpty(), "SBDRemediation should have status conditions")
@@ -176,13 +163,13 @@ spec:
 			By("verifying the SBDRemediation status fields are set")
 			verifySBDRemediationStatus := func(g Gomega) {
 				// Check if operatorInstance is set
-				cmd := exec.Command("kubectl", "get", "-n", testNamespace, "sbdremediation", sbdRemediationName, "-o", "jsonpath={.status.operatorInstance}")
+				cmd := exec.Command("kubectl", "get", "-n", testNamespace.Name, "sbdremediation", sbdRemediationName, "-o", "jsonpath={.status.operatorInstance}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).ToNot(BeEmpty(), "SBDRemediation should have operatorInstance set")
 
 				// Check if lastUpdateTime is set
-				cmd = exec.Command("kubectl", "get", "-n", testNamespace, "sbdremediation", sbdRemediationName, "-o", "jsonpath={.status.lastUpdateTime}")
+				cmd = exec.Command("kubectl", "get", "-n", testNamespace.Name, "sbdremediation", sbdRemediationName, "-o", "jsonpath={.status.lastUpdateTime}")
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).ToNot(BeEmpty(), "SBDRemediation should have lastUpdateTime set")
@@ -203,14 +190,14 @@ spec:
 			sbdConfigYAML := strings.ReplaceAll(string(sampleData), "sbdconfig-sample", "test-sbdconfig")
 			sbdConfigYAML = strings.ReplaceAll(sbdConfigYAML, `imagePullPolicy: "IfNotPresent"`, `imagePullPolicy: "Always"`)
 
-			cmd := exec.Command("kubectl", "apply", "-n", testNamespace, "-f", "-")
+			cmd := exec.Command("kubectl", "apply", "-n", testNamespace.Name, "-f", "-")
 			cmd.Stdin = strings.NewReader(sbdConfigYAML)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create SBDConfig")
 
 			By("verifying the SBDConfig is created and processed")
 			Eventually(func() bool {
-				cmd := exec.Command("kubectl", "get", "-n", testNamespace, "sbdconfig", "test-sbdconfig", "-o", "jsonpath={.status.conditions}")
+				cmd := exec.Command("kubectl", "get", "-n", testNamespace.Name, "sbdconfig", "test-sbdconfig", "-o", "jsonpath={.status.conditions}")
 				output, err := utils.Run(cmd)
 				if err != nil {
 					return false
@@ -219,13 +206,13 @@ spec:
 			}, 4*time.Minute).Should(BeTrue())
 
 			By("cleaning up the test SBDConfig")
-			cmd = exec.Command("kubectl", "delete", "-n", testNamespace, "sbdconfig", "test-sbdconfig", "--ignore-not-found=true")
+			cmd = exec.Command("kubectl", "delete", "-n", testNamespace.Name, "sbdconfig", "test-sbdconfig", "--ignore-not-found=true")
 			_, _ = utils.Run(cmd)
 		})
 
 		It("should handle SBDRemediation resources with timeout validation", func() {
 			By("creating a test SBDRemediation with custom timeout")
-			cmd := exec.Command("kubectl", "apply", "-n", testNamespace, "-f", "-")
+			cmd := exec.Command("kubectl", "apply", "-n", testNamespace.Name, "-f", "-")
 			sbdRemediationYAML := `
 apiVersion: medik8s.medik8s.io/v1alpha1
 kind: SBDRemediation
@@ -242,7 +229,7 @@ spec:
 
 			By("verifying the SBDRemediation timeout is preserved")
 			Eventually(func() string {
-				cmd := exec.Command("kubectl", "get", "-n", testNamespace, "sbdremediation", "test-sbdremediation-timeout", "-o", "jsonpath={.spec.timeoutSeconds}")
+				cmd := exec.Command("kubectl", "get", "-n", testNamespace.Name, "sbdremediation", "test-sbdremediation-timeout", "-o", "jsonpath={.spec.timeoutSeconds}")
 				output, err := utils.Run(cmd)
 				if err != nil {
 					return ""
@@ -252,7 +239,7 @@ spec:
 
 			By("verifying the SBDRemediation is processed")
 			Eventually(func() bool {
-				cmd := exec.Command("kubectl", "get", "-n", testNamespace, "sbdremediation", "test-sbdremediation-timeout", "-o", "jsonpath={.status.conditions}")
+				cmd := exec.Command("kubectl", "get", "-n", testNamespace.Name, "sbdremediation", "test-sbdremediation-timeout", "-o", "jsonpath={.status.conditions}")
 				output, err := utils.Run(cmd)
 				if err != nil {
 					return false
@@ -261,7 +248,7 @@ spec:
 			}).Should(BeTrue())
 
 			By("cleaning up the test SBDRemediation")
-			cmd = exec.Command("kubectl", "delete", "-n", testNamespace, "sbdremediation", "test-sbdremediation-timeout", "--ignore-not-found=true")
+			cmd = exec.Command("kubectl", "delete", "-n", testNamespace.Name, "sbdremediation", "test-sbdremediation-timeout", "--ignore-not-found=true")
 			_, _ = utils.Run(cmd)
 		})
 
@@ -283,7 +270,7 @@ spec:
   timeoutSeconds: 60
 `, remediationNames[i], i)
 
-				cmd := exec.Command("kubectl", "apply", "-n", testNamespace, "-f", "-")
+				cmd := exec.Command("kubectl", "apply", "-n", testNamespace.Name, "-f", "-")
 				cmd.Stdin = strings.NewReader(sbdRemediationYAML)
 				_, err := utils.Run(cmd)
 				Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to create SBDRemediation %d", i))
@@ -292,7 +279,7 @@ spec:
 			By("verifying all SBDRemediations are processed")
 			for i, name := range remediationNames {
 				Eventually(func() bool {
-					cmd := exec.Command("kubectl", "-n", testNamespace, "get", "sbdremediation", name, "-o", "jsonpath={.status.conditions}")
+					cmd := exec.Command("kubectl", "-n", testNamespace.Name, "get", "sbdremediation", name, "-o", "jsonpath={.status.conditions}")
 					output, err := utils.Run(cmd)
 					if err != nil {
 						return false
@@ -303,14 +290,14 @@ spec:
 
 			By("cleaning up all test SBDRemediations")
 			for _, name := range remediationNames {
-				cmd := exec.Command("kubectl", "delete", "-n", testNamespace, "sbdremediation", name, "--ignore-not-found=true")
+				cmd := exec.Command("kubectl", "delete", "-n", testNamespace.Name, "sbdremediation", name, "--ignore-not-found=true")
 				_, _ = utils.Run(cmd)
 			}
 		})
 
 		It("should handle SBDRemediation resources with invalid node names", func() {
 			By("creating a test SBDRemediation with invalid node name")
-			cmd := exec.Command("kubectl", "apply", "-n", testNamespace, "-f", "-")
+			cmd := exec.Command("kubectl", "apply", "-n", testNamespace.Name, "-f", "-")
 			sbdRemediationYAML := `
 apiVersion: medik8s.medik8s.io/v1alpha1
 kind: SBDRemediation
@@ -327,7 +314,7 @@ spec:
 
 			By("verifying the SBDRemediation becomes ready with failed fencing")
 			Eventually(func() bool {
-				cmd := exec.Command("kubectl", "get", "-n", testNamespace, "sbdremediation", "test-invalid-node-remediation", "-o", "json")
+				cmd := exec.Command("kubectl", "get", "-n", testNamespace.Name, "sbdremediation", "test-invalid-node-remediation", "-o", "json")
 				output, err := utils.Run(cmd)
 				if err != nil {
 					return false
@@ -380,13 +367,13 @@ spec:
 			}).Should(BeTrue())
 
 			By("cleaning up the test SBDRemediation")
-			cmd = exec.Command("kubectl", "delete", "-n", testNamespace, "sbdremediation", "test-invalid-node-remediation", "--ignore-not-found=true")
+			cmd = exec.Command("kubectl", "delete", "-n", testNamespace.Name, "sbdremediation", "test-invalid-node-remediation", "--ignore-not-found=true")
 			_, _ = utils.Run(cmd)
 		})
 
 		It("should validate timeout ranges in SBDRemediation CRD", func() {
 			By("attempting to create SBDRemediation with timeout below minimum")
-			cmd := exec.Command("kubectl", "apply", "-n", testNamespace, "-f", "-")
+			cmd := exec.Command("kubectl", "apply", "-n", testNamespace.Name, "-f", "-")
 			invalidTimeoutYAML := `
 apiVersion: medik8s.medik8s.io/v1alpha1
 kind: SBDRemediation
@@ -402,7 +389,7 @@ spec:
 			Expect(err).To(HaveOccurred(), "Should reject timeout below minimum (30)")
 
 			By("attempting to create SBDRemediation with timeout above maximum")
-			cmd = exec.Command("kubectl", "apply", "-n", testNamespace, "-f", "-")
+			cmd = exec.Command("kubectl", "apply", "-n", testNamespace.Name, "-f", "-")
 			invalidTimeoutYAML = `
 apiVersion: medik8s.medik8s.io/v1alpha1
 kind: SBDRemediation
@@ -428,7 +415,7 @@ spec:
   reason: ManualFencing
   timeoutSeconds: 30
 `
-			cmd = exec.Command("kubectl", "apply", "-n", testNamespace, "-f", "-")
+			cmd = exec.Command("kubectl", "apply", "-n", testNamespace.Name, "-f", "-")
 			cmd.Stdin = strings.NewReader(validTimeoutYAML)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Should accept minimum valid timeout (30)")
@@ -441,9 +428,9 @@ spec:
 			Expect(err).NotTo(HaveOccurred(), "Should accept maximum valid timeout (300)")
 
 			By("cleaning up test resources")
-			cmd = exec.Command("kubectl", "delete", "-n", testNamespace, "sbdremediation", "test-valid-timeout-boundary", "--ignore-not-found=true")
+			cmd = exec.Command("kubectl", "delete", "-n", testNamespace.Name, "sbdremediation", "test-valid-timeout-boundary", "--ignore-not-found=true")
 			_, _ = utils.Run(cmd)
-			cmd = exec.Command("kubectl", "delete", "-n", testNamespace, "sbdremediation", "test-valid-timeout-boundary-max", "--ignore-not-found=true")
+			cmd = exec.Command("kubectl", "delete", "-n", testNamespace.Name, "sbdremediation", "test-valid-timeout-boundary-max", "--ignore-not-found=true")
 			_, _ = utils.Run(cmd)
 		})
 	})
