@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -111,6 +110,11 @@ var _ = Describe("SBD Operator", Ordered, Label("e2e"), func() {
 		if testNamespace != nil {
 			_ = testNamespace.Cleanup()
 		}
+	})
+
+	AfterEach(func() {
+		By("Cleaning up previous test attempts")
+		cleanupPreviousTestAttempts()
 	})
 
 	Context("SBD E2E Failure Simulation Tests", func() {
@@ -1041,11 +1045,6 @@ func validateAWSPermissions() error {
 		{"ec2:DescribeVolumes", testDescribeVolumes},
 		{"ec2:AttachVolume", testAttachVolume},
 		{"ec2:DetachVolume", testDetachVolume},
-
-		// Legacy cleanup permissions (for cleaning up from old test runs)
-		{"ec2:DescribeSecurityGroups", testDescribeSecurityGroups},
-		{"ec2:DeleteSecurityGroup", testDeleteSecurityGroup},
-		{"ec2:ModifyInstanceAttribute", testModifyInstanceAttribute},
 	}
 
 	var failedPermissions []string
@@ -1085,30 +1084,6 @@ func testRebootInstances() error {
 func testDescribeVolumes() error {
 	_, err := ec2Client.DescribeVolumes(&ec2.DescribeVolumesInput{
 		MaxResults: aws.Int64(5),
-	})
-	return checkAWSPermissionError(err)
-}
-
-func testDescribeSecurityGroups() error {
-	_, err := ec2Client.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
-		MaxResults: aws.Int64(5),
-	})
-	return checkAWSPermissionError(err)
-}
-
-func testDeleteSecurityGroup() error {
-	// Test with non-existent security group to check permission
-	_, err := ec2Client.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
-		GroupId: aws.String("sg-nonexistent"),
-	})
-	return checkAWSPermissionError(err)
-}
-
-func testModifyInstanceAttribute() error {
-	// Test with invalid instance ID to check permission
-	_, err := ec2Client.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
-		InstanceId: aws.String("i-nonexistent"),
-		Groups:     []*string{aws.String("sg-nonexistent")},
 	})
 	return checkAWSPermissionError(err)
 }
@@ -1233,25 +1208,29 @@ spec:
   - operator: Exists
 `, disruptorPodName, nodeName)
 
-	// Apply the pod
+	// Create the pod using k8s API
 	By(fmt.Sprintf("Creating kubelet disruptor pod: %s", disruptorPodName))
-	cmd := exec.Command("kubectl", "apply", "-f", "-")
-	cmd.Stdin = strings.NewReader(disruptorPodYAML)
-	output, err := cmd.CombinedOutput()
+	var disruptorPod corev1.Pod
+	err = yaml.Unmarshal([]byte(disruptorPodYAML), &disruptorPod)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create disruptor pod: %w (output: %s)", err, string(output))
+		return nil, fmt.Errorf("failed to unmarshal disruptor pod YAML: %w", err)
+	}
+
+	err = k8sClient.Create(ctx, &disruptorPod)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create disruptor pod: %w", err)
 	}
 
 	// Wait for pod to start and stop kubelet
 	By("Waiting for disruptor pod to start...")
 	Eventually(func() bool {
-		cmd := exec.Command("kubectl", "get", "pod", disruptorPodName, "-o", "jsonpath={.status.phase}")
-		output, err := cmd.Output()
+		pod := &corev1.Pod{}
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: disruptorPodName, Namespace: "default"}, pod)
 		if err != nil {
 			return false
 		}
-		fmt.Println("Disruptor pod status:", string(output))
-		return string(output) != "Pending"
+		fmt.Printf("Disruptor pod status: %s\n", pod.Status.Phase)
+		return pod.Status.Phase != corev1.PodPending
 	}, time.Minute*2, time.Second*10).Should(BeTrue())
 
 	// Wait for kubelet to be stopped and node to become NotReady
@@ -1271,6 +1250,17 @@ spec:
 		}
 		return false
 	}, time.Minute*5, time.Second*15).Should(BeTrue())
+
+	By(fmt.Sprintf("Initiating deletion of disruptor pod %v...", disruptorPodName))
+	// Try to delete the disruptor pod so that it isn't restarted when the node becomes Ready
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      disruptorPodName,
+			Namespace: "default",
+		},
+	}
+	err = k8sClient.Delete(ctx, pod)
+	Expect(err).NotTo(HaveOccurred())
 
 	By(fmt.Sprintf("Kubelet disruption successful - node %s is now NotReady", nodeName))
 	return &disruptorPodName, nil
@@ -1296,12 +1286,25 @@ func getNodeNameFromInstanceID(instanceID string) (string, error) {
 
 // removeNetworkDisruption removes the kubelet disruption by checking node status and rebooting only if necessary
 func removeNetworkDisruption(disruptorIdentifier *string, instanceID string) error {
-	if disruptorIdentifier == nil {
-		return nil
-	}
 
-	disruptorPodName := *disruptorIdentifier
-	By(fmt.Sprintf("Removing kubelet disruption for instance %s (pod: %s)", instanceID, disruptorPodName))
+	By(fmt.Sprintf("Removing kubelet disruption for instance %s (pod: %v)", instanceID, disruptorIdentifier))
+
+	if disruptorIdentifier != nil {
+		By(fmt.Sprintf("Attempting to clean up disruptor pod %v...", *disruptorIdentifier))
+		// Try to delete the disruptor pod (might work if kubelet recovered)
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      *disruptorIdentifier,
+				Namespace: "default",
+			},
+		}
+		err := k8sClient.Delete(ctx, pod)
+		if err != nil {
+			By(fmt.Sprintf("Note: Could not delete disruptor pod (expected if kubelet was stopped): %v", err))
+		} else {
+			By("Disruptor pod cleanup initiated successfully")
+		}
+	}
 
 	// Get the node name first
 	nodeName, err := getNodeNameFromInstanceID(instanceID)
@@ -1321,25 +1324,30 @@ func removeNetworkDisruption(disruptorIdentifier *string, instanceID string) err
 		for _, condition := range node.Status.Conditions {
 			if condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue {
 				By(fmt.Sprintf("Node %s is already Ready - no reboot needed", nodeName))
-				By("Attempting to clean up disruptor pod...")
-
-				// Try to delete the disruptor pod (might work if kubelet recovered)
-				cmd := exec.Command("kubectl", "delete", "pod", disruptorPodName, "--wait=false", "--ignore-not-found=true")
-				output, err := cmd.CombinedOutput()
+				// Look for and delete any existing kubelet-disruptor pods targeting this node
+				pods := &corev1.PodList{}
+				err = k8sClient.List(ctx, pods, client.MatchingLabels{"app": "kubelet-disruptor"})
 				if err != nil {
-					By(fmt.Sprintf("Note: Could not delete disruptor pod (expected if kubelet was stopped): %v", err))
+					By(fmt.Sprintf("Warning: failed to list kubelet-disruptor pods: %v", err))
 				} else {
-					By(fmt.Sprintf("Disruptor pod cleanup initiated: %s", string(output)))
+					for _, pod := range pods.Items {
+						if strings.Contains(pod.Name, "kubelet-disruptor") &&
+							strings.Contains(pod.Spec.NodeName, nodeName) {
+							By(fmt.Sprintf("Found existing kubelet-disruptor pod %s on node %s - cleaning up", pod.Name, nodeName))
+							err = k8sClient.Delete(ctx, &pod)
+							if err != nil {
+								By(fmt.Sprintf("Warning: failed to delete existing disruptor pod %s: %v", pod.Name, err))
+							} else {
+								By(fmt.Sprintf("Successfully deleted existing disruptor pod %s", pod.Name))
+							}
+						}
+					}
 				}
 
 				By("Kubelet disruption cleanup completed - node already recovered")
 				return nil
-			}
-		}
 
-		// Log current status
-		for _, condition := range node.Status.Conditions {
-			if condition.Type == corev1.NodeReady {
+			} else if condition.Type == corev1.NodeReady {
 				By(fmt.Sprintf("Node %s current status: %s (%s) - reboot required", nodeName, condition.Status, condition.Reason))
 				break
 			}
@@ -1562,180 +1570,13 @@ func cleanupPreviousTestAttempts() error {
 		return fmt.Errorf("failed to describe instances: %w", err)
 	}
 
-	var clusterInstanceIDs []string
 	for _, reservation := range instances.Reservations {
 		for _, instance := range reservation.Instances {
 			if instance.State != nil && *instance.State.Name == "running" {
-				clusterInstanceIDs = append(clusterInstanceIDs, *instance.InstanceId)
+				By(fmt.Sprintf("Cleaning up any leftover artifacts from previous test runs for instance %s", *instance.InstanceId))
+				err = removeNetworkDisruption(nil, *instance.InstanceId)
+				Expect(err).NotTo(HaveOccurred())
 			}
-		}
-	}
-
-	// Find and clean up temporary security groups created by tests
-	securityGroups, err := ec2Client.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{})
-	if err != nil {
-		return fmt.Errorf("failed to describe security groups: %w", err)
-	}
-
-	var testSecurityGroups []string
-	for _, sg := range securityGroups.SecurityGroups {
-		sgName := ""
-		if sg.GroupName != nil {
-			sgName = *sg.GroupName
-		}
-
-		// Identify test-related security groups by name patterns
-		if strings.Contains(sgName, "sbd-e2e-network-disruptor") ||
-			strings.Contains(sgName, "sbd-e2e-restore") ||
-			strings.Contains(sgName, "sbd-e2e-network-test") ||
-			strings.Contains(sgName, "sbd-e2e-storage-test") {
-			testSecurityGroups = append(testSecurityGroups, *sg.GroupId)
-			By(fmt.Sprintf("Found test security group to clean up: %s (%s)", *sg.GroupId, sgName))
-		}
-	}
-
-	// Remove test security groups from instances first
-	for _, instanceID := range clusterInstanceIDs {
-		result, err := ec2Client.DescribeInstances(&ec2.DescribeInstancesInput{
-			InstanceIds: []*string{aws.String(instanceID)},
-		})
-		if err != nil {
-			continue
-		}
-
-		if len(result.Reservations) == 0 || len(result.Reservations[0].Instances) == 0 {
-			continue
-		}
-
-		instance := result.Reservations[0].Instances[0]
-		var cleanGroups []*string
-		var hasTestGroups bool
-
-		// Filter out test security groups
-		for _, sg := range instance.SecurityGroups {
-			isTestGroup := false
-			for _, testSG := range testSecurityGroups {
-				if *sg.GroupId == testSG {
-					isTestGroup = true
-					hasTestGroups = true
-					break
-				}
-			}
-			if !isTestGroup {
-				cleanGroups = append(cleanGroups, sg.GroupId)
-			}
-		}
-
-		// If test groups were found, restore to clean groups
-		if hasTestGroups && len(cleanGroups) > 0 {
-			By(fmt.Sprintf("Removing test security groups from instance %s", instanceID))
-			_, err = ec2Client.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
-				InstanceId: aws.String(instanceID),
-				Groups:     cleanGroups,
-			})
-			if err != nil {
-				By(fmt.Sprintf("Warning: failed to clean security groups from instance %s: %v", instanceID, err))
-			} else {
-				By(fmt.Sprintf("Cleaned security groups from instance %s", instanceID))
-			}
-		} else if hasTestGroups && len(cleanGroups) == 0 {
-			// Instance only has test groups - create a default group
-			By(fmt.Sprintf("Instance %s only has test groups - creating default security group", instanceID))
-
-			defaultSGResult, err := ec2Client.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
-				GroupName:   aws.String(fmt.Sprintf("sbd-e2e-default-cleanup-%d", time.Now().Unix())),
-				Description: aws.String("Default security group created during cleanup"),
-				VpcId:       instance.VpcId,
-			})
-			if err != nil {
-				By(fmt.Sprintf("Warning: failed to create default security group for instance %s: %v", instanceID, err))
-				continue
-			}
-
-			// Add basic rules to the default group
-			basicRules := []*ec2.IpPermission{
-				{
-					IpProtocol: aws.String("tcp"),
-					FromPort:   aws.Int64(22),
-					ToPort:     aws.Int64(22),
-					IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("0.0.0.0/0")}},
-				},
-				{
-					IpProtocol: aws.String("tcp"),
-					FromPort:   aws.Int64(10250),
-					ToPort:     aws.Int64(10250),
-					IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("0.0.0.0/0")}},
-				},
-				{
-					IpProtocol: aws.String("tcp"),
-					FromPort:   aws.Int64(10255),
-					ToPort:     aws.Int64(10255),
-					IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("0.0.0.0/0")}},
-				},
-			}
-
-			_, err = ec2Client.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
-				GroupId:       defaultSGResult.GroupId,
-				IpPermissions: basicRules,
-			})
-			if err != nil {
-				By(fmt.Sprintf("Warning: failed to add basic rules to default security group: %v", err))
-			}
-
-			// Allow all outbound traffic
-			_, err = ec2Client.AuthorizeSecurityGroupEgress(&ec2.AuthorizeSecurityGroupEgressInput{
-				GroupId: defaultSGResult.GroupId,
-				IpPermissions: []*ec2.IpPermission{
-					{
-						IpProtocol: aws.String("-1"),
-						IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("0.0.0.0/0")}},
-					},
-				},
-			})
-			if err != nil {
-				By(fmt.Sprintf("Warning: failed to add egress rules to default security group: %v", err))
-			}
-
-			// Attach the default group to the instance
-			_, err = ec2Client.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
-				InstanceId: aws.String(instanceID),
-				Groups:     []*string{defaultSGResult.GroupId},
-			})
-			if err != nil {
-				By(fmt.Sprintf("Warning: failed to attach default security group to instance %s: %v", instanceID, err))
-			} else {
-				By(fmt.Sprintf("Attached default security group to instance %s", instanceID))
-			}
-		}
-	}
-
-	// Wait for security group changes to take effect
-	time.Sleep(30 * time.Second)
-
-	// Delete test security groups
-	for _, sgID := range testSecurityGroups {
-		By(fmt.Sprintf("Deleting test security group %s", sgID))
-		_, err = ec2Client.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
-			GroupId: aws.String(sgID),
-		})
-		if err != nil {
-			if strings.Contains(err.Error(), "DependencyViolation") {
-				By(fmt.Sprintf("Security group %s still has dependencies, will retry", sgID))
-				// Try again after a longer wait
-				time.Sleep(60 * time.Second)
-				_, err = ec2Client.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
-					GroupId: aws.String(sgID),
-				})
-				if err != nil {
-					By(fmt.Sprintf("Warning: failed to delete security group %s after retry: %v", sgID, err))
-				} else {
-					By(fmt.Sprintf("Successfully deleted security group %s after retry", sgID))
-				}
-			} else {
-				By(fmt.Sprintf("Warning: failed to delete security group %s: %v", sgID, err))
-			}
-		} else {
-			By(fmt.Sprintf("Successfully deleted security group %s", sgID))
 		}
 	}
 
