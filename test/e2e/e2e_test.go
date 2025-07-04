@@ -39,6 +39,8 @@ import (
 
 	medik8sv1alpha1 "github.com/medik8s/sbd-operator/api/v1alpha1"
 	"github.com/medik8s/sbd-operator/test/utils"
+	appsv1 "k8s.io/api/apps/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 )
 
 // ClusterInfo holds information about the test cluster
@@ -123,6 +125,13 @@ var _ = Describe("SBD Operator", Ordered, Label("e2e"), func() {
 				Skip("Test requires at least 3 worker nodes")
 			}
 			testBasicSBDConfiguration(clusterInfo)
+		})
+
+		It("should reject incompatible storage classes", func() {
+			if len(clusterInfo.WorkerNodes) < 3 {
+				Skip("Test requires at least 3 worker nodes")
+			}
+			testIncompatibleStorageClass(clusterInfo)
 		})
 
 		It("should trigger fencing when SBD agent loses storage access", func() {
@@ -274,29 +283,16 @@ func testBasicSBDConfiguration(cluster ClusterInfo) {
 
 	var rwxStorageClass *storagev1.StorageClass
 	for _, sc := range storageClasses.Items {
-		// Check if this storage class supports RWX access mode
-		// Most cloud providers have storage classes that support RWX
-		if strings.Contains(strings.ToLower(sc.Name), "nfs") ||
-			strings.Contains(strings.ToLower(sc.Name), "efs") ||
-			strings.Contains(strings.ToLower(sc.Name), "azurefile") ||
-			strings.Contains(strings.ToLower(sc.Name), "gce") ||
-			strings.Contains(strings.ToLower(sc.Name), "ceph") ||
-			strings.Contains(strings.ToLower(sc.Name), "gluster") {
+		// Check if this storage class supports RWX access mode using known provisioners
+		if isRWXCompatibleProvisioner(sc.Provisioner) {
 			rwxStorageClass = &sc
-			GinkgoWriter.Printf("Found RWX-compatible storage class: %s\n", sc.Name)
+			GinkgoWriter.Printf("Found RWX-compatible storage class: %s (provisioner: %s)\n", sc.Name, sc.Provisioner)
 			break
 		}
 	}
 
 	if rwxStorageClass == nil {
-		// If no obvious RWX storage class found, try to use the default
-		// or any available storage class (some may support RWX even if not obvious from name)
-		if len(storageClasses.Items) > 0 {
-			rwxStorageClass = &storageClasses.Items[0]
-			GinkgoWriter.Printf("Using storage class: %s (RWX support unknown)\n", rwxStorageClass.Name)
-		} else {
-			Skip("No storage classes available - skipping storage-dependent tests")
-		}
+		Skip("No RWX-compatible storage classes found - skipping storage-dependent tests")
 	}
 
 	// Store the storage class name for use in tests
@@ -321,6 +317,137 @@ func testBasicSBDConfiguration(cluster ClusterInfo) {
 	Expect(err).NotTo(HaveOccurred())
 }
 
+// isRWXCompatibleProvisioner checks if a CSI provisioner is known to support ReadWriteMany
+func isRWXCompatibleProvisioner(provisioner string) bool {
+	// Known RWX-compatible provisioners
+	rwxProvisioners := map[string]bool{
+		// AWS
+		"efs.csi.aws.com": true,
+
+		// Azure
+		"file.csi.azure.com": true,
+
+		// GCP
+		"filestore.csi.storage.gke.io": true,
+
+		// NFS
+		"nfs.csi.k8s.io": true,
+		"cluster.local/nfs-subdir-external-provisioner": true,
+		"k8s-sigs.io/nfs-subdir-external-provisioner":   true,
+
+		// CephFS
+		"cephfs.csi.ceph.com": true,
+
+		// GlusterFS
+		"gluster.org/glusterfs": true,
+
+		// Other known RWX provisioners
+		"nfs-provisioner": true,
+		"csi-nfsplugin":   true,
+	}
+
+	return rwxProvisioners[provisioner]
+}
+
+func testIncompatibleStorageClass(cluster ClusterInfo) {
+	By("Testing SBD controller rejection of incompatible storage classes")
+
+	// First, create a gp3-csi storage class (EBS - ReadWriteOnce only)
+	By("Creating a gp3-csi storage class that only supports ReadWriteOnce")
+	gp3StorageClass := &storagev1.StorageClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fmt.Sprintf("gp3-csi-test-%d", time.Now().Unix()),
+		},
+		Provisioner: "ebs.csi.aws.com",
+		Parameters: map[string]string{
+			"type": "gp3",
+		},
+		AllowVolumeExpansion: &[]bool{true}[0],
+	}
+
+	err := k8sClient.Create(ctx, gp3StorageClass)
+	Expect(err).NotTo(HaveOccurred())
+
+	// Ensure cleanup happens
+	defer func() {
+		By("Cleaning up test storage class")
+		err := k8sClient.Delete(ctx, gp3StorageClass)
+		if err != nil {
+			GinkgoWriter.Printf("Warning: failed to clean up test storage class: %v\n", err)
+		}
+	}()
+
+	By("Creating SBDConfig with incompatible storage class")
+	sbdConfig, err := testNamespace.CreateSBDConfig("test-bad-storage-class", func(config *medik8sv1alpha1.SBDConfig) {
+		config.Spec.SbdWatchdogPath = "/dev/watchdog"
+		config.Spec.SharedStorageClass = gp3StorageClass.Name
+		config.Spec.StaleNodeTimeout = &metav1.Duration{Duration: 2 * time.Hour}
+		config.Spec.WatchdogTimeout = &metav1.Duration{Duration: 90 * time.Second}
+	})
+
+	By("Expecting SBDConfig creation to succeed initially")
+	Expect(err).NotTo(HaveOccurred())
+
+	By("Waiting for controller to detect storage class incompatibility")
+	// The controller should detect the incompatible storage class and report an error
+	Eventually(func() bool {
+		// Check events for storage class validation errors
+		events := &corev1.EventList{}
+		err := k8sClient.List(ctx, events, client.InNamespace(testNamespace.Name))
+		if err != nil {
+			return false
+		}
+
+		for _, event := range events.Items {
+			if event.Type == "Warning" &&
+				strings.Contains(event.Reason, "PVCError") &&
+				strings.Contains(event.Message, "ReadWriteMany") {
+				By(fmt.Sprintf("Found expected storage class validation error: %s", event.Message))
+				return true
+			}
+		}
+		return false
+	}, time.Minute*2, time.Second*10).Should(BeTrue())
+
+	By("Verifying PVC was not created due to storage class incompatibility")
+	// The PVC should not be created because the storage class validation failed
+	pvc := &corev1.PersistentVolumeClaim{}
+	pvcName := sbdConfig.Spec.GetSharedStoragePVCName(sbdConfig.Name)
+	err = k8sClient.Get(ctx, types.NamespacedName{
+		Name:      pvcName,
+		Namespace: testNamespace.Name,
+	}, pvc)
+
+	// We expect the PVC to not exist or be in a failed state
+	if err != nil {
+		By("PVC was not created (expected due to storage class incompatibility)")
+		Expect(errors.IsNotFound(err)).To(BeTrue())
+	} else {
+		By("PVC exists but should be in Pending state due to unsupported access mode")
+		Expect(pvc.Status.Phase).To(Equal(corev1.ClaimPending))
+	}
+
+	By("Verifying SBD agents are not deployed due to storage validation failure")
+	// The DaemonSet should not be created or should have 0 ready replicas
+	daemonSet := &appsv1.DaemonSet{}
+	daemonSetName := fmt.Sprintf("sbd-agent-%s", sbdConfig.Name)
+	err = k8sClient.Get(ctx, types.NamespacedName{
+		Name:      daemonSetName,
+		Namespace: testNamespace.Name,
+	}, daemonSet)
+
+	// DaemonSet may not exist at all, or may exist but have 0 ready replicas
+	if err != nil {
+		By("DaemonSet was not created (expected due to storage validation failure)")
+		Expect(errors.IsNotFound(err)).To(BeTrue())
+	} else {
+		By("DaemonSet exists but should have 0 ready replicas due to storage validation failure")
+		Expect(daemonSet.Status.NumberReady).To(Equal(int32(0)))
+	}
+
+	GinkgoWriter.Printf("Incompatible storage class test completed successfully\n")
+}
+
 func testStorageAccessInterruption(cluster ClusterInfo) {
 	// Skip if AWS is not available
 	if !awsInitialized {
@@ -339,32 +466,32 @@ func testStorageAccessInterruption(cluster ClusterInfo) {
 	Expect(err).NotTo(HaveOccurred())
 	By(fmt.Sprintf("Target node %s has AWS instance ID: %s", targetNode.Metadata.Name, instanceID))
 
-	// Create storage disruption by detaching EBS volumes
-	By("Creating AWS storage disruption by detaching EBS volumes")
-	detachedVolumes, err := createStorageDisruption(instanceID)
+	// Create storage disruption by blocking network access to shared storage
+	By("Creating AWS storage disruption by blocking network access to shared storage")
+	disruptorPods, err := createStorageDisruption(instanceID)
 	if err != nil {
-		// If no additional volumes to detach, skip this test
+		// If storage disruption cannot be created, skip this test
 		Skip(fmt.Sprintf("Skipping storage disruption test: %v", err))
 	}
-	By(fmt.Sprintf("Detached %d EBS volumes from node %s", len(detachedVolumes), targetNode.Metadata.Name))
+	By(fmt.Sprintf("Created %d storage disruptor pods for node %s", len(disruptorPods), targetNode.Metadata.Name))
 
 	// Ensure cleanup happens even if test fails
 	defer func() {
 		By("Cleaning up AWS storage disruption")
-		err := restoreStorageDisruption(instanceID, detachedVolumes)
+		err := restoreStorageDisruption(instanceID, disruptorPods)
 		if err != nil {
 			GinkgoWriter.Printf("Warning: failed to restore storage disruption: %v\n", err)
 		} else {
-			By("Successfully restored detached volumes")
+			By("Successfully restored network access to shared storage")
 		}
 	}()
 
-	// Wait for storage disruption to take effect
-	By("Waiting for storage disruption to take effect")
+	// Wait for network-level storage disruption to take effect
+	By("Waiting for network-level storage disruption to take effect")
 	time.Sleep(30 * time.Second)
 
-	// Monitor for node becoming NotReady due to storage issues
-	By("Verifying node becomes NotReady due to storage disruption")
+	// Monitor for node becoming NotReady due to loss of shared storage access
+	By("Verifying node becomes NotReady due to loss of shared storage access")
 	Eventually(func() bool {
 		node := &corev1.Node{}
 		err := k8sClient.Get(ctx, types.NamespacedName{Name: targetNode.Metadata.Name}, node)
@@ -439,9 +566,9 @@ func testStorageAccessInterruption(cluster ClusterInfo) {
 
 	// Only restore storage after confirming node has been fenced
 	By("Node has been fenced - now restoring storage access to test recovery")
-	err = restoreStorageDisruption(instanceID, detachedVolumes)
+	err = restoreStorageDisruption(instanceID, disruptorPods)
 	Expect(err).NotTo(HaveOccurred())
-	detachedVolumes = nil // Prevent double cleanup in defer
+	disruptorPods = nil // Prevent double cleanup in defer
 
 	// Wait longer for node to come back online after reboot
 	By("Waiting for node to come back online after reboot")
@@ -463,11 +590,11 @@ func testStorageAccessInterruption(cluster ClusterInfo) {
 	}, time.Minute*10, time.Second*30).Should(BeTrue())
 
 	// Verify node recovery (instead of the old immediate recovery test)
-	By("Verifying node has fully recovered after fencing and storage restoration")
+	By("Verifying node has fully recovered after fencing and shared storage restoration")
 	time.Sleep(30 * time.Second) // Give additional time for full recovery
 
-	// Verify other nodes remained stable during storage disruption
-	By("Verifying other nodes remained stable during storage disruption")
+	// Verify other nodes remained stable during network-level storage disruption
+	By("Verifying other nodes remained stable during network-level storage disruption")
 	for _, node := range cluster.WorkerNodes {
 		if node.Metadata.Name == targetNode.Metadata.Name {
 			continue // Skip the target node
@@ -488,7 +615,7 @@ func testStorageAccessInterruption(cluster ClusterInfo) {
 		Expect(nodeReady).To(BeTrue(), fmt.Sprintf("Node %s should remain Ready", node.Metadata.Name))
 	}
 
-	GinkgoWriter.Printf("AWS-based storage access interruption test completed\n")
+	GinkgoWriter.Printf("Network-level storage access interruption test completed\n")
 }
 
 func testKubeletCommunicationFailure(cluster ClusterInfo) {
@@ -905,6 +1032,24 @@ func cleanupTestArtifacts() {
 	// Clean up any disruption pods or test artifacts
 	disruptionPods := []string{"storage-disruptor", "network-disruptor", "resource-consumer", "kubelet-stress-test"}
 
+	// Clean up storage disruptor pods (they have timestamped names)
+	storageDisruptorPods := &corev1.PodList{}
+	err := k8sClient.List(ctx, storageDisruptorPods, client.InNamespace("default"), client.MatchingLabels{"app": "sbd-e2e-storage-disruptor"})
+	if err == nil {
+		for _, pod := range storageDisruptorPods.Items {
+			_ = k8sClient.Delete(ctx, &pod)
+		}
+	}
+
+	// Clean up storage cleanup pods (they have timestamped names)
+	storageCleanupPods := &corev1.PodList{}
+	err = k8sClient.List(ctx, storageCleanupPods, client.InNamespace("default"), client.MatchingLabels{"app": "sbd-e2e-storage-cleanup"})
+	if err == nil {
+		for _, pod := range storageCleanupPods.Items {
+			_ = k8sClient.Delete(ctx, &pod)
+		}
+	}
+
 	for _, podName := range disruptionPods {
 		pod := &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
@@ -1041,10 +1186,8 @@ func validateAWSPermissions() error {
 		{"ec2:DescribeInstances", testDescribeInstances},
 		{"ec2:RebootInstances", testRebootInstances}, // CRITICAL: For kubelet disruption recovery
 
-		// Storage disruption test permissions
-		{"ec2:DescribeVolumes", testDescribeVolumes},
-		{"ec2:AttachVolume", testAttachVolume},
-		{"ec2:DetachVolume", testDetachVolume},
+		// Note: Storage disruption now uses network-level disruption via iptables in pods
+		// No additional AWS permissions needed - only Kubernetes pod creation/deletion
 	}
 
 	var failedPermissions []string
@@ -1077,31 +1220,6 @@ func testRebootInstances() error {
 	// Test with non-existent instance ID to check permission
 	_, err := ec2Client.RebootInstances(&ec2.RebootInstancesInput{
 		InstanceIds: []*string{aws.String("i-nonexistent")},
-	})
-	return checkAWSPermissionError(err)
-}
-
-func testDescribeVolumes() error {
-	_, err := ec2Client.DescribeVolumes(&ec2.DescribeVolumesInput{
-		MaxResults: aws.Int64(5),
-	})
-	return checkAWSPermissionError(err)
-}
-
-func testAttachVolume() error {
-	// Test with invalid parameters to check permission
-	_, err := ec2Client.AttachVolume(&ec2.AttachVolumeInput{
-		VolumeId:   aws.String("vol-nonexistent"),
-		InstanceId: aws.String("i-nonexistent"),
-		Device:     aws.String("/dev/sdf"),
-	})
-	return checkAWSPermissionError(err)
-}
-
-func testDetachVolume() error {
-	// Test with invalid parameters to check permission
-	_, err := ec2Client.DetachVolume(&ec2.DetachVolumeInput{
-		VolumeId: aws.String("vol-nonexistent"),
 	})
 	return checkAWSPermissionError(err)
 }
@@ -1412,148 +1530,236 @@ func removeNetworkDisruption(disruptorIdentifier *string, instanceID string) err
 	return nil
 }
 
-// createStorageDisruption detaches EBS volumes to simulate storage failure
+// createStorageDisruption creates network-level disruption to block access to shared storage
 func createStorageDisruption(instanceID string) ([]string, error) {
-	// Get instance details to find attached volumes
-	result, err := ec2Client.DescribeInstances(&ec2.DescribeInstancesInput{
-		InstanceIds: []*string{aws.String(instanceID)},
-	})
+	By(fmt.Sprintf("Creating network-level storage disruption for instance %s", instanceID))
+
+	// Get the node name from the instance ID
+	nodeName, err := getNodeNameFromInstanceID(instanceID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to describe instance: %w", err)
+		return nil, fmt.Errorf("failed to get node name for instance %s: %w", instanceID, err)
 	}
 
-	if len(result.Reservations) == 0 || len(result.Reservations[0].Instances) == 0 {
-		return nil, fmt.Errorf("instance not found: %s", instanceID)
+	By(fmt.Sprintf("Target node: %s", nodeName))
+
+	// Create a unique pod name for this disruption
+	disruptorPodName := fmt.Sprintf("sbd-e2e-storage-disruptor-%d", time.Now().Unix())
+
+	// Create privileged pod that disrupts shared storage access
+	disruptorPodYAML := fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  name: %s
+  namespace: default
+  labels:
+    app: sbd-e2e-storage-disruptor
+spec:
+  hostNetwork: true
+  hostPID: true
+  nodeName: %s
+  containers:
+  - name: disruptor
+    image: busybox:latest
+    imagePullPolicy: IfNotPresent
+    command:
+    - /bin/sh
+    - -c
+    - |
+      echo "SBD e2e storage disruptor starting..."
+      echo "Target: Block access to shared storage services"
+      
+      # Get the shared storage mount info from the host
+      # Look for common shared storage mount points and services
+      echo "Analyzing shared storage configuration..."
+      
+      # Method 1: Block EFS traffic (port 2049 - NFS)
+      echo "Blocking EFS/NFS traffic on port 2049..."
+      nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -I OUTPUT -p tcp --dport 2049 -j DROP
+      nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -I INPUT -p tcp --sport 2049 -j DROP
+      
+      # Method 2: Block common storage service ports
+      echo "Blocking additional storage service ports..."
+      # CephFS (port 6789)
+      nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -I OUTPUT -p tcp --dport 6789 -j DROP
+      # GlusterFS (port 24007)
+      nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -I OUTPUT -p tcp --dport 24007 -j DROP
+      
+      # Method 3: Block traffic to storage service IP ranges (AWS EFS)
+      echo "Blocking traffic to EFS service IP ranges..."
+      # AWS EFS typically uses 169.254.x.x range for mount targets
+      nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -I OUTPUT -d 169.254.0.0/16 -j DROP
+      
+      echo "Storage disruption rules applied. Shared storage should now be inaccessible."
+      echo "This will cause SBD agents to lose access to coordination storage."
+      
+      # Keep the pod running to maintain the disruption
+      echo "Maintaining storage disruption..."
+      sleep 300  # 5 minutes
+      
+      echo "Storage disruptor timeout reached - cleaning up rules..."
+      # Cleanup will happen when pod exits
+    securityContext:
+      privileged: true
+    resources:
+      requests:
+        memory: "32Mi"
+        cpu: "50m"
+      limits:
+        memory: "64Mi"
+        cpu: "100m"
+  restartPolicy: Never
+  tolerations:
+  - operator: Exists
+`, disruptorPodName, nodeName)
+
+	// Create the pod using k8s API
+	By(fmt.Sprintf("Creating storage disruptor pod: %s", disruptorPodName))
+	var disruptorPod corev1.Pod
+	err = yaml.Unmarshal([]byte(disruptorPodYAML), &disruptorPod)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal disruptor pod YAML: %w", err)
 	}
 
-	instance := result.Reservations[0].Instances[0]
-	var detachedVolumes []string
+	err = k8sClient.Create(ctx, &disruptorPod)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create disruptor pod: %w", err)
+	}
 
-	// Find non-root EBS volumes to detach (avoid detaching root volume)
-	for _, bdm := range instance.BlockDeviceMappings {
-		if bdm.Ebs != nil && bdm.DeviceName != nil {
-			// Skip root volume (typically /dev/sda1 or /dev/xvda)
-			if strings.Contains(*bdm.DeviceName, "sda1") || strings.Contains(*bdm.DeviceName, "xvda") {
-				continue
-			}
-
-			volumeID := *bdm.Ebs.VolumeId
-			By(fmt.Sprintf("Detaching EBS volume %s from device %s", volumeID, *bdm.DeviceName))
-
-			// Detach the volume
-			_, err := ec2Client.DetachVolume(&ec2.DetachVolumeInput{
-				VolumeId:   aws.String(volumeID),
-				InstanceId: aws.String(instanceID),
-				Device:     bdm.DeviceName,
-				Force:      aws.Bool(false), // Graceful detach first
-			})
-			if err != nil {
-				// If graceful detach fails, try force detach
-				By(fmt.Sprintf("Graceful detach failed, trying force detach for volume %s", volumeID))
-				_, err = ec2Client.DetachVolume(&ec2.DetachVolumeInput{
-					VolumeId:   aws.String(volumeID),
-					InstanceId: aws.String(instanceID),
-					Device:     bdm.DeviceName,
-					Force:      aws.Bool(true),
-				})
-				if err != nil {
-					return detachedVolumes, fmt.Errorf("failed to detach volume %s: %w", volumeID, err)
-				}
-			}
-
-			detachedVolumes = append(detachedVolumes, volumeID)
+	// Wait for pod to start and apply storage disruption rules
+	By("Waiting for disruptor pod to start and apply storage disruption rules...")
+	Eventually(func() bool {
+		pod := &corev1.Pod{}
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: disruptorPodName, Namespace: "default"}, pod)
+		if err != nil {
+			return false
 		}
-	}
+		return pod.Status.Phase == corev1.PodRunning
+	}, time.Minute*2, time.Second*10).Should(BeTrue())
 
-	if len(detachedVolumes) == 0 {
-		// List all volumes found for debugging
-		By("Listing all volumes found on the instance")
-		for _, bdm := range instance.BlockDeviceMappings {
-			if bdm.Ebs != nil && bdm.DeviceName != nil {
-				GinkgoWriter.Printf("Found volume %s on device %s (root: %v)\n",
-					*bdm.Ebs.VolumeId, *bdm.DeviceName,
-					strings.Contains(*bdm.DeviceName, "sda1") || strings.Contains(*bdm.DeviceName, "xvda"))
-			}
-		}
-		return nil, fmt.Errorf("no suitable non-root volumes found to detach")
-	}
+	// Give time for iptables rules to take effect
+	By("Waiting for storage disruption rules to take effect...")
+	time.Sleep(15 * time.Second)
 
-	// Wait for volumes to be detached
-	for _, volumeID := range detachedVolumes {
-		By(fmt.Sprintf("Waiting for volume %s to be detached", volumeID))
-		Eventually(func() bool {
-			result, err := ec2Client.DescribeVolumes(&ec2.DescribeVolumesInput{
-				VolumeIds: []*string{aws.String(volumeID)},
-			})
-			if err != nil {
-				return false
-			}
-			if len(result.Volumes) == 0 {
-				return false
-			}
-			// Volume is detached when state is "available"
-			return *result.Volumes[0].State == "available"
-		}, time.Minute*2, time.Second*5).Should(BeTrue())
-	}
-
-	return detachedVolumes, nil
+	By(fmt.Sprintf("Network-level storage disruption successful - node %s should lose shared storage access", nodeName))
+	return []string{disruptorPodName}, nil
 }
 
-// restoreStorageDisruption reattaches the detached EBS volumes
-func restoreStorageDisruption(instanceID string, volumeIDs []string) error {
-	if len(volumeIDs) == 0 {
+// restoreStorageDisruption removes the network-level storage disruption
+func restoreStorageDisruption(instanceID string, disruptorPodNames []string) error {
+	if len(disruptorPodNames) == 0 {
 		return nil
 	}
 
-	// Get instance details to determine available device names
-	result, err := ec2Client.DescribeInstances(&ec2.DescribeInstancesInput{
-		InstanceIds: []*string{aws.String(instanceID)},
-	})
+	By(fmt.Sprintf("Removing network-level storage disruption for instance %s", instanceID))
+
+	// Get the node name from the instance ID
+	nodeName, err := getNodeNameFromInstanceID(instanceID)
 	if err != nil {
-		return fmt.Errorf("failed to describe instance: %w", err)
+		return fmt.Errorf("failed to get node name for instance %s: %w", instanceID, err)
 	}
 
-	if len(result.Reservations) == 0 || len(result.Reservations[0].Instances) == 0 {
-		return fmt.Errorf("instance not found: %s", instanceID)
-	}
-
-	// Get available device names (simple approach - use /dev/sdf, /dev/sdg, etc.)
-	deviceNames := []string{"/dev/sdf", "/dev/sdg", "/dev/sdh", "/dev/sdi", "/dev/sdj"}
-
-	for i, volumeID := range volumeIDs {
-		if i >= len(deviceNames) {
-			return fmt.Errorf("too many volumes to reattach, ran out of device names")
+	// Clean up the disruptor pod first
+	for _, podName := range disruptorPodNames {
+		By(fmt.Sprintf("Cleaning up storage disruptor pod: %s", podName))
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      podName,
+				Namespace: "default",
+			},
 		}
-
-		deviceName := deviceNames[i]
-		By(fmt.Sprintf("Reattaching volume %s to device %s", volumeID, deviceName))
-
-		_, err := ec2Client.AttachVolume(&ec2.AttachVolumeInput{
-			VolumeId:   aws.String(volumeID),
-			InstanceId: aws.String(instanceID),
-			Device:     aws.String(deviceName),
-		})
+		err := k8sClient.Delete(ctx, pod)
 		if err != nil {
-			return fmt.Errorf("failed to attach volume %s: %w", volumeID, err)
+			By(fmt.Sprintf("Warning: Could not delete disruptor pod %s: %v", podName, err))
 		}
-
-		// Wait for volume to be attached
-		By(fmt.Sprintf("Waiting for volume %s to be attached", volumeID))
-		Eventually(func() bool {
-			result, err := ec2Client.DescribeVolumes(&ec2.DescribeVolumesInput{
-				VolumeIds: []*string{aws.String(volumeID)},
-			})
-			if err != nil {
-				return false
-			}
-			if len(result.Volumes) == 0 {
-				return false
-			}
-			// Volume is attached when state is "in-use"
-			return *result.Volumes[0].State == "in-use"
-		}, time.Minute*2, time.Second*5).Should(BeTrue())
 	}
 
+	// Create a cleanup pod to remove the iptables rules
+	cleanupPodName := fmt.Sprintf("sbd-e2e-storage-cleanup-%d", time.Now().Unix())
+	cleanupPodYAML := fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  name: %s
+  namespace: default
+  labels:
+    app: sbd-e2e-storage-cleanup
+spec:
+  hostNetwork: true
+  hostPID: true
+  nodeName: %s
+  containers:
+  - name: cleanup
+    image: busybox:latest
+    imagePullPolicy: IfNotPresent
+    command:
+    - /bin/sh
+    - -c
+    - |
+      echo "SBD e2e storage cleanup starting..."
+      echo "Target: Remove storage disruption iptables rules"
+      
+      # Remove the iptables rules that were blocking storage access
+      echo "Removing EFS/NFS traffic blocks on port 2049..."
+      nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -D OUTPUT -p tcp --dport 2049 -j DROP 2>/dev/null || true
+      nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -D INPUT -p tcp --sport 2049 -j DROP 2>/dev/null || true
+      
+      echo "Removing additional storage service port blocks..."
+      # CephFS (port 6789)
+      nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -D OUTPUT -p tcp --dport 6789 -j DROP 2>/dev/null || true
+      # GlusterFS (port 24007)
+      nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -D OUTPUT -p tcp --dport 24007 -j DROP 2>/dev/null || true
+      
+      echo "Removing EFS service IP range blocks..."
+      # AWS EFS (169.254.x.x range)
+      nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -D OUTPUT -d 169.254.0.0/16 -j DROP 2>/dev/null || true
+      
+      echo "Storage disruption cleanup completed. Shared storage should now be accessible."
+      echo "Cleanup finished successfully."
+    securityContext:
+      privileged: true
+    resources:
+      requests:
+        memory: "32Mi"
+        cpu: "50m"
+      limits:
+        memory: "64Mi"
+        cpu: "100m"
+  restartPolicy: Never
+  tolerations:
+  - operator: Exists
+`, cleanupPodName, nodeName)
+
+	// Create the cleanup pod
+	By(fmt.Sprintf("Creating storage cleanup pod: %s", cleanupPodName))
+	var cleanupPod corev1.Pod
+	err = yaml.Unmarshal([]byte(cleanupPodYAML), &cleanupPod)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal cleanup pod YAML: %w", err)
+	}
+
+	err = k8sClient.Create(ctx, &cleanupPod)
+	if err != nil {
+		return fmt.Errorf("failed to create cleanup pod: %w", err)
+	}
+
+	// Wait for cleanup pod to complete
+	By("Waiting for cleanup pod to complete...")
+	Eventually(func() bool {
+		pod := &corev1.Pod{}
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: cleanupPodName, Namespace: "default"}, pod)
+		if err != nil {
+			return false
+		}
+		return pod.Status.Phase == corev1.PodSucceeded
+	}, time.Minute*2, time.Second*10).Should(BeTrue())
+
+	// Clean up the cleanup pod
+	By(fmt.Sprintf("Cleaning up storage cleanup pod: %s", cleanupPodName))
+	err = k8sClient.Delete(ctx, &cleanupPod)
+	if err != nil {
+		By(fmt.Sprintf("Warning: Could not delete cleanup pod %s: %v", cleanupPodName, err))
+	}
+
+	By(fmt.Sprintf("Network-level storage disruption removed - node %s should regain shared storage access", nodeName))
 	return nil
 }
 

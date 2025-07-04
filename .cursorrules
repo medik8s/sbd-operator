@@ -31,6 +31,8 @@ GO CODING STANDARDS:
 - Use context.Context for cancellation and timeouts
 - Prefer interfaces for testability
 - Scripts should be idempotent and include the ability to delete anything they create
+- Code reuse is a desirable outcome
+
 
 KUBERNETES OPERATOR PATTERNS:
 - Implement proper controller reconciliation logic
@@ -52,7 +54,7 @@ TESTING REQUIREMENTS:
 - Test error conditions and edge cases
 - Use test fixtures for complex scenarios
 - Never use the --ginkgo.dry-run option
-- Always run e2e tests from the makefile
+- Always build, push, and run tests from the makefile
 
 ERROR HANDLING:
 - Always return errors, don't panic
@@ -61,6 +63,7 @@ ERROR HANDLING:
 - Log errors at appropriate levels
 - Implement exponential backoff for retries
 - Use custom error types when beneficial
+- Check for any required AWS permissions at the beginning of scripts or tests
 
 LOGGING:
 - Use structured logging with controller-runtime's logger

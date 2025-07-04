@@ -222,7 +222,7 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 
 			By("creating an SBDConfig using the discovered StorageClass")
 
-			_, err = testNamespace.CreateSBDConfig(sbdConfigName, func(config *medik8sv1alpha1.SBDConfig) {
+			sbdConfig, err := testNamespace.CreateSBDConfig(sbdConfigName, func(config *medik8sv1alpha1.SBDConfig) {
 				config.Spec.WatchdogTimeout = &metav1.Duration{Duration: 90 * time.Second}
 				config.Spec.SharedStorageClass = rwxStorageClass.Name
 				config.Spec.SbdWatchdogPath = "/dev/watchdog"
@@ -340,6 +340,15 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 			if err == nil {
 				GinkgoWriter.Printf("Final SBDConfig YAML:\n%s\n", string(yamlData))
 			}
+
+			validator := testNamespace.NewSBDAgentValidator()
+			opts := utils.DefaultValidateAgentDeploymentOptions(sbdConfig.Name)
+			opts.ExpectedArgs = []string{
+				"--watchdog-path=/dev/watchdog",
+				"--watchdog-timeout=1m0s",
+			}
+			err = validator.ValidateAgentDeployment(opts)
+			Expect(err).NotTo(HaveOccurred())
 
 			GinkgoWriter.Printf("SharedStorageClass functionality test completed successfully with StorageClass: %s\n", rwxStorageClass.Name)
 		})

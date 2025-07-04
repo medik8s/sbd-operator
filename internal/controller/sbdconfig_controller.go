@@ -45,6 +45,7 @@ import (
 	medik8sv1alpha1 "github.com/medik8s/sbd-operator/api/v1alpha1"
 	"github.com/medik8s/sbd-operator/pkg/agent"
 	"github.com/medik8s/sbd-operator/pkg/retry"
+	storagev1 "k8s.io/api/storage/v1"
 )
 
 // Event types and reasons for SBDConfig controller
@@ -317,6 +318,194 @@ func (r *SBDConfigReconciler) ensureSCCPermissions(ctx context.Context, sbdConfi
 	r.emitEventf(sbdConfig, EventTypeNormal, ReasonSCCManaged,
 		"SCC '%s' updated to grant permissions to service account '%s'", SBDOperatorSCCName, serviceAccountUser)
 
+	return nil
+}
+
+// validateStorageClass validates that the specified storage class supports ReadWriteMany access mode
+func (r *SBDConfigReconciler) validateStorageClass(ctx context.Context, sbdConfig *medik8sv1alpha1.SBDConfig, logger logr.Logger) error {
+	if !sbdConfig.Spec.HasSharedStorage() {
+		// No shared storage configured, nothing to validate
+		return nil
+	}
+
+	storageClassName := sbdConfig.Spec.GetSharedStorageStorageClass()
+	logger = logger.WithValues("storageClass", storageClassName)
+
+	// Get the StorageClass object
+	storageClass := &storagev1.StorageClass{}
+	err := r.Get(ctx, types.NamespacedName{Name: storageClassName}, storageClass)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return fmt.Errorf("StorageClass '%s' not found", storageClassName)
+		}
+		return fmt.Errorf("failed to get StorageClass '%s': %w", storageClassName, err)
+	}
+
+	// Check if the provisioner is known to support ReadWriteMany
+	provisioner := storageClass.Provisioner
+	if r.isRWXCompatibleProvisioner(provisioner) {
+		logger.Info("StorageClass validation passed", "provisioner", provisioner)
+		return nil
+	}
+
+	// Check if the provisioner is known to be incompatible
+	if r.isRWXIncompatibleProvisioner(provisioner) {
+		return fmt.Errorf("StorageClass '%s' uses provisioner '%s' that does not support ReadWriteMany access mode required for SBD shared storage", storageClassName, provisioner)
+	}
+
+	// For unknown provisioners, test with a temporary PVC
+	logger.Info("StorageClass uses unknown provisioner, testing ReadWriteMany support", "provisioner", provisioner)
+	if err := r.testRWXSupport(ctx, sbdConfig, storageClassName, logger); err != nil {
+		return fmt.Errorf("StorageClass '%s' does not support ReadWriteMany access mode required for SBD shared storage: %w", storageClassName, err)
+	}
+
+	logger.Info("StorageClass validation passed", "provisioner", provisioner)
+	return nil
+}
+
+// isRWXCompatibleProvisioner checks if a CSI provisioner is known to support ReadWriteMany
+func (r *SBDConfigReconciler) isRWXCompatibleProvisioner(provisioner string) bool {
+	// Known RWX-compatible provisioners
+	rwxProvisioners := map[string]bool{
+		// AWS
+		"efs.csi.aws.com": true,
+
+		// Azure
+		"file.csi.azure.com": true,
+
+		// GCP
+		"filestore.csi.storage.gke.io": true,
+
+		// NFS
+		"nfs.csi.k8s.io": true,
+		"cluster.local/nfs-subdir-external-provisioner": true,
+		"k8s-sigs.io/nfs-subdir-external-provisioner":   true,
+
+		// CephFS
+		"cephfs.csi.ceph.com": true,
+
+		// GlusterFS
+		"gluster.org/glusterfs": true,
+
+		// Other known RWX provisioners
+		"nfs-provisioner": true,
+		"csi-nfsplugin":   true,
+	}
+
+	return rwxProvisioners[provisioner]
+}
+
+// isRWXIncompatibleProvisioner checks if a CSI provisioner is known to NOT support ReadWriteMany
+func (r *SBDConfigReconciler) isRWXIncompatibleProvisioner(provisioner string) bool {
+	// Known RWX-incompatible provisioners (block storage that only supports RWO)
+	rwxIncompatibleProvisioners := map[string]bool{
+		// AWS
+		"ebs.csi.aws.com": true,
+		"aws-ebs":         true,
+
+		// Azure
+		"disk.csi.azure.com": true,
+		"azure-disk":         true,
+
+		// GCP
+		"pd.csi.storage.gke.io": true,
+		"gce-pd":                true,
+
+		// VMware
+		"csi.vsphere.vmware.com": true,
+
+		// OpenStack
+		"cinder.csi.openstack.org": true,
+
+		// Other known block storage provisioners
+		"csi.trident.netapp.io": true, // NetApp Trident (when configured for block)
+		"iscsi.csi.k8s.io":      true, // iSCSI CSI driver
+	}
+
+	return rwxIncompatibleProvisioners[provisioner]
+}
+
+// testRWXSupport tests if a storage class actually supports ReadWriteMany by creating a temporary PVC
+func (r *SBDConfigReconciler) testRWXSupport(ctx context.Context, sbdConfig *medik8sv1alpha1.SBDConfig, storageClassName string, logger logr.Logger) error {
+	// Create a temporary PVC with ReadWriteMany to test compatibility
+	testPVCName := fmt.Sprintf("%s-rwx-test", sbdConfig.Name)
+
+	testPVC := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testPVCName,
+			Namespace: sbdConfig.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":      "sbd-operator",
+				"app.kubernetes.io/component": "storage-validation",
+				"sbdconfig":                   sbdConfig.Name,
+				"temp-test":                   "true",
+			},
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{
+				corev1.ReadWriteMany,
+			},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: resource.MustParse("1Gi"), // Minimal size for testing
+				},
+			},
+			StorageClassName: &storageClassName,
+		},
+	}
+
+	// Set controller reference for cleanup
+	if err := controllerutil.SetControllerReference(sbdConfig, testPVC, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set controller reference on test PVC: %w", err)
+	}
+
+	// Create the test PVC
+	logger.Info("Creating temporary PVC to test ReadWriteMany support")
+	err := r.Create(ctx, testPVC)
+	if err != nil {
+		return fmt.Errorf("failed to create test PVC: %w", err)
+	}
+
+	// Schedule cleanup regardless of test outcome
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		if deleteErr := r.Delete(cleanupCtx, testPVC); deleteErr != nil {
+			logger.Error(deleteErr, "Failed to cleanup test PVC", "testPVC", testPVCName)
+		} else {
+			logger.Info("Successfully cleaned up test PVC", "testPVC", testPVCName)
+		}
+	}()
+
+	// Wait a short time and check if the PVC was rejected due to unsupported access mode
+	time.Sleep(5 * time.Second)
+
+	// Get the PVC to check its status
+	err = r.Get(ctx, types.NamespacedName{Name: testPVCName, Namespace: sbdConfig.Namespace}, testPVC)
+	if err != nil {
+		return fmt.Errorf("failed to get test PVC status: %w", err)
+	}
+
+	// Check for events that indicate RWX incompatibility
+	events := &corev1.EventList{}
+	err = r.List(ctx, events, client.InNamespace(sbdConfig.Namespace), client.MatchingFields{"involvedObject.name": testPVCName})
+	if err != nil {
+		logger.Error(err, "Failed to list events for test PVC")
+	} else {
+		for _, event := range events.Items {
+			message := strings.ToLower(event.Message)
+			if strings.Contains(message, "readwritemany") &&
+				(strings.Contains(message, "not supported") || strings.Contains(message, "unsupported") || strings.Contains(message, "invalid")) {
+				return fmt.Errorf("storage class does not support ReadWriteMany access mode: %s", event.Message)
+			}
+			if strings.Contains(message, "access mode") && strings.Contains(message, "not supported") {
+				return fmt.Errorf("storage class does not support required access mode: %s", event.Message)
+			}
+		}
+	}
+
+	logger.Info("ReadWriteMany test passed", "testPVC", testPVCName)
 	return nil
 }
 
@@ -719,6 +908,25 @@ func (r *SBDConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			"operation", "scc-permissions")
 		r.emitEventf(&sbdConfig, EventTypeWarning, ReasonSCCError,
 			"Failed to ensure SCC permissions for service account 'sbd-agent' in namespace '%s': %v", sbdConfig.Namespace, err)
+
+		// Return requeue with backoff for transient errors
+		if r.isTransientKubernetesError(err) {
+			return ctrl.Result{RequeueAfter: InitialSBDConfigRetryDelay}, err
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Validate storage class compatibility
+	err = r.performKubernetesAPIOperationWithRetry(ctx, "validate storage class", func() error {
+		return r.validateStorageClass(ctx, &sbdConfig, logger)
+	}, logger)
+
+	if err != nil {
+		logger.Error(err, "Failed to validate storage class compatibility after retries",
+			"namespace", sbdConfig.Namespace,
+			"operation", "storage-class-validation")
+		r.emitEventf(&sbdConfig, EventTypeWarning, ReasonPVCError,
+			"Failed to validate storage class compatibility for PVC '%s': %v", sbdConfig.Spec.GetSharedStoragePVCName(sbdConfig.Name), err)
 
 		// Return requeue with backoff for transient errors
 		if r.isTransientKubernetesError(err) {

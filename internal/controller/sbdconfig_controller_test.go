@@ -35,6 +35,7 @@ import (
 
 	medik8sv1alpha1 "github.com/medik8s/sbd-operator/api/v1alpha1"
 	agent "github.com/medik8s/sbd-operator/pkg/agent"
+	storagev1 "k8s.io/api/storage/v1"
 )
 
 // MockEventRecorder is a mock implementation of record.EventRecorder for testing
@@ -1033,6 +1034,362 @@ var _ = Describe("SBDConfig Controller", func() {
 				// Check if status has been updated (TotalNodes should be set)
 				return sbdConfig.Status.TotalNodes >= 0
 			}, time.Second*10, time.Millisecond*250).Should(BeTrue())
+		})
+	})
+
+	Context("When validating storage classes", func() {
+		const (
+			timeout  = time.Second * 10
+			interval = time.Millisecond * 250
+		)
+
+		var validationReconciler *SBDConfigReconciler
+		var mockEventRecorder *MockEventRecorder
+		var validationNamespace string
+
+		BeforeEach(func() {
+			validationNamespace = fmt.Sprintf("validation-test-%d", time.Now().UnixNano())
+
+			// Create the test namespace
+			testNamespace := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: validationNamespace,
+				},
+			}
+			Expect(k8sClient.Create(ctx, testNamespace)).To(Succeed())
+
+			// Create reconciler with mock event recorder
+			mockEventRecorder = NewMockEventRecorder()
+			validationReconciler = &SBDConfigReconciler{
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
+				Recorder: mockEventRecorder,
+			}
+		})
+
+		AfterEach(func() {
+			// Clean up test namespace
+			testNamespace := &corev1.Namespace{}
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: validationNamespace}, testNamespace)
+			if err == nil {
+				Expect(k8sClient.Delete(ctx, testNamespace)).To(Succeed())
+			}
+		})
+
+		It("should reject gp3-csi storage class (ReadWriteOnce only)", func() {
+			By("creating a gp3-csi storage class")
+			gp3StorageClass := &storagev1.StorageClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "gp3-csi",
+				},
+				Provisioner: "ebs.csi.aws.com",
+				Parameters: map[string]string{
+					"type": "gp3",
+				},
+				AllowVolumeExpansion: &[]bool{true}[0],
+			}
+			Expect(k8sClient.Create(ctx, gp3StorageClass)).To(Succeed())
+
+			By("creating SBDConfig with gp3-csi storage class")
+			sbdConfig := &medik8sv1alpha1.SBDConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-gp3-validation",
+					Namespace: validationNamespace,
+				},
+				Spec: medik8sv1alpha1.SBDConfigSpec{
+					SharedStorageClass: "gp3-csi",
+					Image:              "test-sbd-agent:latest",
+				},
+			}
+			Expect(k8sClient.Create(ctx, sbdConfig)).To(Succeed())
+
+			By("performing first reconciliation (adds finalizer)")
+			_, err := validationReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      sbdConfig.Name,
+					Namespace: sbdConfig.Namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("performing second reconciliation (validates storage class)")
+			_, err = validationReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      sbdConfig.Name,
+					Namespace: sbdConfig.Namespace,
+				},
+			})
+
+			By("expecting reconciliation to fail due to storage class incompatibility")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("does not support ReadWriteMany"))
+
+			By("verifying warning event was emitted")
+			Eventually(func() bool {
+				events := mockEventRecorder.GetEvents()
+				for _, event := range events {
+					if event.EventType == EventTypeWarning && event.Reason == ReasonPVCError {
+						return true
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue())
+
+			By("cleaning up test storage class")
+			Expect(k8sClient.Delete(ctx, gp3StorageClass)).To(Succeed())
+		})
+
+		It("should accept EFS storage class (ReadWriteMany compatible)", func() {
+			By("creating an EFS storage class")
+			efsStorageClass := &storagev1.StorageClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "efs-csi",
+				},
+				Provisioner: "efs.csi.aws.com",
+				Parameters: map[string]string{
+					"fileSystemId":   "fs-12345678",
+					"directoryPerms": "700",
+				},
+			}
+			Expect(k8sClient.Create(ctx, efsStorageClass)).To(Succeed())
+
+			By("creating SBDConfig with EFS storage class")
+			sbdConfig := &medik8sv1alpha1.SBDConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-efs-validation",
+					Namespace: validationNamespace,
+				},
+				Spec: medik8sv1alpha1.SBDConfigSpec{
+					SharedStorageClass: "efs-csi",
+					Image:              "test-sbd-agent:latest",
+				},
+			}
+			Expect(k8sClient.Create(ctx, sbdConfig)).To(Succeed())
+
+			By("performing first reconciliation (adds finalizer)")
+			_, err := validationReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      sbdConfig.Name,
+					Namespace: sbdConfig.Namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("performing second reconciliation (validates storage class and creates PVC)")
+			_, err = validationReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      sbdConfig.Name,
+					Namespace: sbdConfig.Namespace,
+				},
+			})
+
+			By("expecting reconciliation to succeed")
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PVC was created")
+			pvc := &corev1.PersistentVolumeClaim{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      sbdConfig.Spec.GetSharedStoragePVCName(sbdConfig.Name),
+					Namespace: sbdConfig.Namespace,
+				}, pvc)
+			}, timeout, interval).Should(Succeed())
+
+			By("verifying PVC has ReadWriteMany access mode")
+			Expect(pvc.Spec.AccessModes).To(ContainElement(corev1.ReadWriteMany))
+
+			By("cleaning up test storage class")
+			Expect(k8sClient.Delete(ctx, efsStorageClass)).To(Succeed())
+		})
+
+		It("should reject non-existent storage class", func() {
+			By("creating SBDConfig with non-existent storage class")
+			sbdConfig := &medik8sv1alpha1.SBDConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-missing-sc",
+					Namespace: validationNamespace,
+				},
+				Spec: medik8sv1alpha1.SBDConfigSpec{
+					SharedStorageClass: "non-existent-storage-class",
+					Image:              "test-sbd-agent:latest",
+				},
+			}
+			Expect(k8sClient.Create(ctx, sbdConfig)).To(Succeed())
+
+			By("performing first reconciliation (adds finalizer)")
+			_, err := validationReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      sbdConfig.Name,
+					Namespace: sbdConfig.Namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("performing second reconciliation (validates storage class)")
+			_, err = validationReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      sbdConfig.Name,
+					Namespace: sbdConfig.Namespace,
+				},
+			})
+
+			By("expecting reconciliation to fail due to missing storage class")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("not found"))
+
+			By("verifying warning event was emitted")
+			Eventually(func() bool {
+				events := mockEventRecorder.GetEvents()
+				for _, event := range events {
+					if event.EventType == EventTypeWarning && event.Reason == ReasonPVCError {
+						return true
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue())
+		})
+
+		It("should skip validation when no shared storage is configured", func() {
+			By("creating SBDConfig without shared storage")
+			sbdConfig := &medik8sv1alpha1.SBDConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-no-shared-storage",
+					Namespace: validationNamespace,
+				},
+				Spec: medik8sv1alpha1.SBDConfigSpec{
+					Image: "test-sbd-agent:latest",
+					// No SharedStorageClass specified
+				},
+			}
+			Expect(k8sClient.Create(ctx, sbdConfig)).To(Succeed())
+
+			By("reconciling the SBDConfig")
+			_, err := validationReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      sbdConfig.Name,
+					Namespace: sbdConfig.Namespace,
+				},
+			})
+
+			By("expecting reconciliation to succeed")
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying no PVC was created")
+			pvc := &corev1.PersistentVolumeClaim{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      fmt.Sprintf("%s-shared-storage", sbdConfig.Name),
+				Namespace: sbdConfig.Namespace,
+			}, pvc)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+		})
+
+		It("should recognize known RWX-compatible provisioners", func() {
+			testCases := []struct {
+				name        string
+				provisioner string
+				compatible  bool
+			}{
+				{"AWS EFS", "efs.csi.aws.com", true},
+				{"Azure Files", "file.csi.azure.com", true},
+				{"GCP Filestore", "filestore.csi.storage.gke.io", true},
+				{"NFS CSI", "nfs.csi.k8s.io", true},
+				{"CephFS", "cephfs.csi.ceph.com", true},
+				{"AWS EBS", "ebs.csi.aws.com", false},
+				{"Azure Disk", "disk.csi.azure.com", false},
+				{"GCP Persistent Disk", "pd.csi.storage.gke.io", false},
+			}
+
+			for _, tc := range testCases {
+				By(fmt.Sprintf("testing %s provisioner (%s)", tc.name, tc.provisioner))
+
+				compatible := validationReconciler.isRWXCompatibleProvisioner(tc.provisioner)
+				Expect(compatible).To(Equal(tc.compatible),
+					fmt.Sprintf("Expected %s (%s) to be compatible=%t", tc.name, tc.provisioner, tc.compatible))
+			}
+		})
+
+		It("should recognize known RWX-incompatible provisioners", func() {
+			testCases := []struct {
+				name         string
+				provisioner  string
+				incompatible bool
+			}{
+				{"AWS EBS", "ebs.csi.aws.com", true},
+				{"Azure Disk", "disk.csi.azure.com", true},
+				{"GCP Persistent Disk", "pd.csi.storage.gke.io", true},
+				{"VMware vSphere", "csi.vsphere.vmware.com", true},
+				{"OpenStack Cinder", "cinder.csi.openstack.org", true},
+				{"AWS EFS", "efs.csi.aws.com", false},
+				{"Azure Files", "file.csi.azure.com", false},
+				{"Unknown provisioner", "unknown.provisioner.example.com", false},
+			}
+
+			for _, tc := range testCases {
+				By(fmt.Sprintf("testing %s provisioner (%s)", tc.name, tc.provisioner))
+
+				incompatible := validationReconciler.isRWXIncompatibleProvisioner(tc.provisioner)
+				Expect(incompatible).To(Equal(tc.incompatible),
+					fmt.Sprintf("Expected %s (%s) to be incompatible=%t", tc.name, tc.provisioner, tc.incompatible))
+			}
+		})
+
+		Context("When testing unknown provisioners", func() {
+			It("should test unknown provisioner with temporary PVC", func() {
+				By("creating a custom storage class with unknown provisioner")
+				customStorageClass := &storagev1.StorageClass{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "custom-unknown-provisioner",
+					},
+					Provisioner: "custom.example.com/unknown-provisioner",
+					Parameters: map[string]string{
+						"type": "custom",
+					},
+				}
+				Expect(k8sClient.Create(ctx, customStorageClass)).To(Succeed())
+
+				By("creating SBDConfig with unknown provisioner")
+				sbdConfig := &medik8sv1alpha1.SBDConfig{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-unknown-provisioner",
+						Namespace: validationNamespace,
+					},
+					Spec: medik8sv1alpha1.SBDConfigSpec{
+						SharedStorageClass: "custom-unknown-provisioner",
+						Image:              "test-sbd-agent:latest",
+					},
+				}
+				Expect(k8sClient.Create(ctx, sbdConfig)).To(Succeed())
+
+				By("reconciling the SBDConfig")
+				_, err := validationReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      sbdConfig.Name,
+						Namespace: sbdConfig.Namespace,
+					},
+				})
+
+				By("expecting reconciliation to complete (may succeed or fail depending on actual provisioner capability)")
+				// The result depends on whether the unknown provisioner actually supports RWX
+				// In a real environment, this would likely fail, but in our test environment
+				// without a real provisioner, we just verify the validation logic runs
+				if err != nil {
+					Expect(err.Error()).To(ContainSubstring("ReadWriteMany"))
+				}
+
+				By("verifying temporary test PVC was created and cleaned up")
+				// The temporary PVC should be cleaned up automatically
+				testPVC := &corev1.PersistentVolumeClaim{}
+				Eventually(func() bool {
+					err := k8sClient.Get(ctx, types.NamespacedName{
+						Name:      fmt.Sprintf("%s-rwx-test", sbdConfig.Name),
+						Namespace: sbdConfig.Namespace,
+					}, testPVC)
+					return errors.IsNotFound(err)
+				}, timeout, interval).Should(BeTrue())
+
+				By("cleaning up test storage class")
+				Expect(k8sClient.Delete(ctx, customStorageClass)).To(Succeed())
+			})
 		})
 	})
 })

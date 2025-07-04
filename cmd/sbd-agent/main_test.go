@@ -1074,7 +1074,7 @@ func TestPreflightChecks_Success(t *testing.T) {
 	sbdFile.Close()
 
 	// Test successful pre-flight checks
-	err = runPreflightChecks(watchdogPath, sbdPath, "test-node", 1, false)
+	err = runPreflightChecks(watchdogPath, sbdPath, "test-node", 1)
 	if err != nil {
 		t.Errorf("Expected pre-flight checks to succeed, but got error: %v", err)
 	}
@@ -1092,7 +1092,7 @@ func TestPreflightChecks_WatchdogMissing(t *testing.T) {
 
 	// Test pre-flight checks with missing watchdog device and no SBD device
 	// This should fail because both watchdog and SBD are unavailable
-	err := runPreflightChecks(watchdogPath, "", "test-node", 1, false)
+	err := runPreflightChecks(watchdogPath, "", "test-node", 1)
 	if err == nil {
 		t.Error("Expected pre-flight checks to fail with missing watchdog and no SBD device, but they succeeded")
 		return
@@ -1125,7 +1125,7 @@ func TestPreflightChecks_SBDMissing(t *testing.T) {
 
 	// Test pre-flight checks with missing SBD device but working watchdog
 	// This should now PASS because watchdog is available (either/or logic)
-	err = runPreflightChecks(watchdogPath, sbdPath, "test-node", 1, false)
+	err = runPreflightChecks(watchdogPath, sbdPath, "test-node", 1)
 	if err != nil {
 		t.Errorf("Expected pre-flight checks to succeed with working watchdog despite missing SBD device, but got error: %v", err)
 	}
@@ -1151,7 +1151,7 @@ func TestPreflightChecks_WatchdogOnlyMode(t *testing.T) {
 	sbdPath := ""
 
 	// Test pre-flight checks in watchdog-only mode
-	err = runPreflightChecks(watchdogPath, sbdPath, "test-node", 1, false)
+	err = runPreflightChecks(watchdogPath, sbdPath, "test-node", 1)
 	if err != nil {
 		t.Errorf("Expected pre-flight checks to succeed in watchdog-only mode, but got error: %v", err)
 	}
@@ -1213,7 +1213,7 @@ func TestPreflightChecks_InvalidNodeName(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := runPreflightChecks(watchdogPath, "", tc.nodeName, tc.nodeID, false)
+			err := runPreflightChecks(watchdogPath, "", tc.nodeName, tc.nodeID)
 			if err == nil {
 				t.Errorf("Expected pre-flight checks to fail for %s, but they succeeded", tc.name)
 				return
@@ -1242,14 +1242,14 @@ func TestCheckWatchdogDevice(t *testing.T) {
 	}
 	watchdogFile.Close()
 
-	err = checkWatchdogDevice(watchdogPath, false)
+	err = checkWatchdogDevice(watchdogPath)
 	if err != nil {
 		t.Errorf("Expected watchdog device check to succeed, but got error: %v", err)
 	}
 
 	// Test with non-existent file
 	nonExistentPath := filepath.Join(tmpDir, "non-existent")
-	err = checkWatchdogDevice(nonExistentPath, false)
+	err = checkWatchdogDevice(nonExistentPath)
 	if err == nil {
 		t.Error("Expected watchdog device check to fail with non-existent file, but it succeeded")
 	}
@@ -1579,7 +1579,7 @@ func TestPreflightChecks_SBDOnlyMode(t *testing.T) {
 
 	// Test pre-flight checks with missing watchdog device but working SBD device
 	// This should PASS because SBD device is available (either/or logic)
-	err = runPreflightChecks(watchdogPath, sbdPath, "test-node", 1, false)
+	err = runPreflightChecks(watchdogPath, sbdPath, "test-node", 1)
 	if err != nil {
 		t.Errorf("Expected pre-flight checks to succeed with working SBD device despite missing watchdog, but got error: %v", err)
 	}
@@ -1598,7 +1598,7 @@ func TestPreflightChecks_BothFailing(t *testing.T) {
 
 	// Test pre-flight checks with both watchdog and SBD device failing
 	// This should FAIL because neither component is available
-	err := runPreflightChecks(watchdogPath, sbdPath, "test-node", 1, false)
+	err := runPreflightChecks(watchdogPath, sbdPath, "test-node", 1)
 	if err == nil {
 		t.Error("Expected pre-flight checks to fail with both watchdog and SBD device missing, but they succeeded")
 	}

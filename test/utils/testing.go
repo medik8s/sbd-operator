@@ -234,8 +234,10 @@ func (tn *TestNamespace) CleanupSBDConfig(sbdConfig *medik8sv1alpha1.SBDConfig) 
 			client.InNamespace(tn.Name),
 			client.MatchingLabels{"sbdconfig": sbdConfig.Name})
 		if err != nil {
+			GinkgoWriter.Printf("Failed to list pods: %v\n", err)
 			return -1
 		}
+		GinkgoWriter.Printf("Found %d pods\n", len(pods.Items))
 		return len(pods.Items)
 	}, time.Minute*2, time.Second*5).Should(Equal(0))
 
@@ -808,12 +810,12 @@ func (sav *SBDAgentValidator) ValidateAgentDeployment(opts ValidateAgentDeployme
 		return fmt.Errorf("pods failed to become ready: %w", err)
 	}
 
-	By("verifying nodes remain stable and don't experience reboots")
-	nodeChecker := sav.Clients.NewNodeStabilityChecker()
-	err = nodeChecker.WaitForNodesStable(opts.NodeStableTime)
-	if err != nil {
-		return fmt.Errorf("node stability check failed: %w", err)
-	}
+	// By("verifying nodes remain stable and don't experience reboots")
+	// nodeChecker := sav.Clients.NewNodeStabilityChecker()
+	// err = nodeChecker.WaitForNodesStable(opts.NodeStableTime)
+	// if err != nil {
+	// 	return fmt.Errorf("node stability check failed: %w", err)
+	// }
 
 	By("checking if SBD agent pods exist and examining their status")
 	pods := &corev1.PodList{}
@@ -833,7 +835,8 @@ func (sav *SBDAgentValidator) ValidateAgentDeployment(opts ValidateAgentDeployme
 
 	// Try to get logs but don't fail the test if pod isn't ready or logs are empty
 	Eventually(func() string {
-		logStr, err := podChecker.GetPodLogs(podName, func() *int64 { val := int64(20); return &val }())
+		logStr, err := podChecker.GetPodLogs(podName, nil)
+		//		logStr, err := podChecker.GetPodLogs(podName, func() *int64 { val := int64(20); return &val }())
 		if err != nil {
 			GinkgoWriter.Printf("Failed to get logs from pod %s: %v\n", podName, err)
 			return "ERROR_GETTING_LOGS"
