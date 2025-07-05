@@ -235,21 +235,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create leadership-aware controllers with EventRecorder
+	// Create controllers with EventRecorder
+	// Note: SBD fencing is now handled by agents, so leader election is less critical
 	sbdRemediationReconciler := &controller.SBDRemediationReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("sbd-remediation-controller"),
 	}
 
-	// Set leadership configuration
-	sbdRemediationReconciler.SetLeaderElectionEnabled(enableLeaderElection)
-
 	// Set up leadership tracking
 	if enableLeaderElection {
-		setupLog.Info("Leader election ENABLED - SBD fencing operations will only be performed by the elected leader")
+		setupLog.Info("Leader election ENABLED - SBD controller coordination will be performed by the elected leader")
 	} else {
-		setupLog.Info("Leader election DISABLED - this instance will act as leader for SBD fencing operations")
+		setupLog.Info("Leader election DISABLED - this instance will handle SBD controller coordination")
 	}
 
 	if err := (&controller.SBDConfigReconciler{
