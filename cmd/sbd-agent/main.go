@@ -37,6 +37,15 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
+	// Kubernetes imports for SBDRemediation CR watching
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/medik8s/sbd-operator/api/v1alpha1"
 	"github.com/medik8s/sbd-operator/pkg/agent"
 	"github.com/medik8s/sbd-operator/pkg/blockdevice"
 	"github.com/medik8s/sbd-operator/pkg/retry"
@@ -61,6 +70,11 @@ var (
 	rebootMethod      = flag.String(agent.FlagRebootMethod, agent.DefaultRebootMethod, "Method to use for self-fencing (panic, systemctl-reboot)")
 	metricsPort       = flag.Int(agent.FlagMetricsPort, agent.DefaultMetricsPort, "Port for Prometheus metrics endpoint")
 	staleNodeTimeout  = flag.Duration(agent.FlagStaleNodeTimeout, 1*time.Hour, "Timeout for considering nodes stale and removing them from slot mapping")
+
+	// Kubernetes client configuration flags
+	kubeconfig    = flag.String("kubeconfig", "", "Path to kubeconfig file (optional, uses in-cluster config if not specified)")
+	namespace     = flag.String("namespace", "", "Namespace to watch for SBDRemediation CRs (optional, watches all namespaces if not specified)")
+	enableFencing = flag.Bool("enable-fencing", true, "Enable agent-based fencing capabilities (watch and process SBDRemediation CRs)")
 )
 
 const (
@@ -404,21 +418,28 @@ type SBDAgent struct {
 	lastFailureReset      time.Time
 	failureCountMutex     sync.RWMutex
 	retryConfig           retry.Config
+
+	// Kubernetes client for SBDRemediation CR watching and fencing coordination
+	k8sClient      client.Client
+	k8sClientset   kubernetes.Interface
+	watchNamespace string
+	enableFencing  bool
+	fencingStopCh  chan struct{}
 }
 
 // NewSBDAgent creates a new SBD agent with the specified configuration
-func NewSBDAgent(watchdogPath, sbdDevicePath, nodeName, clusterName string, nodeID uint16, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration, sbdTimeoutSeconds uint, rebootMethod string, metricsPort int, staleNodeTimeout time.Duration, fileLockingEnabled bool) (*SBDAgent, error) {
-	// Use the new softdog fallback functionality to handle cases where no hardware watchdog exists
-	wd, err := watchdog.NewWithSoftdogFallbackAndTestMode(watchdogPath, false, logger.WithName("watchdog"))
+func NewSBDAgent(watchdogPath, sbdDevicePath, nodeName, clusterName string, nodeID uint16, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration, sbdTimeoutSeconds uint, rebootMethod string, metricsPort int, staleNodeTimeout time.Duration, fileLockingEnabled bool, k8sClient client.Client, k8sClientset kubernetes.Interface, watchNamespace string, enableFencing bool) (*SBDAgent, error) {
+	// Initialize watchdog first (always required)
+	wd, err := watchdog.NewWithLogger(watchdogPath, logger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create watchdog with softdog fallback: %w", err)
+		return nil, fmt.Errorf("failed to initialize watchdog %s: %w", watchdogPath, err)
 	}
 
-	return NewSBDAgentWithWatchdog(wd, sbdDevicePath, nodeName, clusterName, nodeID, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval, sbdTimeoutSeconds, rebootMethod, metricsPort, staleNodeTimeout, fileLockingEnabled)
+	return NewSBDAgentWithWatchdog(wd, sbdDevicePath, nodeName, clusterName, nodeID, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval, sbdTimeoutSeconds, rebootMethod, metricsPort, staleNodeTimeout, fileLockingEnabled, k8sClient, k8sClientset, watchNamespace, enableFencing)
 }
 
 // NewSBDAgentWithWatchdog creates a new SBD agent with the specified watchdog instance
-func NewSBDAgentWithWatchdog(wd WatchdogInterface, sbdDevicePath, nodeName, clusterName string, nodeID uint16, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration, sbdTimeoutSeconds uint, rebootMethod string, metricsPort int, staleNodeTimeout time.Duration, fileLockingEnabled bool) (*SBDAgent, error) {
+func NewSBDAgentWithWatchdog(wd WatchdogInterface, sbdDevicePath, nodeName, clusterName string, nodeID uint16, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration, sbdTimeoutSeconds uint, rebootMethod string, metricsPort int, staleNodeTimeout time.Duration, fileLockingEnabled bool, k8sClient client.Client, k8sClientset kubernetes.Interface, watchNamespace string, enableFencing bool) (*SBDAgent, error) {
 	// Validate required parameters
 	if wd == nil {
 		return nil, fmt.Errorf("watchdog interface cannot be nil")
@@ -484,6 +505,10 @@ func NewSBDAgentWithWatchdog(wd WatchdogInterface, sbdDevicePath, nodeName, clus
 		heartbeatFailureCount: 0,
 		lastFailureReset:      time.Now(),
 		retryConfig:           retryConfig,
+		k8sClient:             k8sClient,
+		k8sClientset:          k8sClientset,
+		watchNamespace:        watchNamespace,
+		enableFencing:         enableFencing,
 	}
 
 	// Initialize Prometheus metrics
@@ -1611,34 +1636,315 @@ func checkNodeIDNameResolution(nodeName string, nodeID uint16) error {
 	return nil
 }
 
-// validateWatchdogTiming validates that the pet interval is appropriate for the watchdog timeout
-// Returns true if validation passes, false with a warning message if it fails
+// validateWatchdogTiming validates the relationship between pet interval and watchdog timeout
 func validateWatchdogTiming(petInterval, watchdogTimeout time.Duration) (bool, string) {
-	// Pet interval should be at least 3 times shorter than watchdog timeout
-	// This ensures we have enough safety margin to pet the watchdog before it times out
-	maxPetInterval := watchdogTimeout / 3
+	// Pet interval should be significantly less than watchdog timeout
+	// Recommended ratio is at least 3:1 (timeout:interval)
+	minimumRatio := 3.0
+	actualRatio := float64(watchdogTimeout) / float64(petInterval)
 
-	if petInterval > maxPetInterval {
-		warningMsg := fmt.Sprintf("pet interval (%v) is too long for watchdog timeout (%v). "+
-			"Pet interval must be at least 3 times shorter than watchdog timeout. "+
-			"Maximum allowed pet interval: %v",
-			petInterval, watchdogTimeout, maxPetInterval)
-		return false, warningMsg
+	if actualRatio < minimumRatio {
+		return false, fmt.Sprintf("pet interval (%v) is too close to watchdog timeout (%v). "+
+			"Pet interval should be at least %.1fx shorter than timeout (recommended ratio 3:1 or higher). "+
+			"Current ratio: %.1f:1",
+			petInterval, watchdogTimeout, minimumRatio, actualRatio)
 	}
-
-	// Also validate minimum pet interval (should be at least 1 second)
-	if petInterval < time.Second {
-		warningMsg := fmt.Sprintf("pet interval (%v) is very short. Minimum recommended: 1s", petInterval)
-		return false, warningMsg
-	}
-
-	logger.V(1).Info("Watchdog timing validation successful",
-		"petInterval", petInterval,
-		"watchdogTimeout", watchdogTimeout,
-		"maxAllowedPetInterval", maxPetInterval,
-		"safetyMargin", fmt.Sprintf("%.1fx", float64(watchdogTimeout)/float64(petInterval)))
 
 	return true, ""
+}
+
+// initializeKubernetesClients creates Kubernetes clients for SBDRemediation CR watching
+func initializeKubernetesClients(kubeconfigPath string) (client.Client, kubernetes.Interface, error) {
+	var config *rest.Config
+	var err error
+
+	if kubeconfigPath != "" {
+		// Use provided kubeconfig file
+		config, err = clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to build config from kubeconfig %s: %w", kubeconfigPath, err)
+		}
+		logger.Info("Using kubeconfig file for Kubernetes client", "kubeconfigPath", kubeconfigPath)
+	} else {
+		// Use in-cluster configuration
+		config, err = rest.InClusterConfig()
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to get in-cluster config: %w", err)
+		}
+		logger.Info("Using in-cluster configuration for Kubernetes client")
+	}
+
+	// Create runtime scheme with SBDRemediation types
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		return nil, nil, fmt.Errorf("failed to add SBDRemediation types to scheme: %w", err)
+	}
+
+	// Create controller-runtime client for CR operations
+	k8sClient, err := client.New(config, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create controller-runtime client: %w", err)
+	}
+
+	// Create standard clientset for additional operations
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create Kubernetes clientset: %w", err)
+	}
+
+	return k8sClient, clientset, nil
+}
+
+// fencingLoop watches for SBDRemediation CRs and processes fencing requests
+func (s *SBDAgent) fencingLoop() {
+	if !s.enableFencing || s.k8sClient == nil {
+		logger.Info("Fencing disabled or Kubernetes client not available - skipping fencing loop")
+		return
+	}
+
+	logger.Info("Starting SBDRemediation fencing loop", "namespace", s.watchNamespace)
+
+	// Create a ticker for periodic checks
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			logger.Info("Fencing loop stopping")
+			return
+		case <-s.fencingStopCh:
+			logger.Info("Fencing loop stopping via stop channel")
+			return
+		case <-ticker.C:
+			if err := s.processSBDRemediationCRs(); err != nil {
+				logger.Error(err, "Error processing SBDRemediation CRs")
+			}
+		}
+	}
+}
+
+// processSBDRemediationCRs lists and processes SBDRemediation CRs that need fencing
+func (s *SBDAgent) processSBDRemediationCRs() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// List SBDRemediation CRs
+	var remediations v1alpha1.SBDRemediationList
+	listOpts := []client.ListOption{}
+
+	// If a specific namespace is configured, limit to that namespace
+	if s.watchNamespace != "" {
+		listOpts = append(listOpts, client.InNamespace(s.watchNamespace))
+	}
+
+	if err := s.k8sClient.List(ctx, &remediations, listOpts...); err != nil {
+		return fmt.Errorf("failed to list SBDRemediation CRs: %w", err)
+	}
+
+	logger.V(1).Info("Found SBDRemediation CRs to process", "count", len(remediations.Items))
+
+	// Process each remediation
+	for _, remediation := range remediations.Items {
+		if err := s.processSingleRemediation(ctx, &remediation); err != nil {
+			logger.Error(err, "Failed to process SBDRemediation",
+				"name", remediation.Name,
+				"namespace", remediation.Namespace,
+				"targetNode", remediation.Spec.NodeName)
+		}
+	}
+
+	return nil
+}
+
+// processSingleRemediation processes a single SBDRemediation CR
+func (s *SBDAgent) processSingleRemediation(ctx context.Context, remediation *v1alpha1.SBDRemediation) error {
+	// Skip if already completed
+	if remediation.IsFencingSucceeded() {
+		logger.V(1).Info("SBDRemediation already completed, skipping",
+			"name", remediation.Name,
+			"namespace", remediation.Namespace)
+		return nil
+	}
+
+	// Skip if fencing is already in progress by another agent
+	if remediation.IsFencingInProgress() {
+		logger.V(1).Info("SBDRemediation fencing in progress by another agent, skipping",
+			"name", remediation.Name,
+			"namespace", remediation.Namespace)
+		return nil
+	}
+
+	// Check if this agent should handle this remediation (simple leader election)
+	// For now, we'll use the agent that has the lexicographically smallest node name
+	// TODO: Implement proper leader election among agents
+	if !s.shouldHandleRemediation(ctx, remediation) {
+		logger.V(1).Info("Another agent should handle this remediation",
+			"name", remediation.Name,
+			"namespace", remediation.Namespace,
+			"targetNode", remediation.Spec.NodeName,
+			"ourNode", s.nodeName)
+		return nil
+	}
+
+	logger.Info("Processing SBDRemediation for fencing",
+		"name", remediation.Name,
+		"namespace", remediation.Namespace,
+		"targetNode", remediation.Spec.NodeName,
+		"reason", remediation.Spec.Reason)
+
+	// Mark fencing as in progress
+	s.updateRemediationCondition(ctx, remediation, v1alpha1.SBDRemediationConditionFencingInProgress,
+		metav1.ConditionTrue, "FencingInProgress", "Fencing operation started")
+
+	// Execute fencing operation
+	if err := s.executeFencing(ctx, remediation); err != nil {
+		s.updateRemediationCondition(ctx, remediation, v1alpha1.SBDRemediationConditionFencingSucceeded,
+			metav1.ConditionFalse, "FencingFailed", fmt.Sprintf("Failed to execute fencing: %v", err))
+		s.updateRemediationCondition(ctx, remediation, v1alpha1.SBDRemediationConditionReady,
+			metav1.ConditionTrue, "FencingFailed", fmt.Sprintf("Fencing failed: %v", err))
+		return fmt.Errorf("failed to execute fencing for %s: %w", remediation.Spec.NodeName, err)
+	}
+
+	return nil
+}
+
+// shouldHandleRemediation determines if this agent should handle the remediation
+func (s *SBDAgent) shouldHandleRemediation(ctx context.Context, remediation *v1alpha1.SBDRemediation) bool {
+	// Simple leader election: use lexicographically smallest node name
+	// In a production implementation, this could use proper leader election
+
+	// For now, we'll assume this agent handles all remediations in its namespace
+	// TODO: Implement proper coordination between agents
+	return true
+}
+
+// executeFencing performs the actual fencing operation via SBD device
+func (s *SBDAgent) executeFencing(ctx context.Context, remediation *v1alpha1.SBDRemediation) error {
+	targetNodeName := remediation.Spec.NodeName
+
+	// Get target node ID using node manager
+	targetNodeID, err := s.getNodeIDForName(targetNodeName)
+	if err != nil {
+		return fmt.Errorf("failed to get node ID for target node %s: %w", targetNodeName, err)
+	}
+
+	logger.Info("Writing fence message to SBD device",
+		"targetNode", targetNodeName,
+		"targetNodeID", targetNodeID,
+		"reason", remediation.Spec.Reason)
+
+	// Write fence message to target node's slot
+	if err := s.writeFenceMessage(targetNodeID, remediation.Spec.Reason); err != nil {
+		// Update remediation status to failed
+		s.updateRemediationStatus(ctx, remediation, v1alpha1.SBDRemediationPhaseFailed,
+			fmt.Sprintf("Failed to write fence message: %v", err))
+		return fmt.Errorf("failed to write fence message to target node %d: %w", targetNodeID, err)
+	}
+
+	// Update remediation status to completed
+	s.updateRemediationStatus(ctx, remediation, v1alpha1.SBDRemediationPhaseFencedSuccessfully,
+		fmt.Sprintf("Fence message written to node %s (ID: %d)", targetNodeName, targetNodeID))
+
+	logger.Info("Fencing operation completed successfully",
+		"targetNode", targetNodeName,
+		"targetNodeID", targetNodeID)
+
+	return nil
+}
+
+// getNodeIDForName gets the node ID for a given node name using the node manager
+func (s *SBDAgent) getNodeIDForName(nodeName string) (uint16, error) {
+	if s.nodeManager == nil {
+		return 0, fmt.Errorf("node manager not initialized")
+	}
+
+	return s.nodeManager.GetSlotForNode(nodeName)
+}
+
+// writeFenceMessage writes a fence message to the target node's slot in the SBD device
+func (s *SBDAgent) writeFenceMessage(targetNodeID uint16, reason v1alpha1.SBDRemediationReason) error {
+	if s.sbdDevice == nil || s.sbdDevice.IsClosed() {
+		return fmt.Errorf("SBD device is not available")
+	}
+
+	// Create fence message
+	fenceReason := sbdprotocol.FENCE_REASON_MANUAL // Map from CR reason to SBD reason
+	switch reason {
+	case v1alpha1.SBDRemediationReasonHeartbeatTimeout:
+		fenceReason = sbdprotocol.FENCE_REASON_HEARTBEAT_TIMEOUT
+	case v1alpha1.SBDRemediationReasonNodeUnresponsive:
+		fenceReason = sbdprotocol.FENCE_REASON_MANUAL
+	case v1alpha1.SBDRemediationReasonManualFencing:
+		fenceReason = sbdprotocol.FENCE_REASON_MANUAL
+	}
+
+	fenceMsg := sbdprotocol.SBDFenceMessage{
+		Header:       sbdprotocol.NewFence(s.nodeID, targetNodeID, s.getNextHeartbeatSequence(), fenceReason),
+		TargetNodeID: targetNodeID,
+		Reason:       fenceReason,
+	}
+	msgData, err := sbdprotocol.MarshalFence(fenceMsg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal fence message: %w", err)
+	}
+
+	// Calculate slot offset for the target node
+	slotOffset := int64(targetNodeID) * sbdprotocol.SBD_SLOT_SIZE
+
+	// Write fence message to target node's slot
+	n, err := s.sbdDevice.WriteAt(msgData, slotOffset)
+	if err != nil {
+		sbdIOErrorsCounter.Inc()
+		return fmt.Errorf("failed to write fence message to slot %d (offset %d): %w", targetNodeID, slotOffset, err)
+	}
+
+	if n != len(msgData) {
+		return fmt.Errorf("partial write to slot %d: wrote %d bytes, expected %d", targetNodeID, n, len(msgData))
+	}
+
+	// Sync to ensure data is written to storage
+	if err := s.sbdDevice.Sync(); err != nil {
+		return fmt.Errorf("failed to sync fence message to storage: %w", err)
+	}
+
+	logger.Info("Fence message written successfully",
+		"targetNodeID", targetNodeID,
+		"sourceNodeID", s.nodeID,
+		"reason", fenceReason,
+		"slotOffset", slotOffset,
+		"messageSize", len(msgData))
+
+	return nil
+}
+
+// updateRemediationStatus updates the status of an SBDRemediation CR
+func (s *SBDAgent) updateRemediationStatus(ctx context.Context, remediation *v1alpha1.SBDRemediation, phase v1alpha1.SBDRemediationPhase, message string) error {
+	// Create a copy for status update
+	updated := remediation.DeepCopy()
+	updated.Status.Phase = phase
+	updated.Status.Message = message
+	updated.Status.LastTransitionTime = metav1.Now()
+
+	// Add operator instance info
+	updated.Status.OperatorInstance = s.nodeName
+
+	if err := s.k8sClient.Status().Update(ctx, updated); err != nil {
+		logger.Error(err, "Failed to update SBDRemediation status",
+			"name", remediation.Name,
+			"namespace", remediation.Namespace,
+			"phase", phase,
+			"message", message)
+		return err
+	}
+
+	logger.Info("Updated SBDRemediation status",
+		"name", remediation.Name,
+		"namespace", remediation.Namespace,
+		"phase", phase,
+		"message", message)
+
+	return nil
 }
 
 func main() {
@@ -1743,8 +2049,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Initialize Kubernetes clients if fencing is enabled
+	var k8sClient client.Client
+	var k8sClientset kubernetes.Interface
+	if *enableFencing {
+		var err error
+		k8sClient, k8sClientset, err = initializeKubernetesClients(*kubeconfig)
+		if err != nil {
+			logger.Error(err, "Failed to initialize Kubernetes clients", "enableFencing", *enableFencing)
+			os.Exit(1)
+		}
+		logger.Info("Kubernetes clients initialized successfully for fencing operations",
+			"namespace", *namespace,
+			"enableFencing", *enableFencing)
+	} else {
+		logger.Info("Fencing disabled - running in monitoring-only mode")
+	}
+
 	// Create SBD agent (hash mapping is always enabled)
-	agent, err := NewSBDAgent(*watchdogPath, *sbdDevice, nodeNameValue, *clusterName, nodeIDValue, *petInterval, *sbdUpdateInterval, heartbeatInterval, *peerCheckInterval, sbdTimeoutValue, rebootMethodValue, *metricsPort, *staleNodeTimeout, *sbdFileLocking)
+	agent, err := NewSBDAgent(*watchdogPath, *sbdDevice, nodeNameValue, *clusterName, nodeIDValue, *petInterval, *sbdUpdateInterval, heartbeatInterval, *peerCheckInterval, sbdTimeoutValue, rebootMethodValue, *metricsPort, *staleNodeTimeout, *sbdFileLocking, k8sClient, k8sClientset, *namespace, *enableFencing)
 	if err != nil {
 		logger.Error(err, "Failed to create SBD agent",
 			"watchdogPath", *watchdogPath,
