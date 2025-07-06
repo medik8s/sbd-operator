@@ -556,7 +556,9 @@ func NewSBDAgentWithWatchdog(wd WatchdogInterface, sbdDevicePath, nodeName, clus
 		return nil, fmt.Errorf("watchdog path cannot be empty")
 	}
 
-	// Note: sbdDevicePath can be empty for watchdog-only mode
+	if sbdDevicePath == "" {
+		return nil, fmt.Errorf("SBD device path cannot be empty")
+	}
 	if nodeName == "" {
 		return nil, fmt.Errorf("node name cannot be empty")
 	}
@@ -640,21 +642,19 @@ func NewSBDAgentWithWatchdog(wd WatchdogInterface, sbdDevicePath, nodeName, clus
 	// Initialize the PeerMonitor
 	agent.peerMonitor = NewPeerMonitor(sbdTimeoutSeconds, nodeID, logger)
 
-	// Initialize SBD device if provided
-	if sbdDevicePath != "" {
-		if err := agent.initializeSBDDevice(); err != nil {
-			agent.cancel()
-			return nil, fmt.Errorf("failed to initialize SBD device: %w", err)
-		}
+	// Initialize SBD device
+	if err := agent.initializeSBDDevice(); err != nil {
+		agent.cancel()
+		return nil, fmt.Errorf("failed to initialize SBD device: %w", err)
+	}
 
-		// Initialize node manager for consistent slot assignment
-		if err := agent.initializeNodeManager(clusterName, fileLockingEnabled); err != nil {
-			agent.cancel()
-			if agent.sbdDevice != nil {
-				agent.sbdDevice.Close()
-			}
-			return nil, fmt.Errorf("failed to initialize node manager: %w", err)
+	// Initialize node manager for consistent slot assignment
+	if err := agent.initializeNodeManager(clusterName, fileLockingEnabled); err != nil {
+		agent.cancel()
+		if agent.sbdDevice != nil {
+			agent.sbdDevice.Close()
 		}
+		return nil, fmt.Errorf("failed to initialize node manager: %w", err)
 	}
 
 	// Initialize metrics
@@ -705,10 +705,6 @@ func (s *SBDAgent) initMetrics() error {
 
 // initializeSBDDevice opens and initializes the SBD block device
 func (s *SBDAgent) initializeSBDDevice() error {
-	if s.sbdDevicePath == "" {
-		return fmt.Errorf("SBD device path not specified")
-	}
-
 	device, err := blockdevice.Open(s.sbdDevicePath)
 	if err != nil {
 		return fmt.Errorf("failed to open SBD device %s: %w", s.sbdDevicePath, err)
@@ -1175,8 +1171,8 @@ func (s *SBDAgent) watchdogLoop() {
 				return
 			}
 
-			// Only pet the watchdog if SBD device is healthy (or not configured)
-			if s.sbdDevicePath == "" || s.isSBDHealthy() {
+			// Only pet the watchdog if SBD device is healthy
+			if s.isSBDHealthy() {
 				// Use retry mechanism for watchdog petting
 				err := retry.Do(s.ctx, s.retryConfig, "pet watchdog", func() error {
 					return s.watchdog.Pet()
@@ -1208,7 +1204,7 @@ func (s *SBDAgent) watchdogLoop() {
 					watchdogPetsCounter.Inc()
 
 					// Update agent health status based on SBD health
-					if s.sbdDevicePath == "" || s.isSBDHealthy() {
+					if s.isSBDHealthy() {
 						agentHealthyGauge.Set(1)
 					}
 				}
@@ -1627,29 +1623,23 @@ func runPreflightChecks(watchdogPath, sbdDevicePath, nodeName string, nodeID uin
 		"nodeName", nodeName,
 		"nodeID", nodeID)
 
-	// Check if at least one critical component (watchdog OR SBD) is working
+	// SBD device is always required
 	if sbdDevicePath == "" {
-		// Watchdog-only mode: only watchdog needs to work
-		if watchdogPath != "" && watchdogErr == nil {
-			logger.Info("Pre-flight checks passed - watchdog device available (watchdog-only mode)")
-			return nil
+		return fmt.Errorf("SBD device path cannot be empty")
+	}
+
+	// Check if at least one critical component (watchdog OR SBD) is working
+	if (watchdogPath != "" && watchdogErr == nil) || sbdErr == nil {
+		if watchdogPath != "" && watchdogErr == nil && sbdErr == nil {
+			logger.Info("All pre-flight checks passed successfully - both watchdog and SBD device available")
+		} else if watchdogPath != "" && watchdogErr == nil {
+			logger.Info("Pre-flight checks passed - watchdog device available (SBD device failed)")
 		} else {
-			return fmt.Errorf("pre-flight checks failed: watchdog device is inaccessible and no SBD device configured. Watchdog error: %v", watchdogErr)
+			logger.Info("Pre-flight checks passed - SBD device available (watchdog device failed)")
 		}
+		return nil
 	} else {
-		// SBD mode: either watchdog OR SBD needs to work
-		if (watchdogPath != "" && watchdogErr == nil) || sbdErr == nil {
-			if watchdogPath != "" && watchdogErr == nil && sbdErr == nil {
-				logger.Info("All pre-flight checks passed successfully - both watchdog and SBD device available")
-			} else if watchdogPath != "" && watchdogErr == nil {
-				logger.Info("Pre-flight checks passed - watchdog device available (SBD device failed)")
-			} else {
-				logger.Info("Pre-flight checks passed - SBD device available (watchdog device failed)")
-			}
-			return nil
-		} else {
-			return fmt.Errorf("pre-flight checks failed: both watchdog device and SBD device are inaccessible. Watchdog error: %v, SBD error: %v", watchdogErr, sbdErr)
-		}
+		return fmt.Errorf("pre-flight checks failed: both watchdog device and SBD device are inaccessible. Watchdog error: %v, SBD error: %v", watchdogErr, sbdErr)
 	}
 }
 
@@ -2305,12 +2295,13 @@ func main() {
 
 	// Validate required parameters
 	if *sbdDevice == "" {
-		logger.Error(nil, "No SBD device specified, running in watchdog-only mode")
-	} else {
-		if err := validateSBDDevice(*sbdDevice); err != nil {
-			logger.Error(err, "SBD device validation failed", "sbdDevice", *sbdDevice)
-			os.Exit(1)
-		}
+		logger.Error(nil, "SBD device is required - watchdog-only mode is no longer supported")
+		os.Exit(1)
+	}
+
+	if err := validateSBDDevice(*sbdDevice); err != nil {
+		logger.Error(err, "SBD device validation failed", "sbdDevice", *sbdDevice)
+		os.Exit(1)
 	}
 
 	// Run pre-flight checks before creating the agent

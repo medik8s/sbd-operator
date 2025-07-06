@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -29,7 +30,14 @@ func TestSBDAgent_FailureTracking(t *testing.T) {
 	mockDevice := NewMockBlockDevice("/dev/mock-sbd", 1024*1024)
 
 	// Create agent with short intervals for testing
-	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, "", "test-node", "test-cluster", 1,
+	// Create temporary SBD device file
+	tmpDir := t.TempDir()
+	sbdPath := tmpDir + "/test-sbd"
+	if err := os.WriteFile(sbdPath, make([]byte, 1024*1024), 0644); err != nil {
+		t.Fatalf("Failed to create test SBD device: %v", err)
+	}
+
+	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
 		10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond,
 		30, "panic", 8097, 10*time.Minute, true, k8sClient, k8sClientset, testNamespace, false)
 	if err != nil {
@@ -89,7 +97,14 @@ func TestSBDAgent_SelfFenceThreshold(t *testing.T) {
 	mockWatchdog := NewMockWatchdog("/dev/mock-watchdog")
 
 	// Create agent with short intervals for testing
-	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, "", "test-node", "test-cluster", 1,
+	// Create temporary SBD device file
+	tmpDir := t.TempDir()
+	sbdPath := tmpDir + "/test-sbd"
+	if err := os.WriteFile(sbdPath, make([]byte, 1024*1024), 0644); err != nil {
+		t.Fatalf("Failed to create test SBD device: %v", err)
+	}
+
+	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
 		10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond,
 		30, "panic", 8098, 10*time.Minute, true, k8sClient, k8sClientset, testNamespace, false)
 	if err != nil {
@@ -145,7 +160,14 @@ func TestSBDAgent_FailureCountReset(t *testing.T) {
 	mockWatchdog := NewMockWatchdog("/dev/mock-watchdog")
 
 	// Create agent with short intervals for testing
-	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, "", "test-node", "test-cluster", 1,
+	// Create temporary SBD device file
+	tmpDir := t.TempDir()
+	sbdPath := tmpDir + "/test-sbd"
+	if err := os.WriteFile(sbdPath, make([]byte, 1024*1024), 0644); err != nil {
+		t.Fatalf("Failed to create test SBD device: %v", err)
+	}
+
+	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
 		10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond,
 		30, "panic", 8099, 10*time.Minute, true, k8sClient, k8sClientset, testNamespace, false)
 	if err != nil {
@@ -186,7 +208,14 @@ func TestSBDAgent_RetryConfiguration(t *testing.T) {
 	mockWatchdog := NewMockWatchdog("/dev/mock-watchdog")
 
 	// Create agent
-	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, "", "test-node", "test-cluster", 1,
+	// Create temporary SBD device file
+	tmpDir := t.TempDir()
+	sbdPath := tmpDir + "/test-sbd"
+	if err := os.WriteFile(sbdPath, make([]byte, 1024*1024), 0644); err != nil {
+		t.Fatalf("Failed to create test SBD device: %v", err)
+	}
+
+	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
 		1*time.Second, 1*time.Second, 1*time.Second, 1*time.Second,
 		30, "panic", 8100, 10*time.Minute, true, k8sClient, k8sClientset, testNamespace, false)
 	if err != nil {
@@ -219,7 +248,14 @@ func TestSBDAgent_WatchdogRetryMechanism(t *testing.T) {
 	mockWatchdog.SetFailPet(true)
 
 	// Create agent with very short intervals for testing
-	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, "", "test-node", "test-cluster", 1,
+	// Create temporary SBD device file
+	tmpDir := t.TempDir()
+	sbdPath := tmpDir + "/test-sbd"
+	if err := os.WriteFile(sbdPath, make([]byte, 1024*1024), 0644); err != nil {
+		t.Fatalf("Failed to create test SBD device: %v", err)
+	}
+
+	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
 		10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond,
 		30, "panic", 8101, 10*time.Minute, true, k8sClient, k8sClientset, testNamespace, false)
 	if err != nil {
@@ -248,7 +284,14 @@ func TestSBDAgent_HeartbeatRetryMechanism(t *testing.T) {
 	mockDevice := NewMockBlockDevice("/dev/mock-sbd", 1024*1024)
 
 	// Create agent with very short intervals for testing
-	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, "", "test-node", "test-cluster", 1,
+	// Create temporary SBD device file
+	tmpDir := t.TempDir()
+	sbdPath := tmpDir + "/test-sbd"
+	if err := os.WriteFile(sbdPath, make([]byte, 1024*1024), 0644); err != nil {
+		t.Fatalf("Failed to create test SBD device: %v", err)
+	}
+
+	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
 		10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond,
 		30, "panic", 8102, 10*time.Minute, true, k8sClient, k8sClientset, testNamespace, false)
 	if err != nil {
