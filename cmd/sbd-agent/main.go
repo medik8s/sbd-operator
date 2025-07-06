@@ -552,17 +552,27 @@ func NewSBDAgentWithWatchdog(wd WatchdogInterface, sbdDevicePath, nodeName, clus
 	if wd == nil {
 		return nil, fmt.Errorf("watchdog interface cannot be nil")
 	}
+	if wd.Path() == "" {
+		return nil, fmt.Errorf("watchdog path cannot be empty")
+	}
+
 	// Note: sbdDevicePath can be empty for watchdog-only mode
 	if nodeName == "" {
 		return nil, fmt.Errorf("node name cannot be empty")
 	}
-	if nodeID == 0 {
-		return nil, fmt.Errorf("node ID cannot be zero")
+	if nodeID == 0 || nodeID > 255 {
+		return nil, fmt.Errorf("node ID must be between 1 and 255, got %d", nodeID)
 	}
 
 	// Validate timing parameters
 	if petInterval <= 0 {
-		return nil, fmt.Errorf("pet interval must be positive")
+		return nil, fmt.Errorf("pet interval must be positive, got %v", petInterval)
+	}
+	if rebootMethod != "panic" && rebootMethod != "systemctl-reboot" {
+		return nil, fmt.Errorf("invalid reboot method '%s', must be 'panic' or 'systemctl-reboot'", rebootMethod)
+	}
+	if metricsPort <= 0 || metricsPort > 65535 {
+		return nil, fmt.Errorf("metrics port must be between 1 and 65535, got %d", metricsPort)
 	}
 	if sbdUpdateInterval <= 0 {
 		return nil, fmt.Errorf("SBD update interval must be positive")
