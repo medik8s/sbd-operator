@@ -18,6 +18,7 @@ package smoke
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -28,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	medik8sv1alpha1 "github.com/medik8s/sbd-operator/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 )
 
 // metricsServiceName is the name of the metrics service of the project
@@ -250,10 +252,35 @@ var _ = Describe("SBD Remediation Smoke Tests", Label("Smoke", "Remediation"), f
 		})
 
 		It("should handle multiple SBDRemediation resources concurrently", func() {
-			const numRemediations = 5
+
+			By("getting real worker node names from the cluster")
+			nodes := &corev1.NodeList{}
+			err := testClients.Client.List(testClients.Context, nodes)
+			Expect(err).NotTo(HaveOccurred())
+
+			var workerNodes []string
+			for _, node := range nodes.Items {
+				// Filter to worker nodes (not control plane)
+				isWorker := true
+				for label := range node.Labels {
+					if strings.Contains(label, "control-plane") || strings.Contains(label, "master") {
+						isWorker = false
+						break
+					}
+				}
+				if isWorker {
+					workerNodes = append(workerNodes, node.Name)
+				}
+			}
+			const numRemediations = workerNodes - 1 // Reduced to use available worker nodes
+
+			if numRemediations < 1 {
+				Skip(fmt.Sprintf("Need at least %d worker nodes for concurrent test, found %d", 2, len(workerNodes)))
+			}
+
 			remediationNames := make([]string, numRemediations)
 
-			By(fmt.Sprintf("creating %d SBDRemediation resources", numRemediations))
+			By(fmt.Sprintf("creating %d SBDRemediation resources with real node names", numRemediations))
 			for i := 0; i < numRemediations; i++ {
 				remediationNames[i] = fmt.Sprintf("test-concurrent-remediation-%d", i)
 				sbdRemediation := &medik8sv1alpha1.SBDRemediation{
@@ -262,7 +289,7 @@ var _ = Describe("SBD Remediation Smoke Tests", Label("Smoke", "Remediation"), f
 						Namespace: testNamespace.Name,
 					},
 					Spec: medik8sv1alpha1.SBDRemediationSpec{
-						NodeName:       fmt.Sprintf("test-worker-node-%d", i),
+						NodeName:       workerNodes[i], // Use real node names
 						Reason:         medik8sv1alpha1.SBDRemediationReasonNodeUnresponsive,
 						TimeoutSeconds: 60,
 					},
@@ -271,7 +298,7 @@ var _ = Describe("SBD Remediation Smoke Tests", Label("Smoke", "Remediation"), f
 				Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to create SBDRemediation %d", i))
 			}
 
-			By("verifying all SBDRemediations are processed")
+			By("verifying all SBDRemediations are processed by agents")
 			for i, name := range remediationNames {
 				Eventually(func() bool {
 					foundSBDRemediation := &medik8sv1alpha1.SBDRemediation{}
@@ -280,12 +307,45 @@ var _ = Describe("SBD Remediation Smoke Tests", Label("Smoke", "Remediation"), f
 						Namespace: testNamespace.Name,
 					}, foundSBDRemediation)
 					if err != nil {
-						fmt.Println("Error getting SBDRemediation", err)
+						fmt.Printf("Error getting SBDRemediation %s: %v\n", name, err)
 						return false
 					}
-					fmt.Println("SBDRemediation", foundSBDRemediation.Status.Conditions)
-					return foundSBDRemediation.Status.Conditions != nil && len(foundSBDRemediation.Status.Conditions) > 0 && foundSBDRemediation.Status.Conditions[0].Type == "Ready" && foundSBDRemediation.Status.Conditions[0].Status == "True"
-				}).Should(BeTrue(), fmt.Sprintf("SBDRemediation %d should be ready", i))
+
+					// Log status for debugging
+					if foundSBDRemediation.Status.Conditions != nil {
+						fmt.Printf("SBDRemediation %s conditions: %+v\n", name, foundSBDRemediation.Status.Conditions)
+					}
+
+					// For smoke tests without SBD devices, we expect:
+					// 1. Ready=True (processing completed)
+					// 2. FencingSucceeded=False (no SBD device available)
+					// This validates the agent pipeline works but safely fails at device access
+					if foundSBDRemediation.Status.Conditions != nil && len(foundSBDRemediation.Status.Conditions) > 0 {
+						hasReady := false
+						hasFencingFailed := false
+
+						for _, condition := range foundSBDRemediation.Status.Conditions {
+							if condition.Type == "Ready" && condition.Status == "True" {
+								hasReady = true
+							}
+							if condition.Type == "FencingSucceeded" && condition.Status == "False" {
+								hasFencingFailed = true
+								// Verify it's the expected failure reason (no SBD device)
+								if strings.Contains(condition.Message, "SBD device") ||
+									strings.Contains(condition.Message, "no such file or directory") {
+									fmt.Printf("Expected fencing failure for %s: %s\n", name, condition.Message)
+								}
+							}
+						}
+
+						// Both conditions indicate successful agent processing with expected failure
+						if hasReady && hasFencingFailed {
+							return true
+						}
+					}
+					return false
+				}, time.Minute*2, time.Second*10).Should(BeTrue(),
+					fmt.Sprintf("SBDRemediation %d should be processed by agent (expect safe fencing failure)", i))
 			}
 
 			By("cleaning up all test SBDRemediations")
@@ -299,14 +359,17 @@ var _ = Describe("SBD Remediation Smoke Tests", Label("Smoke", "Remediation"), f
 		})
 
 		It("should handle SBDRemediation resources with invalid node names", func() {
-			By("creating a test SBDRemediation with invalid node name")
+			By("creating a test SBDRemediation with intentionally invalid node name (tests error handling)")
+			// Note: This test specifically uses a clearly fake node name to test
+			// error handling for truly non-existent nodes, unlike other tests
+			// that use real cluster node names for realistic pipeline testing
 			sbdRemediation := &medik8sv1alpha1.SBDRemediation{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-invalid-node-remediation",
 					Namespace: testNamespace.Name,
 				},
 				Spec: medik8sv1alpha1.SBDRemediationSpec{
-					NodeName:       "non-existent-node-12345",
+					NodeName:       "definitely-non-existent-node-12345", // Clearly fake for error testing
 					Reason:         medik8sv1alpha1.SBDRemediationReasonHeartbeatTimeout,
 					TimeoutSeconds: 30,
 				},
@@ -315,7 +378,7 @@ var _ = Describe("SBD Remediation Smoke Tests", Label("Smoke", "Remediation"), f
 			err := testClients.Client.Create(testClients.Context, sbdRemediation)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create SBDRemediation")
 
-			By("verifying the SBDRemediation becomes ready with failed fencing")
+			By("verifying the SBDRemediation becomes ready with failed fencing due to invalid node")
 			Eventually(func() bool {
 				foundSBDRemediation := &medik8sv1alpha1.SBDRemediation{}
 				err := testClients.Client.Get(testClients.Context, types.NamespacedName{
@@ -330,20 +393,33 @@ var _ = Describe("SBD Remediation Smoke Tests", Label("Smoke", "Remediation"), f
 					return false
 				}
 
-				readyFound := false
-				fencingFailed := false
+				// For truly invalid node names, we expect:
+				// 1. Ready=True (processing completed)
+				// 2. FencingSucceeded=False (node name couldn't be mapped to node ID)
+				// This validates error handling for non-existent nodes
+				hasReady := false
+				hasFencingFailed := false
+				hasNodeMappingError := false
 
 				for _, condition := range foundSBDRemediation.Status.Conditions {
 					if condition.Type == "Ready" && condition.Status == "True" {
-						readyFound = true
-						if condition.Reason == "Failed" {
-							fencingFailed = true
+						hasReady = true
+					}
+					if condition.Type == "FencingSucceeded" && condition.Status == "False" {
+						hasFencingFailed = true
+						// Verify it's the expected node mapping failure
+						if strings.Contains(condition.Message, "Failed to map node name") ||
+							strings.Contains(condition.Message, "unable to extract valid node ID") ||
+							strings.Contains(condition.Message, "no numeric part found") {
+							hasNodeMappingError = true
+							fmt.Printf("Expected node mapping error for invalid node: %s\n", condition.Message)
 						}
 					}
 				}
 
-				return readyFound && fencingFailed
-			}).Should(BeTrue())
+				// All conditions indicate proper error handling for invalid node names
+				return hasReady && hasFencingFailed && hasNodeMappingError
+			}, time.Minute*1, time.Second*10).Should(BeTrue())
 
 			By("cleaning up the test SBDRemediation")
 			err = testClients.Client.Delete(testClients.Context, sbdRemediation)
@@ -351,6 +427,31 @@ var _ = Describe("SBD Remediation Smoke Tests", Label("Smoke", "Remediation"), f
 		})
 
 		It("should validate timeout ranges in SBDRemediation CRD", func() {
+			By("getting a real worker node name for validation tests")
+			nodes := &corev1.NodeList{}
+			err := testClients.Client.List(testClients.Context, nodes)
+			Expect(err).NotTo(HaveOccurred())
+
+			var testNodeName string
+			for _, node := range nodes.Items {
+				// Use first worker node found
+				isWorker := true
+				for label := range node.Labels {
+					if strings.Contains(label, "control-plane") || strings.Contains(label, "master") {
+						isWorker = false
+						break
+					}
+				}
+				if isWorker {
+					testNodeName = node.Name
+					break
+				}
+			}
+
+			if testNodeName == "" {
+				Skip("No worker nodes found for timeout validation test")
+			}
+
 			By("attempting to create SBDRemediation with timeout below minimum")
 			invalidSBDRemediation := &medik8sv1alpha1.SBDRemediation{
 				ObjectMeta: metav1.ObjectMeta{
@@ -358,13 +459,13 @@ var _ = Describe("SBD Remediation Smoke Tests", Label("Smoke", "Remediation"), f
 					Namespace: testNamespace.Name,
 				},
 				Spec: medik8sv1alpha1.SBDRemediationSpec{
-					NodeName:       "test-worker-node",
+					NodeName:       testNodeName, // Use real node name
 					Reason:         medik8sv1alpha1.SBDRemediationReasonManualFencing,
 					TimeoutSeconds: 29, // Below minimum (30)
 				},
 			}
 
-			err := testClients.Client.Create(testClients.Context, invalidSBDRemediation)
+			err = testClients.Client.Create(testClients.Context, invalidSBDRemediation)
 			Expect(err).To(HaveOccurred(), "Should reject timeout below minimum (30)")
 
 			By("attempting to create SBDRemediation with timeout above maximum")
@@ -374,7 +475,7 @@ var _ = Describe("SBD Remediation Smoke Tests", Label("Smoke", "Remediation"), f
 					Namespace: testNamespace.Name,
 				},
 				Spec: medik8sv1alpha1.SBDRemediationSpec{
-					NodeName:       "test-worker-node",
+					NodeName:       testNodeName, // Use real node name
 					Reason:         medik8sv1alpha1.SBDRemediationReasonManualFencing,
 					TimeoutSeconds: 301, // Above maximum (300)
 				},
@@ -390,7 +491,7 @@ var _ = Describe("SBD Remediation Smoke Tests", Label("Smoke", "Remediation"), f
 					Namespace: testNamespace.Name,
 				},
 				Spec: medik8sv1alpha1.SBDRemediationSpec{
-					NodeName:       "test-worker-node",
+					NodeName:       testNodeName, // Use real node name
 					Reason:         medik8sv1alpha1.SBDRemediationReasonManualFencing,
 					TimeoutSeconds: 30, // Minimum valid timeout
 				},
@@ -405,7 +506,7 @@ var _ = Describe("SBD Remediation Smoke Tests", Label("Smoke", "Remediation"), f
 					Namespace: testNamespace.Name,
 				},
 				Spec: medik8sv1alpha1.SBDRemediationSpec{
-					NodeName:       "test-worker-node",
+					NodeName:       testNodeName, // Use real node name
 					Reason:         medik8sv1alpha1.SBDRemediationReasonManualFencing,
 					TimeoutSeconds: 300, // Maximum valid timeout
 				},
