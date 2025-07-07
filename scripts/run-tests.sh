@@ -381,6 +381,10 @@ cleanup_environment() {
     $KUBECTL delete daemonset -l app=sbd-agent -n $test_namespace --ignore-not-found=true || true
     $KUBECTL delete clusterrolebinding -l app.kubernetes.io/managed-by=sbd-operator --ignore-not-found=true || true
     $KUBECTL delete clusterrole -l app.kubernetes.io/managed-by=sbd-operator --ignore-not-found=true || true
+    
+    # Clean up webhook certificates secret
+    $KUBECTL delete secret webhook-server-certs -n sbd-operator-system --ignore-not-found=true || true
+    
     $KUBECTL delete ns sbd-operator-system --ignore-not-found=true || true
     $KUBECTL delete ns $test_namespace --ignore-not-found=true || true
     $KUBECTL delete ns sbd-system --ignore-not-found=true || true
@@ -394,6 +398,13 @@ cleanup_environment() {
     
     # Clean up CRDs
     $KUBECTL kustomize config/crd | $KUBECTL delete --ignore-not-found=true -f - || true
+    
+    # Clean up local webhook certificates if this is a complete cleanup
+    if [[ "$cleanup_reason" == "test environment" || "$cleanup_reason" == "test resources (cleanup-only mode)" ]]; then
+        log_info "Cleaning up local webhook certificates"
+        rm -rf /tmp/k8s-webhook-server/serving-certs || true
+        rm -rf /tmp/letsencrypt || true
+    fi
     
     # Clean up Kind cluster if requested (only for post-test cleanup)
     if [[ "$cleanup_reason" == "after tests" && "$TEST_ENVIRONMENT" == "kind" && "${CLEANUP_KIND_CLUSTER:-false}" == "true" ]]; then
@@ -514,6 +525,92 @@ build_installer() {
     log_success "Installer manifest built: dist/install.yaml"
 }
 
+# Function to generate webhook certificates for tests
+generate_webhook_certificates() {
+    log_info "Generating webhook certificates for tests"
+    
+    # For tests, we use self-signed certificates to avoid external dependencies
+    local cert_dir="/tmp/k8s-webhook-server/serving-certs"
+    local cert_name="tls.crt"
+    local key_name="tls.key"
+    
+    # Check if certificates already exist and are valid
+    if [[ -f "$cert_dir/$cert_name" && -f "$cert_dir/$key_name" ]]; then
+        # Check if certificate is still valid (not expired)
+        if openssl x509 -in "$cert_dir/$cert_name" -checkend 86400 -noout &>/dev/null; then
+            log_info "Valid webhook certificates already exist, skipping generation"
+            return 0
+        else
+            log_warning "Existing webhook certificates are expired, regenerating..."
+        fi
+    fi
+    
+    log_info "Generating self-signed webhook certificates for testing..."
+    
+    # Ensure the webhook certificate generation script exists and is executable
+    if [[ ! -f "scripts/generate-webhook-certs.sh" ]]; then
+        log_error "Webhook certificate generation script not found: scripts/generate-webhook-certs.sh"
+        exit 1
+    fi
+    
+    chmod +x scripts/generate-webhook-certs.sh
+    
+    # Generate self-signed certificates for tests (avoid Let's Encrypt dependencies)
+    USE_LETSENCRYPT=false scripts/generate-webhook-certs.sh || {
+        log_error "Failed to generate webhook certificates"
+        exit 1
+    }
+    
+    log_success "Webhook certificates generated successfully"
+}
+
+# Function to create webhook certificate secret in cluster
+create_webhook_secret() {
+    log_info "Creating webhook certificate secret in cluster"
+    
+    local cert_dir="/tmp/k8s-webhook-server/serving-certs"
+    local cert_name="tls.crt"
+    local key_name="tls.key"
+    local namespace="sbd-operator-system"
+    local secret_name="webhook-server-certs"
+    
+    # Set up kubectl context based on environment
+    case "$TEST_ENVIRONMENT" in
+        "crc")
+            eval $(crc oc-env)
+            ;;
+        "kind")
+            kubectl config use-context "kind-$CRC_CLUSTER"
+            ;;
+        "cluster")
+            # Use current context
+            ;;
+    esac
+    
+    # Verify certificates exist
+    if [[ ! -f "$cert_dir/$cert_name" || ! -f "$cert_dir/$key_name" ]]; then
+        log_error "Webhook certificates not found in $cert_dir"
+        exit 1
+    fi
+    
+    # Create namespace if it doesn't exist
+    $KUBECTL create namespace "$namespace" --dry-run=client -o yaml | $KUBECTL apply -f - || true
+    
+    # Delete existing secret if it exists
+    $KUBECTL delete secret "$secret_name" -n "$namespace" --ignore-not-found=true || true
+    
+    # Create the secret with the certificates
+    $KUBECTL create secret tls "$secret_name" \
+        --cert="$cert_dir/$cert_name" \
+        --key="$cert_dir/$key_name" \
+        -n "$namespace" || {
+        log_error "Failed to create webhook certificate secret"
+        exit 1
+    }
+    
+    log_success "Webhook certificate secret created: $secret_name in namespace $namespace"
+}
+
 # Function to deploy operator
 deploy_operator() {
     if [[ "$SKIP_DEPLOY" == "true" ]]; then
@@ -536,12 +633,18 @@ deploy_operator() {
             ;;
     esac
     
+    # Generate and create webhook certificates before deploying
+    generate_webhook_certificates
+    create_webhook_secret
+    
     $KUBECTL apply -f dist/install.yaml --server-side=true --force-conflicts=true
     
     log_info "Waiting for operator to be ready..."
     $KUBECTL wait --for=condition=ready pod -l control-plane=controller-manager -n sbd-operator-system --timeout=120s || {
         log_error "Operator failed to start, checking logs..."
         $KUBECTL logs -n sbd-operator-system -l control-plane=controller-manager --tail=20 || true
+        log_error "Checking webhook certificate status..."
+        $KUBECTL get secret webhook-server-certs -n sbd-operator-system -o yaml || true
         exit 1
     }
     

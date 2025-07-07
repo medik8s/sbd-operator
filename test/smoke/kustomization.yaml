@@ -3,6 +3,7 @@ kind: Kustomization
 
 resources:
 - ../../config/openshift-default
+- ../../config/webhook  # Enable webhook configuration
 
 #images:
 #- name: controller:latest
@@ -14,3 +15,7 @@ patches:
   target:
     kind: Deployment
     name: controller-manager
+# [WEBHOOK] Enable webhook patch - mount certificates  
+- path: ../../config/default/manager_webhook_patch.yaml
+  target:
+    kind: Deployment
