@@ -14,7 +14,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/efs"
 	efstypes "github.com/aws/aws-sdk-go-v2/service/efs/types"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
-	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
 )
 
 // Config holds AWS-specific configuration
@@ -137,26 +136,6 @@ func (m *Manager) ValidateAWSPermissions(ctx context.Context) error {
 			name:        "efs:DescribeMountTargets",
 			description: "List EFS mount targets",
 			testFn:      m.testDescribeMountTargets,
-		},
-		{
-			name:        "iam:CreateRole",
-			description: "Create IAM role for EFS CSI driver",
-			testFn:      m.testCreateRole,
-		},
-		{
-			name:        "iam:GetRole",
-			description: "Check existing IAM roles",
-			testFn:      m.testGetRole,
-		},
-		{
-			name:        "iam:AttachRolePolicy",
-			description: "Attach policies to IAM roles",
-			testFn:      m.testAttachRolePolicy,
-		},
-		{
-			name:        "iam:ListOpenIDConnectProviders",
-			description: "List OIDC providers for IRSA setup",
-			testFn:      m.testListOpenIDConnectProviders,
 		},
 	}
 
@@ -367,48 +346,6 @@ func (m *Manager) testDescribeMountTargets() error {
 	return err
 }
 
-func (m *Manager) testCreateRole() error {
-	// Use invalid role name to trigger validation error (not malformed policy)
-	_, err := m.iamClient.CreateRole(context.Background(), &iam.CreateRoleInput{
-		RoleName: aws.String(""), // Empty role name triggers validation error
-		AssumeRolePolicyDocument: aws.String(`{
-			"Version": "2012-10-17",
-			"Statement": [
-				{
-					"Effect": "Allow",
-					"Principal": {
-						"Service": "eks.amazonaws.com"
-					},
-					"Action": "sts:AssumeRole"
-				}
-			]
-		}`),
-	})
-	return err
-}
-
-func (m *Manager) testGetRole() error {
-	// Use invalid role name to trigger validation error
-	_, err := m.iamClient.GetRole(context.Background(), &iam.GetRoleInput{
-		RoleName: aws.String("nonexistent-role-test-permission-check"),
-	})
-	return err
-}
-
-func (m *Manager) testAttachRolePolicy() error {
-	// Use invalid role and policy ARNs to trigger validation error
-	_, err := m.iamClient.AttachRolePolicy(context.Background(), &iam.AttachRolePolicyInput{
-		RoleName:  aws.String("nonexistent-role"),
-		PolicyArn: aws.String("arn:aws:iam::123456789012:policy/nonexistent-policy"),
-	})
-	return err
-}
-
-func (m *Manager) testListOpenIDConnectProviders() error {
-	_, err := m.iamClient.ListOpenIDConnectProviders(context.Background(), &iam.ListOpenIDConnectProvidersInput{})
-	return err
-}
-
 // CreateEFS creates a new EFS filesystem
 func (m *Manager) CreateEFS(ctx context.Context) (string, error) {
 	// Check if EFS already exists
@@ -512,82 +449,9 @@ func (m *Manager) SetupNetworking(ctx context.Context, efsID string) (*NetworkRe
 	}, nil
 }
 
-// SetupIAMRole creates and configures IAM role for EFS CSI driver
+// SetupIAMRole is not needed for OpenShift clusters - they use AWS credentials directly
 func (m *Manager) SetupIAMRole(ctx context.Context) (string, error) {
-	// Check if role already exists
-	roleARN, err := m.findIAMRole(ctx, m.config.EFSCSIRoleName)
-	if err != nil {
-		return "", err
-	}
-	if roleARN != "" {
-		log.Printf("🔐 Found existing IAM role: %s", roleARN)
-		return roleARN, nil
-	}
-
-	// Get OIDC provider for the cluster
-	oidcProvider, err := m.detectOIDCProvider(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed to detect OIDC provider: %w", err)
-	}
-
-	// Create trust policy for IRSA
-	trustPolicy := fmt.Sprintf(`{
-		"Version": "2012-10-17",
-		"Statement": [
-			{
-				"Effect": "Allow",
-				"Principal": {
-					"Federated": "%s"
-				},
-				"Action": "sts:AssumeRoleWithWebIdentity",
-				"Condition": {
-					"StringEquals": {
-						"%s:sub": "system:serviceaccount:kube-system:efs-csi-controller-sa",
-						"%s:aud": "sts.amazonaws.com"
-					}
-				}
-			}
-		]
-	}`, oidcProvider, strings.TrimPrefix(oidcProvider, "arn:aws:iam::"), strings.TrimPrefix(oidcProvider, "arn:aws:iam::"))
-
-	// Create IAM role
-	createRoleInput := &iam.CreateRoleInput{
-		RoleName:                 aws.String(m.config.EFSCSIRoleName),
-		AssumeRolePolicyDocument: aws.String(trustPolicy),
-		Description:              aws.String("IAM role for EFS CSI driver"),
-		Tags: []iamtypes.Tag{
-			{
-				Key:   aws.String("Cluster"),
-				Value: aws.String(m.config.ClusterName),
-			},
-			{
-				Key:   aws.String("Purpose"),
-				Value: aws.String("EFS-CSI-Driver"),
-			},
-		},
-	}
-
-	createRoleResult, err := m.iamClient.CreateRole(ctx, createRoleInput)
-	if err != nil {
-		return "", fmt.Errorf("failed to create IAM role: %w", err)
-	}
-
-	roleARN = *createRoleResult.Role.Arn
-	log.Printf("🔐 Created IAM role: %s", roleARN)
-
-	// Attach EFS policy to the role
-	policyARN := "arn:aws:iam::aws:policy/AmazonElasticFileSystemClientFullAccess"
-	_, err = m.iamClient.AttachRolePolicy(ctx, &iam.AttachRolePolicyInput{
-		RoleName:  aws.String(m.config.EFSCSIRoleName),
-		PolicyArn: aws.String(policyARN),
-	})
-	if err != nil {
-		return "", fmt.Errorf("failed to attach EFS policy to role: %w", err)
-	}
-
-	log.Printf("🔐 Attached EFS policy to role: %s", policyARN)
-
-	return roleARN, nil
+	return "", fmt.Errorf("IAM role setup is not supported for OpenShift clusters - use AWS credentials instead")
 }
 
 // Cleanup removes all AWS resources created by this manager
@@ -934,43 +798,6 @@ func (m *Manager) waitForEFSAvailable(ctx context.Context, efsID string) error {
 	}
 
 	return fmt.Errorf("EFS filesystem did not become available within timeout")
-}
-
-func (m *Manager) findIAMRole(ctx context.Context, roleName string) (string, error) {
-	result, err := m.iamClient.GetRole(ctx, &iam.GetRoleInput{
-		RoleName: aws.String(roleName),
-	})
-	if err != nil {
-		// Role doesn't exist
-		return "", nil
-	}
-
-	return *result.Role.Arn, nil
-}
-
-func (m *Manager) detectOIDCProvider(ctx context.Context) (string, error) {
-	// List OIDC providers and find one matching the cluster
-	result, err := m.iamClient.ListOpenIDConnectProviders(ctx, &iam.ListOpenIDConnectProvidersInput{})
-	if err != nil {
-		return "", fmt.Errorf("failed to list OIDC providers: %w", err)
-	}
-
-	for _, provider := range result.OpenIDConnectProviderList {
-		// Get provider details
-		details, err := m.iamClient.GetOpenIDConnectProvider(ctx, &iam.GetOpenIDConnectProviderInput{
-			OpenIDConnectProviderArn: provider.Arn,
-		})
-		if err != nil {
-			continue
-		}
-
-		// Check if this provider is for our cluster
-		if details.Url != nil && strings.Contains(*details.Url, m.config.ClusterName) {
-			return *provider.Arn, nil
-		}
-	}
-
-	return "", fmt.Errorf("no OIDC provider found for cluster %s", m.config.ClusterName)
 }
 
 func (m *Manager) deleteEFS(ctx context.Context, efsID string) error {

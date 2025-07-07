@@ -142,30 +142,21 @@ func (m *Manager) SetupSharedStorage(ctx context.Context) (*SetupResult, error) 
 	log.Printf("✅ Networking configured: %d mount targets, security group %s",
 		len(result.MountTargets), result.SecurityGroupID)
 
-	// Step 4: Setup IAM role for EFS CSI driver
-	log.Println("🔐 Setting up IAM role for EFS CSI driver...")
-	iamRoleARN, err := m.awsManager.SetupIAMRole(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to setup IAM role: %w", err)
-	}
-	result.IAMRoleARN = iamRoleARN
-	log.Printf("✅ IAM role configured: %s", iamRoleARN)
-
-	// Step 5: Install/verify EFS CSI driver
+	// Step 4: Install/verify EFS CSI driver
 	log.Println("🔧 Installing EFS CSI driver...")
 	if err := m.k8sManager.InstallEFSCSIDriver(ctx); err != nil {
 		return nil, fmt.Errorf("failed to install EFS CSI driver: %w", err)
 	}
 	log.Println("✅ EFS CSI driver installed")
 
-	// Step 6: Configure EFS CSI service account
+	// Step 5: Configure EFS CSI service account for OpenShift
 	log.Println("🔗 Configuring EFS CSI service account...")
-	if err := m.k8sManager.ConfigureServiceAccount(ctx, iamRoleARN); err != nil {
+	if err := m.k8sManager.ConfigureServiceAccount(ctx, ""); err != nil {
 		return nil, fmt.Errorf("failed to configure service account: %w", err)
 	}
 	log.Println("✅ Service account configured")
 
-	// Step 7: Create StorageClass
+	// Step 6: Create StorageClass
 	log.Println("💾 Creating StorageClass...")
 	if err := m.k8sManager.CreateStorageClass(ctx, efsID); err != nil {
 		return nil, fmt.Errorf("failed to create StorageClass: %w", err)
@@ -173,7 +164,7 @@ func (m *Manager) SetupSharedStorage(ctx context.Context) (*SetupResult, error) 
 	result.StorageClassName = m.config.StorageClassName
 	log.Printf("✅ StorageClass created: %s", result.StorageClassName)
 
-	// Step 8: Test credentials
+	// Step 7: Test credentials
 	log.Println("🧪 Testing EFS CSI driver credentials...")
 	testPassed, err := m.k8sManager.TestCredentials(ctx, result.StorageClassName)
 	if err != nil {
@@ -226,7 +217,6 @@ func (m *Manager) dryRunSetup(ctx context.Context) (*SetupResult, error) {
 	result := &SetupResult{
 		EFSFilesystemID:  "fs-dry-run-example",
 		StorageClassName: m.config.StorageClassName,
-		IAMRoleARN:       "arn:aws:iam::123456789012:role/dry-run-role",
 		MountTargets:     []string{"fsmt-12345", "fsmt-67890"},
 		SecurityGroupID:  "sg-dryrun123",
 		TestPassed:       true,
@@ -236,7 +226,6 @@ func (m *Manager) dryRunSetup(ctx context.Context) (*SetupResult, error) {
 	log.Printf("  📁 Create EFS filesystem: %s", result.EFSFilesystemID)
 	log.Printf("  🔗 Create %d mount targets", len(result.MountTargets))
 	log.Printf("  🛡️ Create security group: %s", result.SecurityGroupID)
-	log.Printf("  🔐 Create IAM role: %s", result.IAMRoleARN)
 	log.Printf("  💾 Create StorageClass: %s", result.StorageClassName)
 	log.Printf("  🧪 Test credentials")
 

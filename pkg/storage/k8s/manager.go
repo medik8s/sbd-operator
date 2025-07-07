@@ -91,49 +91,31 @@ func (m *Manager) ConfigureServiceAccount(ctx context.Context, roleARN string) e
 		return fmt.Errorf("failed to get service account: %w", err)
 	}
 
-	// Check if this is an EKS cluster by trying to detect OIDC issuer
-	isEKSCluster := m.isEKSCluster(ctx)
-
-	if isEKSCluster {
-		// EKS cluster - use IRSA
-		log.Printf("🔍 Detected EKS cluster - configuring IRSA")
-
-		// Add IAM role annotation
-		if serviceAccount.Annotations == nil {
-			serviceAccount.Annotations = make(map[string]string)
-		}
-		serviceAccount.Annotations["eks.amazonaws.com/role-arn"] = roleARN
-
-		// Update service account
-		_, err = m.clientset.CoreV1().ServiceAccounts("kube-system").Update(ctx, serviceAccount, metav1.UpdateOptions{})
-		if err != nil {
-			return fmt.Errorf("failed to update service account: %w", err)
-		}
-
-		log.Printf("🔗 Configured service account with IAM role: %s", roleARN)
-	} else {
-		// Non-EKS cluster - use AWS credentials secret
-		log.Printf("🔍 Detected non-EKS cluster - configuring AWS credentials")
-
-		// Remove any existing IRSA annotation
-		if serviceAccount.Annotations != nil {
-			delete(serviceAccount.Annotations, "eks.amazonaws.com/role-arn")
-		}
-
-		// Update service account to remove IRSA annotation
-		_, err = m.clientset.CoreV1().ServiceAccounts("kube-system").Update(ctx, serviceAccount, metav1.UpdateOptions{})
-		if err != nil {
-			return fmt.Errorf("failed to update service account: %w", err)
-		}
-
-		// Configure EFS CSI controller deployment to use AWS credentials secret
-		err = m.configureAWSCredentials(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to configure AWS credentials: %w", err)
-		}
-
-		log.Printf("🔗 Configured EFS CSI driver with AWS credentials secret")
+	// Check if this is an OpenShift cluster
+	if !m.isOpenShiftCluster(ctx) {
+		return fmt.Errorf("this tool only supports OpenShift clusters - detected unsupported cluster type")
 	}
+
+	log.Printf("🔍 Detected OpenShift cluster - configuring AWS credentials")
+
+	// Remove any existing IRSA annotation
+	if serviceAccount.Annotations != nil {
+		delete(serviceAccount.Annotations, "eks.amazonaws.com/role-arn")
+	}
+
+	// Update service account to remove IRSA annotation
+	_, err = m.clientset.CoreV1().ServiceAccounts("kube-system").Update(ctx, serviceAccount, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to update service account: %w", err)
+	}
+
+	// Configure EFS CSI controller deployment to use AWS credentials secret
+	err = m.configureAWSCredentials(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to configure AWS credentials: %w", err)
+	}
+
+	log.Printf("🔗 Configured EFS CSI driver with AWS credentials secret")
 
 	// Restart EFS CSI controller to pick up new credentials
 	return m.restartEFSCSIController(ctx)
@@ -823,10 +805,9 @@ func (m *Manager) fixEFSCSIController(ctx context.Context) error {
 	return nil
 }
 
-// isEKSCluster detects if this is an EKS cluster by checking for OIDC discovery
-func (m *Manager) isEKSCluster(ctx context.Context) bool {
-	// Try to access the OIDC discovery endpoint
-	_, err := m.clientset.RESTClient().Get().AbsPath("/.well-known/openid_configuration").DoRaw(ctx)
+// isOpenShiftCluster checks if the cluster is an OpenShift cluster by looking for the openshift-config namespace
+func (m *Manager) isOpenShiftCluster(ctx context.Context) bool {
+	_, err := m.clientset.CoreV1().Namespaces().Get(ctx, "openshift-config", metav1.GetOptions{})
 	return err == nil
 }
 
