@@ -16,23 +16,68 @@ The following AWS permissions are **MANDATORY** for proper operation:
 ### EFS Tagging Permissions
 ```json
 {
-  "Effect": "Allow", 
-  "Action": [
-    "efs:DescribeTags",   // CRITICAL: Required to detect existing EFS by name
-    "efs:CreateTags"      // CRITICAL: Required to tag new EFS for future reuse
-  ],
-  "Resource": "*"
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "EC2ReadOnlyPermissions",
+      "Effect": "Allow",
+      "Action": ["ec2:DescribeVpcs", "ec2:DescribeSubnets", "ec2:DescribeSecurityGroups"],
+      "Resource": "*"  // Required for region-wide discovery
+    },
+    {
+      "Sid": "EC2SecurityGroupManagement", 
+      "Effect": "Allow",
+      "Action": ["ec2:CreateSecurityGroup", "ec2:AuthorizeSecurityGroupIngress"],
+      "Resource": ["arn:aws:ec2:*:*:security-group/*", "arn:aws:ec2:*:*:vpc/*"]
+    },
+    {
+      "Sid": "EC2Tagging",
+      "Effect": "Allow", 
+      "Action": ["ec2:CreateTags"],
+      "Resource": "arn:aws:ec2:*:*:security-group/*",
+      "Condition": {"StringEquals": {"ec2:CreateAction": "CreateSecurityGroup"}}
+    },
+    {
+      "Sid": "EFSReadOperations",
+      "Effect": "Allow",
+      "Action": ["elasticfilesystem:DescribeFileSystems", "elasticfilesystem:DescribeMountTargets", "elasticfilesystem:DescribeTags"],  
+      "Resource": "*"  // Required to discover existing EFS filesystems
+    },
+    {
+      "Sid": "EFSWriteOperations",
+      "Effect": "Allow", 
+      "Action": ["elasticfilesystem:CreateFileSystem", "elasticfilesystem:CreateMountTarget", "elasticfilesystem:CreateTags"],
+      "Resource": ["arn:aws:elasticfilesystem:*:*:file-system/*", "arn:aws:elasticfilesystem:*:*:mount-target/*"]
+    }
+  ]
 }
 ```
 
+### Critical EFS Tagging Permissions
+```json
+"elasticfilesystem:DescribeTags"   // CRITICAL: Required to detect existing EFS by name
+"elasticfilesystem:CreateTags"     // CRITICAL: Required to tag new EFS for future reuse
+```
+
+### Security Improvements (v2)
+
+**BEFORE:** Two broad statements with `"Resource": "*"` for everything  
+**AFTER:** Five granular statements with proper resource scoping
+
+- ✅ **Read operations**: Use `"*"` only where necessary for discovery
+- ✅ **Write operations**: Scoped to specific ARN patterns  
+- ✅ **Conditional tagging**: Only during resource creation
+- ✅ **Principle of least privilege**: Each statement has minimal required permissions
+- ✅ **Sid identifiers**: Clear statement purposes for auditing
+
 ### Why These Permissions Are Critical
 
-1. **`efs:DescribeTags`**
+1. **`elasticfilesystem:DescribeTags`**
    - **Purpose:** Enables detection of existing EFS filesystems by reading their `Name` tag
    - **Without it:** Tool cannot find existing EFS → creates duplicates
    - **Impact:** Wasted money, resource sprawl, cleanup difficulties
 
-2. **`efs:CreateTags`**  
+2. **`elasticfilesystem:CreateTags`**  
    - **Purpose:** Tags new EFS filesystems with proper `Name`, `Cluster`, and `Purpose` tags
    - **Without it:** New EFS cannot be found in future runs → more duplicates
    - **Impact:** Exponential resource growth with each run
@@ -48,7 +93,7 @@ func (m *Manager) findEFSByName(ctx context.Context, name string) (string, error
     result, err := m.efsClient.DescribeFileSystems(ctx, &efs.DescribeFileSystemsInput{})
     
     for _, fs := range result.FileSystems {
-        // 2. Get tags for each filesystem (REQUIRES efs:DescribeTags)
+        // 2. Get tags for each filesystem (REQUIRES elasticfilesystem:DescribeTags)
         tags, err := m.efsClient.DescribeTags(ctx, &efs.DescribeTagsInput{
             FileSystemId: fs.FileSystemId,
         })
@@ -82,18 +127,18 @@ func (m *Manager) findEFSByName(ctx context.Context, name string) (string, error
 ## Solution Implemented
 
 ### 1. **Mandatory Permission Validation**
-Added `efs:DescribeTags` and `efs:CreateTags` to required permissions:
+Added `elasticfilesystem:DescribeTags` and `elasticfilesystem:CreateTags` to required permissions:
 
 ```go
 // pkg/storage/aws/manager.go - ValidateAWSPermissions()
 requiredPermissions := []struct{...}{
     {
-        name:        "efs:DescribeTags",
+        name:        "elasticfilesystem:DescribeTags",
         description: "Read EFS filesystem tags (MANDATORY for reusing existing filesystems)",
         testFn:      m.testDescribeTags,
     },
     {
-        name:        "efs:CreateTags", 
+        name:        "elasticfilesystem:CreateTags", 
         description: "Create tags on EFS filesystems (required for proper resource management)",
         testFn:      m.testCreateTags,
     },
@@ -108,7 +153,7 @@ Enhanced `findEFSByName()` to fail fast on permission errors:
 if err != nil {
     // Check if this is a permission error - this is critical and should not be ignored
     if isPermissionDeniedError(err) {
-        return "", fmt.Errorf("❌ CRITICAL: Missing efs:DescribeTags permission - required for detecting existing EFS filesystems to avoid duplicates. Error: %w", err)
+        return "", fmt.Errorf("❌ CRITICAL: Missing elasticfilesystem:DescribeTags permission - required for detecting existing EFS filesystems to avoid duplicates. Error: %w", err)
     }
     // ... handle other errors
 }
@@ -159,7 +204,7 @@ This fix is backward compatible:
 To verify the fix works correctly:
 
 1. **Test with full permissions:** Should detect existing EFS by name
-2. **Test with missing `efs:DescribeTags`:** Should fail with clear error message
-3. **Test with missing `efs:CreateTags`:** Should fail during EFS creation with validation error
+2. **Test with missing `elasticfilesystem:DescribeTags`:** Should fail with clear error message
+3. **Test with missing `elasticfilesystem:CreateTags`:** Should fail during EFS creation with validation error
 
 This ensures users cannot accidentally create duplicate resources due to missing permissions. 

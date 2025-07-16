@@ -252,9 +252,9 @@ func generateIAMPolicy() {
       "Sid": "EFSReadOperations",
       "Effect": "Allow",
       "Action": [
-        "efs:DescribeFileSystems",
-        "efs:DescribeMountTargets",
-        "efs:DescribeTags"
+        "elasticfilesystem:DescribeFileSystems",
+        "elasticfilesystem:DescribeMountTargets",
+        "elasticfilesystem:DescribeTags"
       ],
       "Resource": "*"
     },
@@ -262,13 +262,13 @@ func generateIAMPolicy() {
       "Sid": "EFSWriteOperations", 
       "Effect": "Allow",
       "Action": [
-        "efs:CreateFileSystem",
-        "efs:CreateMountTarget",
-        "efs:CreateTags"
+        "elasticfilesystem:CreateFileSystem",
+        "elasticfilesystem:CreateMountTarget",
+        "elasticfilesystem:CreateTags"
       ],
       "Resource": [
-        "arn:aws:efs:*:*:file-system/*",
-        "arn:aws:efs:*:*:mount-target/*"
+        "arn:aws:elasticfilesystem:*:*:file-system/*",
+        "arn:aws:elasticfilesystem:*:*:mount-target/*"
       ]
     }
   ]
@@ -284,7 +284,7 @@ func generateIAMPolicy() {
 	fmt.Println("   • Principle of least privilege applied")
 	fmt.Println()
 	fmt.Println("⚠️  CRITICAL: EFS tagging permissions are MANDATORY!")
-	fmt.Println("🚨 Without efs:DescribeTags + efs:CreateTags, this tool will:")
+	fmt.Println("🚨 Without elasticfilesystem:DescribeTags + elasticfilesystem:CreateTags, this tool will:")
 	fmt.Println("   • NOT detect existing EFS filesystems")
 	fmt.Println("   • CREATE DUPLICATE EFS resources")
 	fmt.Println("   • WASTE MONEY on unnecessary AWS charges")
@@ -302,9 +302,9 @@ func generateIAMPolicy() {
 	fmt.Println("• Statement 5 (EFSWrite):        Resource-scoped - only EFS ARNs")
 	fmt.Println()
 	fmt.Println("KEY PERMISSIONS EXPLAINED:")
-	fmt.Println("• efs:DescribeTags  - REQUIRED to find existing EFS by name to avoid duplicates")
-	fmt.Println("• efs:CreateTags    - REQUIRED to tag new EFS filesystems for future reuse")
-	fmt.Println("• ec2:CreateTags    - REQUIRED to tag security groups for management")
+	fmt.Println("• elasticfilesystem:DescribeTags  - REQUIRED to find existing EFS by name to avoid duplicates")
+	fmt.Println("• elasticfilesystem:CreateTags    - REQUIRED to tag new EFS filesystems for future reuse")
+	fmt.Println("• ec2:CreateTags                  - REQUIRED to tag security groups for management")
 	fmt.Println("• All other permissions are required for EFS creation and networking")
 	fmt.Println()
 	fmt.Println("USAGE:")

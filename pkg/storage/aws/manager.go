@@ -128,12 +128,12 @@ func (m *Manager) ValidateAWSPermissions(ctx context.Context) error {
 			testFn:      m.testDescribeFileSystems,
 		},
 		{
-			name:        "efs:DescribeTags",
+			name:        "elasticfilesystem:DescribeTags",
 			description: "Read EFS filesystem tags (MANDATORY for reusing existing filesystems)",
 			testFn:      m.testDescribeTags,
 		},
 		{
-			name:        "efs:CreateTags",
+			name:        "elasticfilesystem:CreateTags",
 			description: "Create tags on EFS filesystems (required for proper resource management)",
 			testFn:      m.testCreateTags,
 		},
@@ -801,7 +801,7 @@ func (m *Manager) findEFSByName(ctx context.Context, name string) (string, error
 		if err != nil {
 			// Check if this is a permission error - this is critical and should not be ignored
 			if isPermissionDeniedError(err) {
-				return "", fmt.Errorf("❌ CRITICAL: Missing efs:DescribeTags permission - required for detecting existing EFS filesystems to avoid duplicates. Error: %w", err)
+				return "", fmt.Errorf("❌ CRITICAL: Missing elasticfilesystem:DescribeTags permission - required for detecting existing EFS filesystems to avoid duplicates. Error: %w", err)
 			}
 			// For other errors (like network issues), store the error but continue trying other filesystems
 			if permissionError == nil {
