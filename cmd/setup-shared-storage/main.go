@@ -214,34 +214,74 @@ func generateIAMPolicy() {
   "Version": "2012-10-17",
   "Statement": [
     {
+      "Sid": "EC2ReadOnlyPermissions",
       "Effect": "Allow",
       "Action": [
         "ec2:DescribeVpcs",
         "ec2:DescribeSubnets",
-        "ec2:DescribeSecurityGroups",
-        "ec2:CreateSecurityGroup",
-        "ec2:AuthorizeSecurityGroupIngress",
-        "ec2:CreateTags"
+        "ec2:DescribeSecurityGroups"
       ],
       "Resource": "*"
     },
     {
+      "Sid": "EC2SecurityGroupManagement",
       "Effect": "Allow",
       "Action": [
-        "efs:CreateFileSystem",
+        "ec2:CreateSecurityGroup",
+        "ec2:AuthorizeSecurityGroupIngress"
+      ],
+      "Resource": [
+        "arn:aws:ec2:*:*:security-group/*",
+        "arn:aws:ec2:*:*:vpc/*"
+      ]
+    },
+    {
+      "Sid": "EC2Tagging",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateTags"
+      ],
+      "Resource": "arn:aws:ec2:*:*:security-group/*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:CreateAction": "CreateSecurityGroup"
+        }
+      }
+    },
+    {
+      "Sid": "EFSReadOperations",
+      "Effect": "Allow",
+      "Action": [
         "efs:DescribeFileSystems",
-        "efs:CreateMountTarget",
         "efs:DescribeMountTargets",
-        "efs:CreateTags",
         "efs:DescribeTags"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "EFSWriteOperations", 
+      "Effect": "Allow",
+      "Action": [
+        "efs:CreateFileSystem",
+        "efs:CreateMountTarget",
+        "efs:CreateTags"
+      ],
+      "Resource": [
+        "arn:aws:efs:*:*:file-system/*",
+        "arn:aws:efs:*:*:mount-target/*"
+      ]
     }
   ]
 }`
 
-	fmt.Println("📋 Required IAM Policy for OpenShift EFS CSI Driver Setup")
-	fmt.Println("========================================================")
+	fmt.Println("📋 Secure IAM Policy for OpenShift EFS CSI Driver Setup")
+	fmt.Println("=======================================================")
+	fmt.Println()
+	fmt.Println("🔒 SECURITY IMPROVEMENTS (v2):")
+	fmt.Println("   • Separate statements for read vs write operations")
+	fmt.Println("   • Resource-scoped permissions (no blanket '*' access)")
+	fmt.Println("   • Conditional tagging (only during resource creation)")
+	fmt.Println("   • Principle of least privilege applied")
 	fmt.Println()
 	fmt.Println("⚠️  CRITICAL: EFS tagging permissions are MANDATORY!")
 	fmt.Println("🚨 Without efs:DescribeTags + efs:CreateTags, this tool will:")
@@ -253,6 +293,13 @@ func generateIAMPolicy() {
 	fmt.Println("This policy grants the minimum required permissions for the")
 	fmt.Println("setup-shared-storage tool to create and configure EFS resources")
 	fmt.Println("for OpenShift clusters while avoiding resource duplication.")
+	fmt.Println()
+	fmt.Println("POLICY STRUCTURE EXPLAINED:")
+	fmt.Println("• Statement 1 (EC2ReadOnly):     Uses '*' - needed for region-wide discovery")
+	fmt.Println("• Statement 2 (EC2Create):       Resource-scoped - only SG & VPC ARNs")
+	fmt.Println("• Statement 3 (EC2Tagging):      Conditional - only on SG creation")
+	fmt.Println("• Statement 4 (EFSRead):         Uses '*' - needed to discover existing EFS")
+	fmt.Println("• Statement 5 (EFSWrite):        Resource-scoped - only EFS ARNs")
 	fmt.Println()
 	fmt.Println("KEY PERMISSIONS EXPLAINED:")
 	fmt.Println("• efs:DescribeTags  - REQUIRED to find existing EFS by name to avoid duplicates")
