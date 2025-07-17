@@ -9,6 +9,75 @@
 - Unnecessary AWS costs
 - Resource management complications
 
+## Critical Service Prefix Error**: User caught that `efs:` is invalid IAM prefix - should be `elasticfilesystem:`.
+
+**Showstopper Fix**: Corrected all permissions from `efs:` to `elasticfilesystem:` across:
+- IAM policy JSON
+- Permission validation code
+- All documentation and examples
+- This would have made policies completely non-functional
+
+## CRITICAL PROCESS REQUIREMENT
+
+**⚠️ MANDATORY: Whenever a new AWS permission is needed, it MUST be added in TWO places:**
+
+1. **Permission Validation** (`pkg/storage/aws/manager.go`):
+   - Add to `requiredPermissions` slice in `ValidateAWSPermissions()`
+   - Implement corresponding `testXXX()` function
+   - Test the permission with appropriate invalid parameters to trigger validation errors
+
+2. **IAM Policy Generation** (`cmd/setup-shared-storage/main.go`):
+   - Add to appropriate policy statement in `generateIAMPolicy()`
+   - Use correct service prefix (`elasticfilesystem:` not `efs:`)
+   - Place in correct section (read vs write operations)
+
+**Example Recent Addition**:
+```go
+// 1. In pkg/storage/aws/manager.go - Permission validation
+{
+    name:        "elasticfilesystem:DescribeAccessPoints",
+    description: "List EFS access points (MANDATORY for EFS CSI driver volume provisioning)",
+    testFn:      m.testDescribeAccessPoints,
+},
+{
+    name:        "elasticfilesystem:CreateAccessPoint",
+    description: "Create EFS access points (MANDATORY for EFS CSI driver volume provisioning)",
+    testFn:      m.testCreateAccessPoint,
+},
+{
+    name:        "elasticfilesystem:DeleteAccessPoint", 
+    description: "Delete EFS access points (MANDATORY for EFS CSI driver volume cleanup)",
+    testFn:      m.testDeleteAccessPoint,
+},
+
+// 2. In cmd/setup-shared-storage/main.go - IAM policy
+"Action": [
+    "elasticfilesystem:DescribeFileSystems",
+    "elasticfilesystem:DescribeMountTargets", 
+    "elasticfilesystem:DescribeTags",
+    "elasticfilesystem:DescribeAccessPoints",  // ← Added for volume discovery
+    "elasticfilesystem:CreateAccessPoint",     // ← CRITICAL for volume provisioning
+    "elasticfilesystem:DeleteAccessPoint"      // ← CRITICAL for volume cleanup
+],
+"Resource": [
+    "arn:aws:elasticfilesystem:*:*:file-system/*",
+    "arn:aws:elasticfilesystem:*:*:mount-target/*",
+    "arn:aws:elasticfilesystem:*:*:access-point/*"  // ← Added for access point operations
+]
+```
+
+**Why Both Are Required**:
+- **Validation**: Catches permission issues early with actionable error messages
+- **IAM Policy**: Provides users with the correct permissions to grant
+- **Missing either**: Tool works for some users but fails silently for others
+
+**Testing Checklist**:
+- [ ] Permission added to validation with test function
+- [ ] Permission added to generated IAM policy  
+- [ ] Test function uses invalid parameters (not permission test)
+- [ ] Correct service prefix used (`elasticfilesystem:` not `efs:`)
+- [ ] Permission categorized correctly (read/write operations)
+
 ## Required Permissions
 
 The following AWS permissions are **MANDATORY** for proper operation:

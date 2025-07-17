@@ -152,6 +152,21 @@ func (m *Manager) ValidateAWSPermissions(ctx context.Context) error {
 			description: "List EFS mount targets",
 			testFn:      m.testDescribeMountTargets,
 		},
+		{
+			name:        "elasticfilesystem:DescribeAccessPoints",
+			description: "List EFS access points (MANDATORY for EFS CSI driver volume provisioning)",
+			testFn:      m.testDescribeAccessPoints,
+		},
+		{
+			name:        "elasticfilesystem:CreateAccessPoint",
+			description: "Create EFS access points (MANDATORY for EFS CSI driver volume provisioning)",
+			testFn:      m.testCreateAccessPoint,
+		},
+		{
+			name:        "elasticfilesystem:DeleteAccessPoint",
+			description: "Delete EFS access points (MANDATORY for EFS CSI driver volume cleanup)",
+			testFn:      m.testDeleteAccessPoint,
+		},
 	}
 
 	var missingPermissions []string
@@ -391,6 +406,48 @@ func (m *Manager) testDescribeMountTargets() error {
 	// Use invalid filesystem ID to trigger validation error
 	_, err := m.efsClient.DescribeMountTargets(context.Background(), &efs.DescribeMountTargetsInput{
 		FileSystemId: aws.String("fs-nonexistent123"), // Invalid filesystem ID
+	})
+	return err
+}
+
+func (m *Manager) testDescribeAccessPoints() error {
+	_, err := m.efsClient.DescribeAccessPoints(context.Background(), &efs.DescribeAccessPointsInput{
+		MaxResults: aws.Int32(1),
+	})
+	return err
+}
+
+func (m *Manager) testCreateAccessPoint() error {
+	// Use invalid parameters to trigger validation error
+	_, err := m.efsClient.CreateAccessPoint(context.Background(), &efs.CreateAccessPointInput{
+		FileSystemId: aws.String("fs-nonexistent123"), // Invalid filesystem ID
+		ClientToken:  aws.String("test-access-point-" + fmt.Sprintf("%d", time.Now().Unix())),
+		PosixUser: &efstypes.PosixUser{
+			Uid: aws.Int64(1000),
+			Gid: aws.Int64(1000),
+		},
+		RootDirectory: &efstypes.RootDirectory{
+			Path: aws.String("/"),
+			CreationInfo: &efstypes.CreationInfo{
+				OwnerUid:    aws.Int64(1000),
+				OwnerGid:    aws.Int64(1000),
+				Permissions: aws.String("755"),
+			},
+		},
+		Tags: []efstypes.Tag{
+			{
+				Key:   aws.String("Name"),
+				Value: aws.String("test-access-point-check"),
+			},
+		},
+	})
+	return err
+}
+
+func (m *Manager) testDeleteAccessPoint() error {
+	// Use invalid access point ID to trigger validation error
+	_, err := m.efsClient.DeleteAccessPoint(context.Background(), &efs.DeleteAccessPointInput{
+		AccessPointId: aws.String("ap-nonexistent123"), // Invalid access point ID
 	})
 	return err
 }
@@ -772,7 +829,7 @@ func (m *Manager) createMountTargets(ctx context.Context, efsID string, subnetID
 		if err != nil {
 			// Handle the case where mount target already exists (race condition or AZ conflict)
 			if strings.Contains(err.Error(), "MountTargetConflict") || strings.Contains(err.Error(), "mount target already exists") {
-				log.Printf("⚠️ Mount target already exists in subnet %s (or its AZ), skipping creation", subnetID)
+				log.Printf("⚠️  Mount targets already exist in subnet %s (or its AZ), skipping creation", subnetID)
 				// Try to find the existing mount target in this AZ
 				for _, mt := range existing.MountTargets {
 					// Check if this mount target is in the same AZ as our subnet

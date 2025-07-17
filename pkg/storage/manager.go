@@ -115,13 +115,12 @@ func (m *Manager) SetupSharedStorage(ctx context.Context) (*SetupResult, error) 
 	// Step 2: Setup or validate EFS filesystem
 	var efsID string
 	if m.config.CreateEFS {
-		log.Println("📁 Creating EFS filesystem...")
+		log.Println("📁 Ensuring EFS filesystem exists...")
 		var err error
 		efsID, err = m.awsManager.CreateEFS(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create EFS: %w", err)
 		}
-		log.Printf("✅ EFS filesystem created: %s", efsID)
 	} else {
 		efsID = m.config.EFSFilesystemID
 		log.Printf("📁 Using existing EFS filesystem: %s", efsID)

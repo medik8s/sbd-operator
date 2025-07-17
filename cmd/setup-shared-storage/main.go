@@ -254,7 +254,8 @@ func generateIAMPolicy() {
       "Action": [
         "elasticfilesystem:DescribeFileSystems",
         "elasticfilesystem:DescribeMountTargets",
-        "elasticfilesystem:DescribeTags"
+        "elasticfilesystem:DescribeTags",
+        "elasticfilesystem:DescribeAccessPoints"
       ],
       "Resource": "*"
     },
@@ -265,11 +266,14 @@ func generateIAMPolicy() {
         "elasticfilesystem:CreateFileSystem",
         "elasticfilesystem:CreateMountTarget",
         "elasticfilesystem:CreateTags",
-        "elasticfilesystem:TagResource"
+        "elasticfilesystem:TagResource",
+        "elasticfilesystem:CreateAccessPoint",
+        "elasticfilesystem:DeleteAccessPoint"
       ],
       "Resource": [
         "arn:aws:elasticfilesystem:*:*:file-system/*",
-        "arn:aws:elasticfilesystem:*:*:mount-target/*"
+        "arn:aws:elasticfilesystem:*:*:mount-target/*",
+        "arn:aws:elasticfilesystem:*:*:access-point/*"
       ]
     }
   ]

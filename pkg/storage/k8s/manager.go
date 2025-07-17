@@ -5,10 +5,16 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/efs"
 
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
@@ -61,9 +67,6 @@ func (m *Manager) InstallEFSCSIDriver(ctx context.Context) error {
 		log.Println("🔧 EFS CSI driver already installed")
 		return nil
 	}
-
-	// Install EFS CSI driver
-	log.Println("🔧 Installing EFS CSI driver...")
 
 	// Create namespace if it doesn't exist
 	_, err = m.clientset.CoreV1().Namespaces().Get(ctx, "kube-system", metav1.GetOptions{})
@@ -275,10 +278,95 @@ func (m *Manager) TestCredentials(ctx context.Context, storageClassName string) 
 	}
 
 	if !success {
-		return false, fmt.Errorf("test PVC failed to bind (final status: %s, last message: %s)", lastStatus, lastMessage)
+		// Provide detailed error analysis for common issues
+		errorAnalysis := m.analyzeTestPVCFailure(lastStatus, lastMessage)
+		return false, fmt.Errorf("test PVC failed to bind (final status: %s, last message: %s)\n%s", lastStatus, lastMessage, errorAnalysis)
 	}
 
 	return true, nil
+}
+
+// analyzeTestPVCFailure provides detailed analysis and solutions for common PVC binding failures
+func (m *Manager) analyzeTestPVCFailure(status corev1.PersistentVolumeClaimPhase, message string) string {
+	analysis := "\n🔍 TROUBLESHOOTING ANALYSIS:\n"
+
+	// Check for AWS permission issues
+	if strings.Contains(message, "Access Denied") || strings.Contains(message, "AccessDenied") ||
+		strings.Contains(message, "Unauthenticated") || strings.Contains(message, "UnauthorizedOperation") {
+		analysis += "\n❌ AWS PERMISSION ISSUE DETECTED:\n"
+		analysis += "   The EFS CSI driver cannot authenticate with AWS or lacks required permissions.\n\n"
+		analysis += "🔧 SOLUTION:\n"
+		analysis += "   1. AWS permissions are validated during setup - check setup logs for specific missing permissions\n\n"
+		analysis += "   2. Verify AWS credentials are configured correctly in the EFS CSI driver:\n"
+		analysis += "      kubectl get secret aws-creds -n kube-system -o yaml\n\n"
+		analysis += "   3. Check if EFS CSI controller has correct environment variables:\n"
+		analysis += "      kubectl describe deployment efs-csi-controller -n kube-system\n\n"
+		analysis += "   4. Test credentials manually:\n"
+		analysis += "      aws efs describe-file-systems --max-items 1\n"
+		return analysis
+	}
+
+	// Check for EFS filesystem issues
+	if strings.Contains(message, "FileSystemNotFound") || strings.Contains(message, "InvalidFileSystemId") {
+		analysis += "\n❌ EFS FILESYSTEM ISSUE:\n"
+		analysis += "   The specified EFS filesystem ID is invalid or not accessible.\n\n"
+		analysis += "🔧 SOLUTION:\n"
+		analysis += "   1. Verify the EFS filesystem exists:\n"
+		analysis += "      aws efs describe-file-systems\n\n"
+		analysis += "   2. Check the StorageClass parameters:\n"
+		analysis += "      kubectl get storageclass sbd-efs-sc -o yaml\n"
+		return analysis
+	}
+
+	// Check for networking issues
+	if strings.Contains(message, "MountTargetNotFound") || strings.Contains(message, "SubnetNotFound") ||
+		strings.Contains(message, "SecurityGroupNotFound") {
+		analysis += "\n❌ EFS NETWORKING ISSUE:\n"
+		analysis += "   EFS mount targets or networking configuration is incorrect.\n\n"
+		analysis += "🔧 SOLUTION:\n"
+		analysis += "   1. Verify EFS mount targets exist:\n"
+		analysis += "      aws efs describe-mount-targets --file-system-id <your-efs-id>\n\n"
+		analysis += "   2. Check security group allows NFS traffic (port 2049):\n"
+		analysis += "      aws ec2 describe-security-groups --group-ids <security-group-id>\n"
+		return analysis
+	}
+
+	// Check for general CSI driver issues
+	if strings.Contains(message, "failed to provision volume") || strings.Contains(message, "rpc error") {
+		analysis += "\n❌ EFS CSI DRIVER ISSUE:\n"
+		analysis += "   The EFS CSI driver encountered an error during volume provisioning.\n\n"
+		analysis += "🔧 SOLUTION:\n"
+		analysis += "   1. Check EFS CSI controller logs:\n"
+		analysis += "      kubectl logs deployment/efs-csi-controller -n kube-system -c efs-plugin\n\n"
+		analysis += "   2. Verify EFS CSI driver is running:\n"
+		analysis += "      kubectl get pods -n kube-system -l app=efs-csi-controller\n\n"
+		analysis += "   3. Check if CSI driver is registered:\n"
+		analysis += "      kubectl get csidriver efs.csi.aws.com\n"
+		return analysis
+	}
+
+	// Generic timeout or pending issues
+	if status == corev1.ClaimPending {
+		analysis += "\n❌ PVC STUCK IN PENDING STATE:\n"
+		analysis += "   The PVC could not be provisioned within the timeout period.\n\n"
+		analysis += "🔧 SOLUTION:\n"
+		analysis += "   1. Check recent events for this PVC:\n"
+		analysis += "      kubectl describe pvc <pvc-name> -n default\n\n"
+		analysis += "   2. Verify StorageClass exists and is configured:\n"
+		analysis += "      kubectl get storageclass sbd-efs-sc\n\n"
+		analysis += "   3. Check if there are sufficient resources:\n"
+		analysis += "      kubectl get pv\n"
+		return analysis
+	}
+
+	// Fallback for unknown issues
+	analysis += "\n❓ UNKNOWN ISSUE:\n"
+	analysis += "   Please check the following for more details:\n"
+	analysis += "   1. PVC events: kubectl describe pvc <pvc-name>\n"
+	analysis += "   2. EFS CSI logs: kubectl logs deployment/efs-csi-controller -n kube-system\n"
+	analysis += "   3. StorageClass config: kubectl get storageclass sbd-efs-sc -o yaml\n"
+
+	return analysis
 }
 
 // Cleanup removes all Kubernetes resources created by this manager
@@ -752,55 +840,194 @@ func (d *ClusterDetector) detectFromEKSNodeTags(ctx context.Context) (string, er
 }
 
 func (m *Manager) applyEFSCSIDriver(ctx context.Context) error {
-	// Apply the EFS CSI driver using kubectl apply
-	log.Println("🔧 Installing AWS EFS CSI driver for OpenShift...")
+	log.Println("🔧 Installing AWS EFS CSI driver...")
 
-	// Use the official AWS EFS CSI driver manifest
-	// This version is compatible with OpenShift and doesn't require EFS utils on nodes
-	manifestURL := "https://raw.githubusercontent.com/kubernetes-sigs/aws-efs-csi-driver/release-1.7/deploy/kubernetes/overlays/stable/kustomization.yaml"
+	// Check if EFS CSI driver is already installed by looking for the DaemonSet
+	_, err := m.clientset.AppsV1().DaemonSets("kube-system").Get(ctx, "efs-csi-node", metav1.GetOptions{})
+	if err == nil {
+		log.Println("✅ EFS CSI driver already installed (DaemonSet found)")
+		return nil
+	}
 
-	// Create a temporary shell command to apply the manifests
-	// Note: In a production implementation, you might want to embed the manifests
-	// or use the Kubernetes dynamic client to apply them programmatically
+	// Check if the deployment exists instead
+	_, err = m.clientset.AppsV1().Deployments("kube-system").Get(ctx, "efs-csi-controller", metav1.GetOptions{})
+	if err == nil {
+		log.Println("✅ EFS CSI driver already installed (Deployment found)")
+		return nil
+	}
+
+	// Apply the EFS CSI driver using kubectl/oc apply
+	manifestURL := "https://github.com/kubernetes-sigs/aws-efs-csi-driver/deploy/kubernetes/overlays/stable/?ref=release-1.7"
 
 	log.Printf("🔧 Applying EFS CSI driver manifests from: %s", manifestURL)
 
-	// For now, we'll indicate that external installation is required
-	// The operator should be deployed in an environment where the EFS CSI driver is pre-installed
-	log.Println("⚠️  EFS CSI driver should be pre-installed on the cluster")
-	log.Println("📋 To install manually, run:")
-	log.Println("   kubectl apply -k 'https://github.com/kubernetes-sigs/aws-efs-csi-driver/deploy/kubernetes/overlays/stable/?ref=release-1.7'")
-	log.Println("🔧 EFS CSI driver installation step completed")
+	// Use oc if available (OpenShift), otherwise use kubectl
+	cmd := "kubectl"
+	if m.isOpenShiftCluster(ctx) {
+		cmd = "oc"
+	}
+
+	// Run the installation command
+	installCmd := exec.Command(cmd, "apply", "-k", manifestURL)
+
+	log.Printf("🔧 Running: %s apply -k %s", cmd, manifestURL)
+
+	// Execute the command with context timeout
+	cmdCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+	installCmd = exec.CommandContext(cmdCtx, cmd, "apply", "-k", manifestURL)
+
+	output, err := installCmd.CombinedOutput()
+	if err != nil {
+		log.Printf("❌ Failed to install EFS CSI driver: %v", err)
+		log.Printf("Command output: %s", string(output))
+		return fmt.Errorf("failed to install EFS CSI driver: %w\nOutput: %s", err, string(output))
+	}
+
+	log.Printf("✅ EFS CSI driver installation command completed")
+	log.Printf("Installation output: %s", string(output))
 
 	return nil
 }
 
 func (m *Manager) waitForEFSCSIDriver(ctx context.Context) error {
-	// Wait for EFS CSI driver pods to be ready
-	for i := 0; i < 60; i++ { // Wait up to 5 minutes
-		pods, err := m.clientset.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{
-			LabelSelector: "app=efs-csi-controller",
-		})
-		if err != nil {
-			return fmt.Errorf("failed to list EFS CSI controller pods: %w", err)
-		}
+	log.Println("⏳ Waiting for EFS CSI driver pods to become ready...")
 
-		ready := 0
-		for _, pod := range pods.Items {
-			if pod.Status.Phase == corev1.PodRunning {
-				ready++
-			}
-		}
-
-		if ready > 0 {
-			log.Printf("✅ EFS CSI driver is ready (%d pods running)", ready)
-			return nil
-		}
-
-		time.Sleep(5 * time.Second)
+	// Multiple label selectors to check for EFS CSI driver components
+	selectors := []struct {
+		name     string
+		selector string
+	}{
+		{"controller", "app=efs-csi-controller"},
+		{"controller-alt", "app.kubernetes.io/name=aws-efs-csi-driver,app.kubernetes.io/component=controller"},
+		{"node", "app=efs-csi-node"},
+		{"node-alt", "app.kubernetes.io/name=aws-efs-csi-driver,app.kubernetes.io/component=node"},
 	}
 
-	return fmt.Errorf("EFS CSI driver did not become ready within timeout")
+	maxWaitTime := 5 * time.Minute
+	timeout := time.After(maxWaitTime)
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timeout:
+			// Final attempt to get detailed status
+			log.Println("❌ Timeout reached, checking final status...")
+			m.logEFSCSIDriverStatus(ctx)
+			return fmt.Errorf("EFS CSI driver did not become ready within %v", maxWaitTime)
+
+		case <-ticker.C:
+			readyFound := false
+			totalPods := 0
+			readyPods := 0
+
+			for _, sel := range selectors {
+				pods, err := m.clientset.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{
+					LabelSelector: sel.selector,
+				})
+				if err != nil {
+					log.Printf("⚠️ Failed to list %s pods: %v", sel.name, err)
+					continue
+				}
+
+				if len(pods.Items) == 0 {
+					continue
+				}
+
+				componentReady := 0
+				for _, pod := range pods.Items {
+					totalPods++
+					if pod.Status.Phase == corev1.PodRunning {
+						// Check if all containers are ready
+						allContainersReady := true
+						for _, containerStatus := range pod.Status.ContainerStatuses {
+							if !containerStatus.Ready {
+								allContainersReady = false
+								break
+							}
+						}
+						if allContainersReady {
+							componentReady++
+							readyPods++
+						}
+					}
+				}
+
+				if componentReady > 0 {
+					log.Printf("✅ Found %d ready %s pod(s)", componentReady, sel.name)
+					readyFound = true
+				}
+			}
+
+			if readyFound && readyPods > 0 {
+				log.Printf("✅ EFS CSI driver is ready (%d/%d pods running and ready)", readyPods, totalPods)
+				return nil
+			}
+
+			if totalPods == 0 {
+				log.Println("⏳ No EFS CSI driver pods found yet, waiting for installation to complete...")
+			} else {
+				log.Printf("⏳ EFS CSI driver pods found but not ready yet (%d/%d ready)", readyPods, totalPods)
+			}
+		}
+	}
+}
+
+// logEFSCSIDriverStatus provides detailed status information for troubleshooting
+func (m *Manager) logEFSCSIDriverStatus(ctx context.Context) {
+	log.Println("📊 EFS CSI Driver Status Details:")
+
+	// Check for any pods with EFS CSI related labels
+	allPods, err := m.clientset.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		log.Printf("❌ Failed to list all pods: %v", err)
+		return
+	}
+
+	efsRelatedPods := 0
+	for _, pod := range allPods.Items {
+		// Check if pod name or labels suggest it's EFS CSI related
+		isEFSRelated := strings.Contains(pod.Name, "efs-csi") ||
+			strings.Contains(pod.Name, "aws-efs") ||
+			strings.Contains(fmt.Sprintf("%v", pod.Labels), "efs")
+
+		if isEFSRelated {
+			efsRelatedPods++
+			log.Printf("   Pod: %s, Phase: %s, Ready: %v",
+				pod.Name, pod.Status.Phase, isPodReady(&pod))
+
+			// Log container statuses for failed pods
+			if pod.Status.Phase != corev1.PodRunning {
+				for _, containerStatus := range pod.Status.ContainerStatuses {
+					if containerStatus.State.Waiting != nil {
+						log.Printf("     Container %s waiting: %s",
+							containerStatus.Name, containerStatus.State.Waiting.Reason)
+					}
+					if containerStatus.State.Terminated != nil {
+						log.Printf("     Container %s terminated: %s",
+							containerStatus.Name, containerStatus.State.Terminated.Reason)
+					}
+				}
+			}
+		}
+	}
+
+	if efsRelatedPods == 0 {
+		log.Println("   No EFS CSI driver pods found - installation may have failed")
+		log.Println("   Manual installation command:")
+		log.Println("   kubectl apply -k 'https://github.com/kubernetes-sigs/aws-efs-csi-driver/deploy/kubernetes/overlays/stable/?ref=release-1.7'")
+	}
+}
+
+// isPodReady checks if all containers in a pod are ready
+func isPodReady(pod *corev1.Pod) bool {
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == corev1.PodReady {
+			return condition.Status == corev1.ConditionTrue
+		}
+	}
+	return false
 }
 
 func (m *Manager) restartEFSCSIController(ctx context.Context) error {
@@ -850,11 +1077,15 @@ func (m *Manager) isOpenShiftCluster(ctx context.Context) bool {
 
 // configureAWSCredentials configures the EFS CSI controller to use AWS credentials secret
 func (m *Manager) configureAWSCredentials(ctx context.Context) error {
-	// Check if aws-creds secret exists
-	_, err := m.clientset.CoreV1().Secrets("kube-system").Get(ctx, "aws-creds", metav1.GetOptions{})
+	log.Println("🔍 Searching for AWS credentials secret...")
+
+	// Find AWS credentials secret in various common locations
+	secretInfo, err := m.findAWSCredentialsSecret(ctx)
 	if err != nil {
-		return fmt.Errorf("aws-creds secret not found in kube-system namespace: %w", err)
+		return fmt.Errorf("failed to find AWS credentials secret: %w", err)
 	}
+
+	log.Printf("✅ Found AWS credentials secret: %s in namespace %s", secretInfo.Name, secretInfo.Namespace)
 
 	// Get the EFS CSI controller deployment
 	deployment, err := m.clientset.AppsV1().Deployments("kube-system").Get(ctx, "efs-csi-controller", metav1.GetOptions{})
@@ -862,48 +1093,93 @@ func (m *Manager) configureAWSCredentials(ctx context.Context) error {
 		return fmt.Errorf("failed to get EFS CSI controller deployment: %w", err)
 	}
 
-	// Find the efs-plugin container and add AWS credentials environment variables
+	// Find the correct container (try multiple possible names)
+	containerNames := []string{"efs-plugin", "aws-efs-csi-driver", "efs-csi-driver", "csi-driver"}
+	var targetContainerIndex = -1
+	var targetContainerName string
+
 	for i, container := range deployment.Spec.Template.Spec.Containers {
-		if container.Name == "efs-plugin" {
-			// Check if AWS credentials are already configured
-			hasAccessKey := false
-			hasSecretKey := false
-
-			for _, env := range container.Env {
-				if env.Name == "AWS_ACCESS_KEY_ID" {
-					hasAccessKey = true
-				}
-				if env.Name == "AWS_SECRET_ACCESS_KEY" {
-					hasSecretKey = true
-				}
+		for _, possibleName := range containerNames {
+			if container.Name == possibleName {
+				targetContainerIndex = i
+				targetContainerName = container.Name
+				break
 			}
-
-			// Add AWS credentials if not already present
-			if !hasAccessKey {
-				deployment.Spec.Template.Spec.Containers[i].Env = append(deployment.Spec.Template.Spec.Containers[i].Env, corev1.EnvVar{
-					Name: "AWS_ACCESS_KEY_ID",
-					ValueFrom: &corev1.EnvVarSource{
-						SecretKeyRef: &corev1.SecretKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{Name: "aws-creds"},
-							Key:                  "aws_access_key_id",
-						},
-					},
-				})
-			}
-
-			if !hasSecretKey {
-				deployment.Spec.Template.Spec.Containers[i].Env = append(deployment.Spec.Template.Spec.Containers[i].Env, corev1.EnvVar{
-					Name: "AWS_SECRET_ACCESS_KEY",
-					ValueFrom: &corev1.EnvVarSource{
-						SecretKeyRef: &corev1.SecretKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{Name: "aws-creds"},
-							Key:                  "aws_secret_access_key",
-						},
-					},
-				})
-			}
-
+		}
+		if targetContainerIndex != -1 {
 			break
+		}
+	}
+
+	if targetContainerIndex == -1 {
+		// List all container names for debugging
+		containerNamesList := make([]string, len(deployment.Spec.Template.Spec.Containers))
+		for i, container := range deployment.Spec.Template.Spec.Containers {
+			containerNamesList[i] = container.Name
+		}
+		return fmt.Errorf("no suitable EFS CSI container found. Available containers: %v, expected one of: %v",
+			containerNamesList, containerNames)
+	}
+
+	log.Printf("🔧 Configuring AWS credentials for container: %s", targetContainerName)
+
+	// Check if AWS credentials are already configured
+	container := &deployment.Spec.Template.Spec.Containers[targetContainerIndex]
+	hasAccessKey := false
+	hasSecretKey := false
+	hasRegion := false
+
+	for _, env := range container.Env {
+		switch env.Name {
+		case "AWS_ACCESS_KEY_ID":
+			hasAccessKey = true
+		case "AWS_SECRET_ACCESS_KEY":
+			hasSecretKey = true
+		case "AWS_DEFAULT_REGION", "AWS_REGION":
+			hasRegion = true
+		}
+	}
+
+	// Add missing AWS credentials environment variables
+	if !hasAccessKey {
+		container.Env = append(container.Env, corev1.EnvVar{
+			Name: "AWS_ACCESS_KEY_ID",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: secretInfo.Name},
+					Key:                  secretInfo.AccessKeyID,
+				},
+			},
+		})
+		log.Printf("✅ Added AWS_ACCESS_KEY_ID from secret %s/%s", secretInfo.Namespace, secretInfo.Name)
+	}
+
+	if !hasSecretKey {
+		container.Env = append(container.Env, corev1.EnvVar{
+			Name: "AWS_SECRET_ACCESS_KEY",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: secretInfo.Name},
+					Key:                  secretInfo.SecretAccessKey,
+				},
+			},
+		})
+		log.Printf("✅ Added AWS_SECRET_ACCESS_KEY from secret %s/%s", secretInfo.Namespace, secretInfo.Name)
+	}
+
+	// Add region if available and not already set
+	if !hasRegion && secretInfo.Region != "" {
+		container.Env = append(container.Env, corev1.EnvVar{
+			Name:  "AWS_DEFAULT_REGION",
+			Value: secretInfo.Region,
+		})
+		log.Printf("✅ Added AWS_DEFAULT_REGION: %s", secretInfo.Region)
+	}
+
+	// If we're not in kube-system, we need to copy the secret or use a service account
+	if secretInfo.Namespace != "kube-system" {
+		if err := m.ensureAWSCredentialsInKubeSystem(ctx, secretInfo); err != nil {
+			return fmt.Errorf("failed to ensure AWS credentials in kube-system: %w", err)
 		}
 	}
 
@@ -913,5 +1189,298 @@ func (m *Manager) configureAWSCredentials(ctx context.Context) error {
 		return fmt.Errorf("failed to update EFS CSI controller deployment: %w", err)
 	}
 
+	log.Printf("✅ Successfully configured AWS credentials for EFS CSI controller")
+
+	// Validate that the credentials actually work
+	if err := m.validateAWSCredentialsForEFS(ctx, secretInfo); err != nil {
+		log.Printf("⚠️ Warning: AWS credentials configured but validation failed: %v", err)
+		log.Println("🔧 The EFS CSI driver may fail to provision volumes due to insufficient permissions")
+		// Don't return error here - let the test PVC catch the issue with better error reporting
+	} else {
+		log.Printf("✅ AWS credentials validated successfully")
+	}
+
 	return nil
+}
+
+// validateAWSCredentialsForEFS validates that the configured AWS credentials have EFS permissions
+func (m *Manager) validateAWSCredentialsForEFS(ctx context.Context, secretInfo *AWSSecretInfo) error {
+	// Get the credentials from the secret
+	secretObj, err := m.clientset.CoreV1().Secrets(secretInfo.Namespace).Get(ctx, secretInfo.Name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get AWS credentials secret for validation: %w", err)
+	}
+
+	accessKeyID := string(secretObj.Data[secretInfo.AccessKeyID])
+	secretAccessKey := string(secretObj.Data[secretInfo.SecretAccessKey])
+
+	if accessKeyID == "" || secretAccessKey == "" {
+		return fmt.Errorf("AWS credentials are empty")
+	}
+
+	log.Println("🧪 Validating AWS credentials by testing EFS API access...")
+
+	// Detect AWS region for the credentials
+	region := secretInfo.Region
+	if region == "" {
+		if detectedRegion, err := m.detectAWSRegionFromCluster(ctx); err == nil {
+			region = detectedRegion
+			log.Printf("🔍 Detected AWS region from cluster: %s", region)
+		} else {
+			region = "us-east-1" // Default fallback
+			log.Printf("⚠️ Could not detect AWS region, using default: %s", region)
+		}
+	}
+
+	// Create AWS config with the credentials from the secret
+	creds := credentials.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, "")
+	cfg, err := config.LoadDefaultConfig(ctx,
+		config.WithRegion(region),
+		config.WithCredentialsProvider(creds),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create AWS config: %w", err)
+	}
+
+	// Create EFS client
+	efsClient := efs.NewFromConfig(cfg)
+
+	// Test basic EFS permissions with a simple describe operation
+	log.Printf("🔍 Testing EFS permissions in region %s...", region)
+
+	// Create a context with timeout for the API call
+	testCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// Try to describe file systems (read-only operation)
+	input := &efs.DescribeFileSystemsInput{
+		MaxItems: aws.Int32(1),
+	}
+
+	result, err := efsClient.DescribeFileSystems(testCtx, input)
+	if err != nil {
+		// Check for specific error types
+		if strings.Contains(err.Error(), "UnauthorizedOperation") ||
+			strings.Contains(err.Error(), "AccessDenied") ||
+			strings.Contains(err.Error(), "InvalidUserID.NotFound") {
+			return fmt.Errorf("AWS credentials do not have EFS permissions: %w", err)
+		}
+		if strings.Contains(err.Error(), "InvalidAccessKeyId") {
+			return fmt.Errorf("AWS access key ID is invalid: %w", err)
+		}
+		if strings.Contains(err.Error(), "SignatureDoesNotMatch") {
+			return fmt.Errorf("AWS secret access key is invalid: %w", err)
+		}
+		if strings.Contains(err.Error(), "TokenRefreshRequired") {
+			return fmt.Errorf("AWS credentials expired or require refresh: %w", err)
+		}
+
+		// For other errors, provide a warning but don't fail completely
+		log.Printf("⚠️ Warning: EFS API test failed (may be network/service issue): %v", err)
+		return fmt.Errorf("EFS API validation failed: %w", err)
+	}
+
+	// Success! Log some useful information
+	if result != nil && result.FileSystems != nil {
+		log.Printf("✅ AWS credentials validated successfully")
+		log.Printf("🔍 Found %d EFS filesystem(s) accessible with these credentials", len(result.FileSystems))
+
+		// Log available filesystems for debugging
+		for _, fs := range result.FileSystems {
+			if fs.FileSystemId != nil {
+				log.Printf("   - EFS ID: %s", *fs.FileSystemId)
+			}
+		}
+	} else {
+		log.Printf("✅ AWS credentials validated (EFS access confirmed)")
+	}
+
+	log.Printf("✅ AWS credentials validated - basic EFS connectivity confirmed")
+	return nil
+}
+
+// detectAWSRegionFromCluster attempts to detect the AWS region from cluster node information
+func (m *Manager) detectAWSRegionFromCluster(ctx context.Context) (string, error) {
+	// Get nodes and check for region in labels or provider ID
+	nodes, err := m.clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to list nodes: %w", err)
+	}
+
+	for _, node := range nodes.Items {
+		// Check node labels for region
+		if region, ok := node.Labels["topology.kubernetes.io/region"]; ok {
+			return region, nil
+		}
+
+		// Extract region from provider ID (aws:///us-west-2a/i-1234567890abcdef0)
+		if node.Spec.ProviderID != "" {
+			re := regexp.MustCompile(`aws:///([a-z]{2}-[a-z]+-\d+)[a-z]/`)
+			matches := re.FindStringSubmatch(node.Spec.ProviderID)
+			if len(matches) >= 2 {
+				return matches[1], nil
+			}
+		}
+
+		// Extract region from node name pattern
+		re := regexp.MustCompile(`\.([a-z]{2}-[a-z]+-\d+)\.compute\.internal`)
+		matches := re.FindStringSubmatch(node.Name)
+		if len(matches) >= 2 {
+			return matches[1], nil
+		}
+	}
+
+	return "", fmt.Errorf("could not detect AWS region from cluster")
+}
+
+// AWSSecretInfo holds information about found AWS credentials
+type AWSSecretInfo struct {
+	Name            string
+	Namespace       string
+	AccessKeyID     string
+	SecretAccessKey string
+	Region          string
+}
+
+// findAWSCredentialsSecret searches for AWS credentials in common locations
+func (m *Manager) findAWSCredentialsSecret(ctx context.Context) (*AWSSecretInfo, error) {
+	// Common locations and secret names for AWS credentials in OpenShift/Kubernetes
+	searchLocations := []struct {
+		namespace   string
+		secretNames []string
+	}{
+		{"kube-system", []string{"aws-creds", "aws-credentials", "cloud-credentials"}},
+		{"openshift-machine-api", []string{"aws-cloud-credentials", "aws-credentials"}},
+		{"openshift-cloud-credential-operator", []string{"cloud-credential-operator-iam-ro-creds"}},
+		{"openshift-cluster-api", []string{"aws-cloud-credentials"}},
+		{"default", []string{"aws-creds", "aws-credentials"}},
+	}
+
+	for _, location := range searchLocations {
+		// Check if namespace exists
+		_, err := m.clientset.CoreV1().Namespaces().Get(ctx, location.namespace, metav1.GetOptions{})
+		if err != nil {
+			continue // Skip if namespace doesn't exist
+		}
+
+		for _, secretName := range location.secretNames {
+			secret, err := m.clientset.CoreV1().Secrets(location.namespace).Get(ctx, secretName, metav1.GetOptions{})
+			if err != nil {
+				continue // Try next secret name
+			}
+
+			// Try to extract credentials with different possible key names
+			secretInfo := &AWSSecretInfo{
+				Name:      secretName,
+				Namespace: location.namespace,
+			}
+
+			// Common variations for access key ID
+			for _, key := range []string{"aws_access_key_id", "AWS_ACCESS_KEY_ID", "access_key_id", "accessKeyId"} {
+				if _, exists := secret.Data[key]; exists {
+					secretInfo.AccessKeyID = key
+					log.Printf("🔍 Found access key ID with key: %s", key)
+					break
+				}
+			}
+
+			// Common variations for secret access key
+			for _, key := range []string{"aws_secret_access_key", "AWS_SECRET_ACCESS_KEY", "secret_access_key", "secretAccessKey"} {
+				if _, exists := secret.Data[key]; exists {
+					secretInfo.SecretAccessKey = key
+					log.Printf("🔍 Found secret access key with key: %s", key)
+					break
+				}
+			}
+
+			// Optional region
+			for _, key := range []string{"aws_region", "AWS_REGION", "region", "AWS_DEFAULT_REGION"} {
+				if _, exists := secret.Data[key]; exists {
+					secretInfo.Region = string(secret.Data[key])
+					log.Printf("🔍 Found region with key: %s, value: %s", key, secretInfo.Region)
+					break
+				}
+			}
+
+			// Validate that we found the required credentials
+			if secretInfo.AccessKeyID != "" && secretInfo.SecretAccessKey != "" {
+				log.Printf("✅ Valid AWS credentials found in %s/%s", location.namespace, secretName)
+				return secretInfo, nil
+			} else {
+				log.Printf("⚠️ Secret %s/%s exists but missing required keys (found accessKey: %v, secretKey: %v)",
+					location.namespace, secretName, secretInfo.AccessKeyID != "", secretInfo.SecretAccessKey != "")
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("no valid AWS credentials secret found. Searched namespaces: %v. Please ensure aws-creds secret exists with aws_access_key_id and aws_secret_access_key keys",
+		getNamespaceList(searchLocations))
+}
+
+// ensureAWSCredentialsInKubeSystem copies AWS credentials to kube-system if needed
+func (m *Manager) ensureAWSCredentialsInKubeSystem(ctx context.Context, sourceSecret *AWSSecretInfo) error {
+	targetSecretName := "aws-creds"
+
+	// Check if target secret already exists
+	_, err := m.clientset.CoreV1().Secrets("kube-system").Get(ctx, targetSecretName, metav1.GetOptions{})
+	if err == nil {
+		log.Printf("✅ AWS credentials secret already exists in kube-system")
+		return nil
+	}
+
+	// Get source secret
+	sourceSecretObj, err := m.clientset.CoreV1().Secrets(sourceSecret.Namespace).Get(ctx, sourceSecret.Name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get source secret: %w", err)
+	}
+
+	// Create target secret in kube-system
+	targetSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      targetSecretName,
+			Namespace: "kube-system",
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "sbd-operator",
+				"sbd.medik8s.io/purpose":       "efs-csi-credentials",
+			},
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"aws_access_key_id":     sourceSecretObj.Data[sourceSecret.AccessKeyID],
+			"aws_secret_access_key": sourceSecretObj.Data[sourceSecret.SecretAccessKey],
+		},
+	}
+
+	// Add region if available
+	if sourceSecret.Region != "" {
+		targetSecret.Data["aws_region"] = []byte(sourceSecret.Region)
+	}
+
+	_, err = m.clientset.CoreV1().Secrets("kube-system").Create(ctx, targetSecret, metav1.CreateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to create AWS credentials secret in kube-system: %w", err)
+	}
+
+	log.Printf("✅ Copied AWS credentials from %s/%s to kube-system/%s",
+		sourceSecret.Namespace, sourceSecret.Name, targetSecretName)
+
+	// Update the secretInfo to point to the new location
+	sourceSecret.Name = targetSecretName
+	sourceSecret.Namespace = "kube-system"
+	sourceSecret.AccessKeyID = "aws_access_key_id"
+	sourceSecret.SecretAccessKey = "aws_secret_access_key"
+
+	return nil
+}
+
+// getNamespaceList extracts namespace names from search locations
+func getNamespaceList(locations []struct {
+	namespace   string
+	secretNames []string
+}) []string {
+	namespaces := make([]string, len(locations))
+	for i, loc := range locations {
+		namespaces[i] = loc.namespace
+	}
+	return namespaces
 }
