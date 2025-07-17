@@ -624,6 +624,35 @@ update_webhook_ca_bundle() {
         exit 1
     fi
     
+    # For e2e tests, use the dedicated e2e webhook configuration
+    # This avoids conflicts with OpenShift service-ca operator
+    local webhook_config_name="sbd-operator-e2e-webhook-configuration"
+    
+    # Check if the e2e webhook configuration exists
+    if ! $KUBECTL get validatingwebhookconfiguration "$webhook_config_name" >/dev/null 2>&1; then
+        log_warning "E2E webhook configuration not found, trying standard names..."
+        # Fallback to standard webhook configurations
+        if $KUBECTL get validatingwebhookconfiguration "sbd-operator-validating-webhook-configuration" >/dev/null 2>&1; then
+            webhook_config_name="sbd-operator-validating-webhook-configuration"
+        elif $KUBECTL get validatingwebhookconfiguration "validating-webhook-configuration" >/dev/null 2>&1; then
+            webhook_config_name="validating-webhook-configuration"
+        else
+            log_error "No webhook configuration found"
+            log_info "Available webhook configurations:"
+            $KUBECTL get validatingwebhookconfiguration || true
+            exit 1
+        fi
+    fi
+    
+    log_info "Using webhook configuration: $webhook_config_name"
+    
+    # Check if service-ca operator is managing the webhook (OpenShift)
+    if $KUBECTL get validatingwebhookconfiguration "$webhook_config_name" -o jsonpath='{.metadata.managedFields[?(@.manager=="service-ca-operator")].manager}' 2>/dev/null | grep -q "service-ca-operator"; then
+        log_warning "OpenShift service-ca operator is managing webhook certificates"
+        log_info "Skipping manual CA bundle update - service-ca will handle certificate injection"
+        return 0
+    fi
+    
     # For self-signed certificates, the CA bundle is the certificate itself
     # Handle different base64 implementations (macOS vs Linux)
     local ca_bundle
@@ -633,24 +662,28 @@ update_webhook_ca_bundle() {
         ca_bundle=$(base64 -w 0 < "$cert_file")
     fi
     
-    # Update the ValidatingWebhookConfiguration with the CA bundle
-    # The webhook configuration name gets prefixed by kustomize
-    local webhook_config_name="sbd-operator-validating-webhook-configuration"
-    $KUBECTL patch validatingwebhookconfiguration "$webhook_config_name" \
-        --type='json' \
-        -p="[{'op': 'add', 'path': '/webhooks/0/clientConfig/caBundle', 'value': '$ca_bundle'}]" || {
-        log_error "Failed to update webhook configuration with CA bundle"
-        log_warning "Trying alternative webhook configuration name..."
-        # Fallback to unprefixed name in case of different kustomization
-        $KUBECTL patch validatingwebhookconfiguration validating-webhook-configuration \
-            --type='json' \
-            -p="[{'op': 'add', 'path': '/webhooks/0/clientConfig/caBundle', 'value': '$ca_bundle'}]" || {
-            log_error "Failed to update webhook configuration with both prefixed and unprefixed names"
-            exit 1
-        }
-    }
+    # Validate base64 encoding
+    if ! echo "$ca_bundle" | base64 -d > /dev/null 2>&1; then
+        log_error "Generated CA bundle is not valid base64"
+        log_error "CA bundle length: ${#ca_bundle}"
+        log_error "First 100 chars: ${ca_bundle:0:100}"
+        exit 1
+    fi
     
-    log_success "Webhook configuration updated with CA bundle"
+    log_info "Generated CA bundle (${#ca_bundle} chars)"
+    
+    # Update the ValidatingWebhookConfiguration with the CA bundle
+    if $KUBECTL patch validatingwebhookconfiguration "$webhook_config_name" \
+        --type='json' \
+        -p="[{'op': 'add', 'path': '/webhooks/0/clientConfig/caBundle', 'value': '$ca_bundle'}]" 2>/dev/null; then
+        log_success "Webhook configuration updated with CA bundle"
+    else
+        log_error "Failed to update webhook configuration with CA bundle"
+        log_info "Webhook configuration details:"
+        $KUBECTL get validatingwebhookconfiguration "$webhook_config_name" -o jsonpath='{.webhooks[0].clientConfig}' 2>/dev/null || true
+        exit 1
+    fi
+}
 
 # Function to deploy operator
 deploy_operator() {
