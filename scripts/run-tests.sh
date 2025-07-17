@@ -609,7 +609,48 @@ create_webhook_secret() {
     }
     
     log_success "Webhook certificate secret created: $secret_name in namespace $namespace"
+    
+    # Update webhook configuration with CA bundle for self-signed certificates
+    update_webhook_ca_bundle "$cert_dir/$cert_name"
 }
+
+# Function to update webhook configuration with CA bundle
+update_webhook_ca_bundle() {
+    local cert_file="$1"
+    log_info "Updating webhook configuration with CA bundle"
+    
+    if [[ ! -f "$cert_file" ]]; then
+        log_error "Certificate file not found: $cert_file"
+        exit 1
+    fi
+    
+    # For self-signed certificates, the CA bundle is the certificate itself
+    # Handle different base64 implementations (macOS vs Linux)
+    local ca_bundle
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        ca_bundle=$(base64 < "$cert_file" | tr -d '\n')
+    else
+        ca_bundle=$(base64 -w 0 < "$cert_file")
+    fi
+    
+    # Update the ValidatingWebhookConfiguration with the CA bundle
+    # The webhook configuration name gets prefixed by kustomize
+    local webhook_config_name="sbd-operator-validating-webhook-configuration"
+    $KUBECTL patch validatingwebhookconfiguration "$webhook_config_name" \
+        --type='json' \
+        -p="[{'op': 'add', 'path': '/webhooks/0/clientConfig/caBundle', 'value': '$ca_bundle'}]" || {
+        log_error "Failed to update webhook configuration with CA bundle"
+        log_warning "Trying alternative webhook configuration name..."
+        # Fallback to unprefixed name in case of different kustomization
+        $KUBECTL patch validatingwebhookconfiguration validating-webhook-configuration \
+            --type='json' \
+            -p="[{'op': 'add', 'path': '/webhooks/0/clientConfig/caBundle', 'value': '$ca_bundle'}]" || {
+            log_error "Failed to update webhook configuration with both prefixed and unprefixed names"
+            exit 1
+        }
+    }
+    
+    log_success "Webhook configuration updated with CA bundle"
 
 # Function to deploy operator
 deploy_operator() {

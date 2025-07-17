@@ -103,5 +103,5 @@ spec:
             memory: 64Mi
         volumeMounts: []
       volumes: []
-      serviceAccountName: sbd-operator-controller-manager
+      serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10
