@@ -376,6 +376,21 @@ cleanup_environment() {
     esac
     
     # Clean up test resources
+    # Remove finalizers first to prevent resources from getting stuck in terminating state
+    log_info "Removing finalizers from SBD resources"
+    for resource in sbdremediation sbdconfig; do
+        # Get all instances across all namespaces and remove finalizers
+        $KUBECTL get $resource --all-namespaces -o json 2>/dev/null | \
+            jq -r '.items[] | select(.metadata.finalizers != null) | "\(.metadata.namespace // "_cluster") \(.metadata.name)"' | \
+            while read namespace name; do
+                if [ "$namespace" = "_cluster" ]; then
+                    $KUBECTL patch $resource $name --type=merge -p '{"metadata":{"finalizers":null}}' 2>/dev/null || true
+                else
+                    $KUBECTL patch $resource $name -n $namespace --type=merge -p '{"metadata":{"finalizers":null}}' 2>/dev/null || true
+                fi
+            done
+    done
+    
     $KUBECTL delete sbdremediation --all -A --ignore-not-found=true || true
     $KUBECTL delete sbdconfig --all -A --ignore-not-found=true || true
     $KUBECTL delete daemonset -l app=sbd-agent -n $test_namespace --ignore-not-found=true || true
