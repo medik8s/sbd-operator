@@ -28,6 +28,15 @@ rules:
   resources: ["events"]
   verbs: ["create", "patch"]
 
+# Permission to read and update SBDRemediation CRs
+# Needed for agent-based fencing capabilities
+- apiGroups: ["medik8s.medik8s.io"]
+  resources: ["sbdremediations"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+- apiGroups: ["medik8s.medik8s.io"]
+  resources: ["sbdremediations/status"]
+  verbs: ["get", "update", "patch"]
+
 # NOTE: SBD Agent does NOT have permissions to:
 # - Delete or modify pods/nodes (fencing is done via SBD device + local panic)
 # - Access secrets or configmaps

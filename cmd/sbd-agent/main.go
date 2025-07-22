@@ -61,6 +61,11 @@ import (
 	"github.com/medik8s/sbd-operator/pkg/watchdog"
 )
 
+// RBAC permissions for SBD Agent
+// The agent needs to list and process SBDRemediation CRs for fencing operations
+// +kubebuilder:rbac:groups=medik8s.medik8s.io,resources=sbdremediations,verbs=get;list;watch
+// +kubebuilder:rbac:groups=medik8s.medik8s.io,resources=sbdremediations/status,verbs=get;update;patch
+
 var (
 	watchdogPath      = flag.String(agent.FlagWatchdogPath, agent.DefaultWatchdogPath, "Path to the watchdog device")
 	watchdogTimeout   = flag.Duration(agent.FlagWatchdogTimeout, 60*time.Second, "Watchdog timeout duration (how long before watchdog triggers reboot)")
