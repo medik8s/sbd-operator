@@ -6,7 +6,7 @@ resources:
 
 # SBD Agent RBAC - minimal permissions for agent operations
 - sbd_agent_service_account.yaml
-- sbd_agent_role.yaml
+- sbd_agent_generated_role.yaml
 - sbd_agent_role_binding.yaml
 
 # Legacy operator RBAC (kept for backward compatibility)

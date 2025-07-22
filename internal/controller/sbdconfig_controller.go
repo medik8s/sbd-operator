@@ -1200,7 +1200,7 @@ func (r *SBDConfigReconciler) ensureServiceAccount(ctx context.Context, sbdConfi
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: "rbac.authorization.k8s.io",
 			Kind:     "ClusterRole",
-			Name:     "sbd-operator-sbd-agent-role", // Use the existing cluster role
+			Name:     "sbd-agent-role", // Use the generated cluster role with proper permissions
 		},
 	}
 
