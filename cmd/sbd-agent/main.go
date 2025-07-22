@@ -77,6 +77,10 @@ var (
 	rebootMethod      = flag.String(agent.FlagRebootMethod, agent.DefaultRebootMethod, "Method to use for self-fencing (panic, systemctl-reboot)")
 	metricsPort       = flag.Int(agent.FlagMetricsPort, agent.DefaultMetricsPort, "Port for Prometheus metrics endpoint")
 	staleNodeTimeout  = flag.Duration(agent.FlagStaleNodeTimeout, 1*time.Hour, "Timeout for considering nodes stale and removing them from slot mapping")
+
+	// Kubernetes client configuration flags (kubeconfig is auto-registered by controller-runtime)
+	namespace     = flag.String("namespace", "", "Namespace to watch for SBDRemediation CRs (optional, watches all namespaces if not specified)")
+	enableFencing = flag.Bool("enable-fencing", true, "Enable agent-based fencing capabilities (watch and process SBDRemediation CRs)")
 )
 
 const (
@@ -2203,11 +2207,6 @@ func (s *SBDAgent) updateRemediationCondition(ctx context.Context, remediation *
 }
 
 func main() {
-	// Kubernetes client configuration flags
-	kubeconfig := flag.String("kubeconfig", "", "Path to kubeconfig file (optional, uses in-cluster config if not specified)")
-	namespace := flag.String("namespace", "", "Namespace to watch for SBDRemediation CRs (optional, watches all namespaces if not specified)")
-	enableFencing := flag.Bool("enable-fencing", true, "Enable agent-based fencing capabilities (watch and process SBDRemediation CRs)")
-
 	flag.Parse()
 
 	// Initialize structured logger first
@@ -2315,7 +2314,13 @@ func main() {
 	var k8sClientset kubernetes.Interface
 	if *enableFencing {
 		var err error
-		k8sClient, k8sClientset, err = initializeKubernetesClients(*kubeconfig)
+		// Get kubeconfig from controller-runtime's auto-registered flag
+		kubeconfigFlag := flag.Lookup("kubeconfig")
+		kubeconfigPath := ""
+		if kubeconfigFlag != nil {
+			kubeconfigPath = kubeconfigFlag.Value.String()
+		}
+		k8sClient, k8sClientset, err = initializeKubernetesClients(kubeconfigPath)
 		if err != nil {
 			logger.Error(err, "Failed to initialize Kubernetes clients", "enableFencing", *enableFencing)
 			os.Exit(1)
