@@ -12,21 +12,6 @@ rules:
   - create
   - patch
 - apiGroups:
-  - ""
-  resources:
-  - nodes
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - pods
-  verbs:
-  - get
-  - list
-- apiGroups:
   - medik8s.medik8s.io
   resources:
   - sbdremediations
@@ -39,6 +24,5 @@ rules:
   resources:
   - sbdremediations/status
   verbs:
-  - get
   - patch
   - update

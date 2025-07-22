@@ -65,8 +65,12 @@ help: ## Display this help.
 ##@ Development
 
 .PHONY: manifests
-manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
+manifests: controller-gen agent-rbac ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+
+.PHONY: agent-rbac
+agent-rbac: controller-gen ## Generate ClusterRole for SBD Agent with minimal permissions.
+	$(CONTROLLER_GEN) rbac:roleName=sbd-agent-role,fileName=sbd_agent_generated_role.yaml paths="./cmd/sbd-agent/..." output:rbac:artifacts:config=config/rbac/
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -93,7 +97,7 @@ sync-test-files: ## Sync shared configuration files to test directories.
 	@scripts/sync-test-files.sh
 
 .PHONY: test-e2e
-test-e2e: sync-test-files ## Run e2e tests with complete deployment pipeline.
+test-e2e: build-openshift-installer sync-test-files ## Run e2e tests with complete deployment pipeline.
 	@echo "Running e2e tests with complete deployment and environment setup..."
 	@scripts/run-tests.sh --type e2e --env cluster -v --no-webhooks
 
