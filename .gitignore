@@ -10,6 +10,9 @@
 bin
 dist
 .tools
+manager
+sbd-agent
+setup-shared-storage
 
 # Test binary, built with `go test -c`
 *.test
