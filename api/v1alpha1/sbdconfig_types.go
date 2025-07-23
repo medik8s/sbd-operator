@@ -230,7 +230,7 @@ func (s *SBDConfigSpec) GetSharedStorageSize() string {
 	if s.SharedStorageClass == "" {
 		return ""
 	}
-	return "10Gi"
+	return "10Mi"
 }
 
 // GetSharedStorageAccessModes returns the fixed access modes
