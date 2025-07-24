@@ -735,7 +735,7 @@ echo "SBD device and node mapping initialization completed successfully"
 							Env: []corev1.EnvVar{
 								{
 									Name:  "CLUSTER_NAME",
-									Value: agent.DefaultClusterName,
+									Value: sbdConfig.Name,
 								},
 							},
 							VolumeMounts: []corev1.VolumeMount{
@@ -1455,6 +1455,7 @@ func (r *SBDConfigReconciler) buildSBDAgentArgs(sbdConfig *medik8sv1alpha1.SBDCo
 		fmt.Sprintf("--%s=%s", agent.FlagWatchdogTimeout, watchdogTimeout.String()),
 		fmt.Sprintf("--%s=%s", agent.FlagPetInterval, petInterval.String()),
 		fmt.Sprintf("--%s=%s", agent.FlagLogLevel, sbdConfig.Spec.GetLogLevel()),
+		fmt.Sprintf("--%s=%s", agent.FlagClusterName, sbdConfig.Name),
 		fmt.Sprintf("--%s=%s", agent.FlagStaleNodeTimeout, sbdConfig.Spec.GetStaleNodeTimeout().String()),
 	}
 
