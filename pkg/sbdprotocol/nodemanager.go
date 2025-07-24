@@ -797,12 +797,12 @@ func (nm *NodeManager) atomicSyncToDeviceWithLock(expectedVersion uint64, lockFi
 
 	// Check if file exists and has content (not first time write)
 	if err == nil && len(currentFileData) > 0 {
-		// Parse current version from device
-		currentTable, err := UnmarshalNodeMapTable(currentSlotData)
+		// Parse current version from file
+		currentTable, err := UnmarshalNodeMapTable(currentFileData)
 		if err != nil {
 			// If we can't parse the current data, it might be corrupted
 			// This could happen if we're reading during another node's write
-			nm.logger.Info("Warning: failed to parse current node mapping table during version check",
+			nm.logger.Info("Warning: failed to parse current node mapping file during version check",
 				"error", err,
 				"expectedVersion", expectedVersion,
 				"attempting", "corruption recovery")
@@ -811,13 +811,9 @@ func (nm *NodeManager) atomicSyncToDeviceWithLock(expectedVersion uint64, lockFi
 			time.Sleep(50 * time.Millisecond)
 
 			// Re-read and try again
-			n, err = nm.device.ReadAt(currentSlotData, slotOffset)
-			if err != nil {
-				return fmt.Errorf("failed to re-read node mapping slot after corruption: %w", err)
-			}
-
-			if n == SBD_SLOT_SIZE && !isEmptySlot(currentSlotData) {
-				currentTable, err = UnmarshalNodeMapTable(currentSlotData)
+			retryFileData, retryErr := os.ReadFile(nm.nodeMapFilePath)
+			if retryErr == nil && len(retryFileData) > 0 {
+				currentTable, err = UnmarshalNodeMapTable(retryFileData)
 				if err != nil {
 					nm.logger.Info("Corruption persists after retry, proceeding with write to clear it", "error", err)
 					// Proceed with write to potentially fix corruption
@@ -837,30 +833,27 @@ func (nm *NodeManager) atomicSyncToDeviceWithLock(expectedVersion uint64, lockFi
 		}
 	}
 
-	// Prepare slot data (pad with zeros if necessary)
-	slotData := make([]byte, SBD_SLOT_SIZE)
-	copy(slotData, data)
-
-	// Write to the node mapping slot (slot 0)
-	n, err = nm.device.WriteAt(slotData, slotOffset)
-	if err != nil {
-		return fmt.Errorf("failed to write node mapping slot: %w", err)
+	// Write to the separate node mapping file using atomic operations
+	// Create the directory if it doesn't exist
+	if err := os.MkdirAll(filepath.Dir(nm.nodeMapFilePath), 0755); err != nil {
+		return fmt.Errorf("failed to create directory for node mapping file: %w", err)
 	}
 
-	if n != SBD_SLOT_SIZE {
-		return fmt.Errorf("partial write to node mapping slot: wrote %d bytes, expected %d", n, SBD_SLOT_SIZE)
+	// Write data to temporary file first, then rename (atomic operation)
+	tempFilePath := nm.nodeMapFilePath + ".tmp"
+	if err := os.WriteFile(tempFilePath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write node mapping to temporary file %s: %w", tempFilePath, err)
 	}
 
-	// Ensure data is synced to disk
-	if err := nm.device.Sync(); err != nil {
-		return fmt.Errorf("failed to sync node mapping to device: %w", err)
+	// Atomic rename to final location
+	if err := os.Rename(tempFilePath, nm.nodeMapFilePath); err != nil {
+		// Clean up temporary file on failure
+		os.Remove(tempFilePath)
+		return fmt.Errorf("failed to rename temporary file to %s: %w", nm.nodeMapFilePath, err)
 	}
 
-	// Verify the write by reading back and checking the version
-	if err := nm.verifyWrite(slotData, slotOffset); err != nil {
-		nm.logger.Error(err, "Write verification failed, but data was written")
-		// Don't fail the operation for verification errors, just log them
-	}
+	// Note: File write verification could be added here if needed
+	// For now, we rely on atomic file operations (write to .tmp, then rename)
 
 	nm.lastSync = time.Now()
 	nm.dirty = false
@@ -882,8 +875,8 @@ func (nm *NodeManager) applyJitterDelay(maxDelayMs int, reason string) {
 		"reason", reason)
 }
 
-// acquireDeviceLock attempts to acquire an exclusive file lock on the SBD device
-// This prevents concurrent writes to the same physical block which can cause corruption
+// acquireDeviceLock attempts to acquire an exclusive file lock on the node mapping file
+// This prevents concurrent writes to the node mapping file which can cause corruption
 func (nm *NodeManager) acquireDeviceLock() (*os.File, error) {
 	// Check if file locking is disabled - use jitter-only coordination
 	if !nm.fileLockingEnabled {
@@ -891,23 +884,24 @@ func (nm *NodeManager) acquireDeviceLock() (*os.File, error) {
 		return nil, nil // No lock file when using jitter-only approach
 	}
 
-	// Check if device path is available - fall back to jitter if not
-	devicePath := nm.device.Path()
-	if devicePath == "" {
-		nm.applyJitterDelay(100, "no device path available")
-		return nil, nil // No lock file when using jitter fallback
-	}
-
-	// File locking is enabled and device path is available - proceed with file locking
+	// File locking is enabled - proceed with file locking on the node mapping file
 	// Add small jitter before lock acquisition to reduce contention during cluster events
 	nm.applyJitterDelay(50, "reducing file lock contention")
 
-	nm.logger.V(1).Info("Attempting to acquire file lock on SBD device", "devicePath", devicePath)
+	nm.logger.V(1).Info("Attempting to acquire file lock on node mapping file", "filePath", nm.nodeMapFilePath)
 
-	// Open the device file for locking (separate from the block device used for I/O)
-	lockFile, err := os.OpenFile(devicePath, os.O_RDWR, 0)
+	// Create a lock file alongside the node mapping file for coordination
+	lockFilePath := nm.nodeMapFilePath + ".lock"
+
+	// Ensure the directory exists
+	if err := os.MkdirAll(filepath.Dir(lockFilePath), 0755); err != nil {
+		return nil, fmt.Errorf("failed to create directory for lock file: %w", err)
+	}
+
+	// Open/create the lock file for exclusive locking
+	lockFile, err := os.OpenFile(lockFilePath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open SBD device for locking: %w", err)
+		return nil, fmt.Errorf("failed to open lock file %s: %w", lockFilePath, err)
 	}
 
 	// Try to acquire an exclusive lock with timeout
@@ -926,13 +920,13 @@ func (nm *NodeManager) acquireDeviceLock() (*os.File, error) {
 			lockFile.Close()
 			return nil, fmt.Errorf("failed to acquire file lock: %w", err)
 		}
-		nm.logger.V(1).Info("Successfully acquired file lock on SBD device", "devicePath", devicePath)
+		nm.logger.V(1).Info("Successfully acquired file lock on node mapping file", "lockFile", lockFilePath)
 		return lockFile, nil
 
 	case <-lockCtx.Done():
 		// Timeout occurred, try to close the file and return error
 		lockFile.Close()
-		return nil, fmt.Errorf("timeout waiting for file lock on SBD device after %v", FileLockTimeout)
+		return nil, fmt.Errorf("timeout waiting for file lock on node mapping file after %v", FileLockTimeout)
 	}
 }
 
