@@ -125,14 +125,16 @@ type PeerMonitor struct {
 	peersMutex        sync.RWMutex
 	sbdTimeoutSeconds uint
 	ownNodeID         uint16
+	nodeManager       *sbdprotocol.NodeManager
 	logger            logr.Logger
 }
 
-func NewPeerMonitor(sbdTimeoutSeconds uint, ownNodeID uint16, logger logr.Logger) *PeerMonitor {
+func NewPeerMonitor(sbdTimeoutSeconds uint, ownNodeID uint16, nodeManager *sbdprotocol.NodeManager, logger logr.Logger) *PeerMonitor {
 	return &PeerMonitor{
 		peers:             make(map[uint16]*PeerStatus),
 		sbdTimeoutSeconds: sbdTimeoutSeconds,
 		ownNodeID:         ownNodeID,
+		nodeManager:       nodeManager,
 		logger:            logger.WithName("peer-monitor"),
 	}
 }
