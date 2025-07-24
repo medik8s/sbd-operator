@@ -272,6 +272,8 @@ func (pm *PeerMonitor) UpdatePeer(nodeID uint16, timestamp, sequence uint64) {
 		// Try to get node name for logging
 		nodeName := "unknown"
 		if pm.nodeManager != nil {
+			// Ensure we have the latest node map from disk
+			pm.nodeManager.CleanupStaleNodes()
 			if name, found := pm.nodeManager.GetNodeForSlot(nodeID); found {
 				nodeName = name
 			}
@@ -661,9 +663,6 @@ func NewSBDAgentWithWatchdog(wd WatchdogInterface, sbdDevicePath, nodeName, clus
 		leaderElectionConfig: leaderElectionConfig,
 	}
 
-	// Initialize the PeerMonitor
-	agent.peerMonitor = NewPeerMonitor(sbdTimeoutSeconds, nodeID, agent.nodeManager, logger)
-
 	// Initialize SBD device
 	if err := agent.initializeSBDDevice(); err != nil {
 		agent.cancel()
@@ -678,6 +677,9 @@ func NewSBDAgentWithWatchdog(wd WatchdogInterface, sbdDevicePath, nodeName, clus
 		}
 		return nil, fmt.Errorf("failed to initialize node manager: %w", err)
 	}
+
+	// Initialize the PeerMonitor
+	agent.peerMonitor = NewPeerMonitor(sbdTimeoutSeconds, nodeID, agent.nodeManager, logger)
 
 	// Initialize metrics
 	if err := agent.initMetrics(); err != nil {
