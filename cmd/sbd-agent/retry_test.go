@@ -317,7 +317,8 @@ func TestSBDAgent_HeartbeatRetryMechanism(t *testing.T) {
 	}
 
 	// Verify heartbeat was written
-	slotOffset := int64(1) * sbdprotocol.SBD_SLOT_SIZE
+	// Use the actual assigned nodeID from the agent (not hardcoded 1)
+	slotOffset := int64(agent.nodeID) * sbdprotocol.SBD_SLOT_SIZE
 	slotData := make([]byte, sbdprotocol.SBD_HEADER_SIZE)
 	n, err := mockDevice.ReadAt(slotData, slotOffset)
 	if err != nil {

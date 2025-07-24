@@ -664,8 +664,9 @@ func TestSBDAgent_NewSBDAgent(t *testing.T) {
 	if agent.nodeName != "test-node" {
 		t.Errorf("Expected node name 'test-node', got '%s'", agent.nodeName)
 	}
-	if agent.nodeID != 1 {
-		t.Errorf("Expected node ID 1, got %d", agent.nodeID)
+	// NodeID is now assigned by hash-based NodeManager, so verify it's within valid range
+	if agent.nodeID < 1 || agent.nodeID > 255 {
+		t.Errorf("Expected node ID in range [1, 255], got %d", agent.nodeID)
 	}
 	if agent.petInterval != 1*time.Second {
 		t.Errorf("Expected pet interval 1s, got %v", agent.petInterval)
@@ -708,7 +709,8 @@ func TestSBDAgent_WriteHeartbeatToSBD(t *testing.T) {
 	}
 
 	// Verify the heartbeat was written to the correct slot
-	slotOffset := int64(5) * sbdprotocol.SBD_SLOT_SIZE
+	// Use the actual assigned nodeID from the agent (not hardcoded 5)
+	slotOffset := int64(agent.nodeID) * sbdprotocol.SBD_SLOT_SIZE
 	slotData := make([]byte, sbdprotocol.SBD_SLOT_SIZE)
 	n, err := mockDevice.ReadAt(slotData, slotOffset)
 	if err != nil {
@@ -724,8 +726,8 @@ func TestSBDAgent_WriteHeartbeatToSBD(t *testing.T) {
 		t.Fatalf("Failed to unmarshal heartbeat header: %v", err)
 	}
 
-	if header.NodeID != 5 {
-		t.Errorf("Expected node ID 5, got %d", header.NodeID)
+	if header.NodeID != agent.nodeID {
+		t.Errorf("Expected node ID %d, got %d", agent.nodeID, header.NodeID)
 	}
 	if header.Type != sbdprotocol.SBD_MSG_TYPE_HEARTBEAT {
 		t.Errorf("Expected heartbeat message type, got %d", header.Type)
@@ -1026,7 +1028,8 @@ func TestSBDAgent_ReadOwnSlotForFenceMessage(t *testing.T) {
 	}
 
 	// Write a fence message targeting this node
-	err = mockDevice.WriteFenceMessage(2, 3, 100, sbdprotocol.FENCE_REASON_HEARTBEAT_TIMEOUT)
+	// Use the actual assigned nodeID from the agent (not hardcoded 3)
+	err = mockDevice.WriteFenceMessage(2, agent.nodeID, 100, sbdprotocol.FENCE_REASON_HEARTBEAT_TIMEOUT)
 	if err != nil {
 		t.Fatalf("Failed to write fence message: %v", err)
 	}
