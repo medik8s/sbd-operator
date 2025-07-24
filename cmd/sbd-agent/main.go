@@ -273,7 +273,9 @@ func (pm *PeerMonitor) UpdatePeer(nodeID uint16, timestamp, sequence uint64) {
 		nodeName := "unknown"
 		if pm.nodeManager != nil {
 			// Ensure we have the latest node map from disk
-			pm.nodeManager.CleanupStaleNodes()
+			if err := pm.nodeManager.ReloadFromDevice(); err != nil {
+				pm.logger.Error(err, "Failed to reload node map from device", "nodeID", nodeID)
+			}
 			if name, found := pm.nodeManager.GetNodeForSlot(nodeID); found {
 				nodeName = name
 			}

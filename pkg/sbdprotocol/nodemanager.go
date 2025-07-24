@@ -169,6 +169,12 @@ func (nm *NodeManager) GetSlotForNode(nodeName string) (uint16, error) {
 
 // atomicAssignSlot assigns a slot using Compare-and-Swap operations
 func (nm *NodeManager) atomicAssignSlot(nodeName string) (uint16, error) {
+	lockFile, err := nm.acquireDeviceLock()
+	if err != nil {
+		return 0, fmt.Errorf("failed to acquire device lock: %w", err)
+	}
+	defer nm.releaseDeviceLock(lockFile)
+
 	for attempt := 0; attempt < MaxAtomicRetries; attempt++ {
 		// Step 1: Load current state from device
 		nm.mutex.Lock()
@@ -202,7 +208,7 @@ func (nm *NodeManager) atomicAssignSlot(nodeName string) (uint16, error) {
 		nm.mutex.Unlock()
 
 		// Step 4: Attempt atomic write with version check
-		if err := nm.atomicSyncToDevice(originalVersion); err != nil {
+		if err := nm.atomicSyncToDeviceWithLock(originalVersion, lockFile); err != nil {
 			if errors.Is(err, ErrVersionMismatch) {
 				nm.logger.V(1).Info("Version mismatch during atomic assignment, retrying",
 					"nodeName", nodeName,
@@ -226,7 +232,7 @@ func (nm *NodeManager) atomicAssignSlot(nodeName string) (uint16, error) {
 		}
 
 		// Success!
-		nm.logger.Info("Assigned new slot to node atomically", "nodeName", nodeName, "slotID", slot)
+		nm.logger.Info("Assigned new slot to node atomically", "nodeName", nodeName, "slotID", slot, "entries", len(nm.table.Entries))
 		return slot, nil
 	}
 
@@ -320,6 +326,13 @@ func (nm *NodeManager) Sync() error {
 	defer nm.mutex.Unlock()
 
 	return nm.syncToDevice()
+}
+
+func (nm *NodeManager) ReloadFromDevice() error {
+	nm.mutex.Lock()
+	defer nm.mutex.Unlock()
+
+	return nm.loadFromDevice()
 }
 
 // CleanupStaleNodes removes nodes that haven't been seen for the configured timeout
@@ -577,6 +590,13 @@ func (nm *NodeManager) GetLastSync() time.Time {
 // atomicSyncToDevice writes the node mapping table to the SBD device with version checking
 // This implements Compare-and-Swap semantics to prevent race conditions
 func (nm *NodeManager) atomicSyncToDevice(expectedVersion uint64) error {
+	return nm.atomicSyncToDeviceWithLock(expectedVersion, nil)
+}
+
+// atomicSyncToDeviceWithLock writes the node mapping table to the SBD device with version checking
+// using an optional existing lockFile. If lockFile is nil, a new lock will be acquired.
+// This implements Compare-and-Swap semantics to prevent race conditions
+func (nm *NodeManager) atomicSyncToDeviceWithLock(expectedVersion uint64, lockFile *os.File) error {
 	if !nm.dirty {
 		return nil // Nothing to sync
 	}
@@ -594,15 +614,19 @@ func (nm *NodeManager) atomicSyncToDevice(expectedVersion uint64) error {
 
 	// Use advisory locking to prevent concurrent physical writes
 	// This prevents data corruption when multiple nodes write to slot 0 simultaneously
-	lockFile, err := nm.acquireDeviceLock()
-	if err != nil {
-		return fmt.Errorf("failed to acquire device lock: %w", err)
-	}
-	defer func() {
-		if unlockErr := nm.releaseDeviceLock(lockFile); unlockErr != nil {
-			nm.logger.Error(unlockErr, "Failed to release device lock")
+	if lockFile == nil {
+		// No existing lock provided, acquire a new one
+		lockFile, err = nm.acquireDeviceLock()
+		if err != nil {
+			return fmt.Errorf("failed to acquire device lock: %w", err)
 		}
-	}()
+
+		defer func() {
+			if unlockErr := nm.releaseDeviceLock(lockFile); unlockErr != nil {
+				nm.logger.Error(unlockErr, "Failed to release device lock")
+			}
+		}()
+	}
 
 	// Read current version from device to check for conflicts
 	slotOffset := int64(SBD_NODE_MAP_SLOT) * SBD_SLOT_SIZE

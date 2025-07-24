@@ -345,7 +345,7 @@ func UnmarshalNodeMapTable(data []byte) (*NodeMapTable, error) {
 	actualChecksum := crc32.ChecksumIEEE(jsonData)
 
 	if expectedChecksum != actualChecksum {
-		return nil, fmt.Errorf("node mapping data corruption detected: checksum mismatch")
+		return nil, fmt.Errorf("node mapping data corruption detected: checksum mismatch. expected %v got %v", expectedChecksum, actualChecksum)
 	}
 
 	// Unmarshal JSON data
