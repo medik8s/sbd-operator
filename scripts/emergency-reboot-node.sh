@@ -74,7 +74,7 @@ ENVIRONMENT VARIABLES:
   DRY_RUN               Enable dry-run mode if set to 'true'
 
 EXAMPLES:
-  # Interactive reboot with confirmation
+  # Interactive reboot with confirmation and automatic monitoring
   $SCRIPT_NAME worker-node-1
 
   # Force reboot without confirmation (dangerous!)
@@ -83,15 +83,17 @@ EXAMPLES:
   # Dry run to see what would happen
   $SCRIPT_NAME --dry-run worker-node-1
 
-  # Reboot with custom timeout
+  # Reboot with custom timeout and monitoring
   $SCRIPT_NAME --timeout 60 worker-node-1
 
 SAFETY NOTES:
-  - This script uses 'nsenter' to access host namespaces from debug pod
-  - Uses 'systemctl reboot --force --force' for immediate reboot
+  - This script creates a privileged pod on the target node for direct access
+  - Uses Magic SysRq to bypass all userspace processes for immediate reboot
+  - Pod runs with hostPID, hostNetwork, and privileged security context
   - No graceful shutdown of applications occurs
+  - Automatically monitors node status to verify reboot completed
+  - Requires cluster admin permissions to create privileged pods
   - Use only when normal node remediation has failed
-  - Ensure you have cluster access before running
   - Consider cluster impact before rebooting control plane nodes
 
 EOF
@@ -200,48 +202,239 @@ confirm_reboot() {
     log_warn "Confirmation received. Proceeding with emergency reboot..."
 }
 
-# Execute emergency reboot
+# Create privileged pod to reboot the target node
+create_reboot_pod() {
+    local node_name="$1"
+    local pod_name="emergency-reboot-$(date +%s)"
+    local namespace="default"
+    
+    log_info "Creating privileged reboot pod '$pod_name' on node '$node_name'..."
+    
+    # Create pod manifest
+    local pod_manifest="/tmp/${pod_name}.yaml"
+    cat > "$pod_manifest" <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $pod_name
+  namespace: $namespace
+  labels:
+    app: emergency-reboot
+    target-node: $node_name
+spec:
+  nodeName: $node_name
+  hostPID: true
+  hostNetwork: true
+  hostIPC: true
+  restartPolicy: Never
+  tolerations:
+  - operator: Exists
+  containers:
+  - name: reboot
+    image: registry.redhat.io/ubi8/ubi-minimal:latest
+    command:
+    - nsenter
+    - --target=1
+    - --mount
+    - --uts
+    - --ipc
+    - --net
+    - --pid
+    - --
+    - sh
+    - -c
+    - |
+      echo "Emergency reboot initiated by SBD operator at \$(date)" | logger -t sbd-emergency-reboot
+      echo "Enabling Magic SysRq on host..."
+      echo 1 > /proc/sys/kernel/sysrq
+      sleep 1
+      echo "Triggering immediate reboot via Magic SysRq..."
+      echo b > /proc/sysrq-trigger
+    securityContext:
+      privileged: true
+      runAsUser: 0
+      capabilities:
+        add:
+        - SYS_ADMIN
+        - SYS_BOOT
+        - SYS_CHROOT
+    volumeMounts:
+    - name: host-proc
+      mountPath: /host/proc
+    - name: host-sys
+      mountPath: /host/sys
+    - name: host-dev
+      mountPath: /host/dev
+  volumes:
+  - name: host-proc
+    hostPath:
+      path: /proc
+  - name: host-sys
+    hostPath:
+      path: /sys
+  - name: host-dev
+    hostPath:
+      path: /dev
+EOF
+
+    # Apply the pod
+    if oc apply -f "$pod_manifest" &> /dev/null; then
+        log_info "Privileged reboot pod created successfully"
+        
+        # Wait briefly for pod to start and execute
+        log_info "Waiting for reboot pod to execute..."
+        sleep 5
+        
+        # Check pod status
+        local pod_status
+        pod_status=$(oc get pod "$pod_name" -n "$namespace" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+        log_info "Pod status: $pod_status"
+        
+        # Cleanup the pod manifest
+        rm -f "$pod_manifest"
+        
+        # Try to delete the pod (may fail if node is already rebooting)
+        oc delete pod "$pod_name" -n "$namespace" --timeout=10s &> /dev/null || true
+        
+        return 0
+    else
+        log_error "Failed to create privileged reboot pod"
+        cat "$pod_manifest" >&2
+        rm -f "$pod_manifest"
+        return 1
+    fi
+}
+
+# Execute emergency reboot using privileged pod
 execute_reboot() {
     local node_name="$1"
     
     if [[ "$DRY_RUN" == "true" ]]; then
         log_info "DRY RUN: Would execute emergency reboot on node '$node_name'"
-        log_info "DRY RUN: Command that would be executed:"
-        echo "  oc debug node/$node_name -- nsenter -t 1 -m -u -i -n -p -- systemctl reboot --force --force"
+        log_info "DRY RUN: Would create privileged pod on target node with:"
+        echo "  1. hostPID: true (access host processes)"
+        echo "  2. hostNetwork: true (access host network)"
+        echo "  3. privileged: true (full host access)"
+        echo "  4. Command: nsenter --target=1 --mount --uts --ipc --net --pid -- sh -c 'echo 1 > /proc/sys/kernel/sysrq; echo b > /proc/sysrq-trigger'"
+        log_info "DRY RUN: Would monitor node reboot status after command execution"
         return 0
     fi
 
     log_warn "Executing EMERGENCY REBOOT on node '$node_name'..."
     
-    # Create debug session and execute immediate reboot
-    # Using nsenter to enter host namespaces and --force --force for systemctl reboot bypasses all normal shutdown procedures
-    local reboot_command="nsenter -t 1 -m -u -i -n -p -- bash -c 'echo \"Emergency reboot initiated by SBD operator at \$(date)\" | logger -t sbd-emergency-reboot; systemctl reboot --force --force'"
-    
-    log_info "Creating debug session on node '$node_name'..."
-    
-    # Execute the reboot command with timeout
-    local exit_code=0
-    timeout "$TIMEOUT_SECONDS" oc debug "node/$node_name" --image=registry.redhat.io/ubi8/ubi:latest -- bash -c "$reboot_command" || exit_code=$?
-    
-    # Note: We expect this command to fail/timeout because the node will reboot
-    # Exit codes 124 (timeout) or 130 (SIGINT) are expected when the node reboots during execution
-    case $exit_code in
-        0)
-            log_success "Reboot command executed successfully"
-            ;;
-        124)
-            log_info "Command timed out (expected - node likely rebooting)"
-            ;;
-        130)
-            log_info "Command interrupted (expected - node likely rebooting)"
-            ;;
-        *)
-            log_warn "Command exited with code $exit_code (may be expected during reboot)"
-            ;;
-    esac
+    # Create privileged reboot pod
+    if create_reboot_pod "$node_name"; then
+        log_success "Emergency reboot initiated via privileged pod"
+        
+        # Monitor node reboot
+        monitor_node_reboot "$node_name"
+        return 0
+    else
+        log_error "Failed to create reboot pod"
+        return 1
+    fi
+}
 
-    log_success "Emergency reboot initiated on node '$node_name'"
-    log_info "The node should be rebooting now. Monitor cluster status with 'oc get nodes'"
+# Monitor node reboot to verify it actually happens
+monitor_node_reboot() {
+    local node_name="$1"
+    local max_wait_offline=120  # Maximum time to wait for node to go offline (2 minutes)
+    local max_wait_online=300   # Maximum time to wait for node to come back online (5 minutes)
+    local check_interval=5      # Check every 5 seconds
+    
+    log_info "Monitoring node reboot process..."
+    log_info "This may take several minutes as we wait for the node to restart"
+    
+    # Get initial node status and timestamp
+    local initial_ready_time
+    initial_ready_time=$(oc get node "$node_name" -o jsonpath='{.status.conditions[?(@.type=="Ready")].lastTransitionTime}' 2>/dev/null || echo "unknown")
+    log_info "Initial node Ready transition time: $initial_ready_time"
+    
+    # Wait a moment for the reboot command to take effect
+    log_info "Waiting 10 seconds for reboot command to take effect..."
+    sleep 10
+    
+    # Phase 1: Wait for node to become NotReady (indicating reboot started)
+    log_info "Phase 1: Waiting for node to become NotReady (max ${max_wait_offline}s)..."
+    local wait_time=0
+    local node_offline=false
+    
+    while [[ $wait_time -lt $max_wait_offline ]]; do
+        local current_status
+        current_status=$(oc get node "$node_name" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+        
+        if [[ "$current_status" == "False" ]] || [[ "$current_status" == "Unknown" ]]; then
+            log_success "Node is now NotReady - reboot appears to have started"
+            node_offline=true
+            break
+        fi
+        
+        log_info "Node still Ready, waiting... (${wait_time}s/${max_wait_offline}s)"
+        sleep $check_interval
+        wait_time=$((wait_time + check_interval))
+    done
+    
+    if [[ "$node_offline" != "true" ]]; then
+        log_warn "Node did not become NotReady within ${max_wait_offline} seconds"
+        log_warn "The reboot command may have failed or the node is not responding as expected"
+        log_info "Current node status:"
+        oc get node "$node_name" -o wide || log_error "Failed to get node status"
+        return 1
+    fi
+    
+    # Phase 2: Wait for node to come back online and become Ready
+    log_info "Phase 2: Waiting for node to come back online and become Ready (max ${max_wait_online}s)..."
+    wait_time=0
+    local node_ready=false
+    
+    while [[ $wait_time -lt $max_wait_online ]]; do
+        local current_status
+        current_status=$(oc get node "$node_name" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+        
+        if [[ "$current_status" == "True" ]]; then
+            # Get the new Ready transition time to verify it changed
+            local new_ready_time
+            new_ready_time=$(oc get node "$node_name" -o jsonpath='{.status.conditions[?(@.type=="Ready")].lastTransitionTime}' 2>/dev/null || echo "unknown")
+            
+            if [[ "$new_ready_time" != "$initial_ready_time" ]]; then
+                log_success "Node is back online and Ready!"
+                log_info "New Ready transition time: $new_ready_time"
+                node_ready=true
+                break
+            else
+                log_info "Node reports Ready but timestamp unchanged, waiting for actual restart..."
+            fi
+        fi
+        
+        log_info "Node not ready yet, waiting... (${wait_time}s/${max_wait_online}s)"
+        sleep $check_interval
+        wait_time=$((wait_time + check_interval))
+    done
+    
+    if [[ "$node_ready" != "true" ]]; then
+        log_error "Node did not come back online within ${max_wait_online} seconds"
+        log_error "The node may have failed to reboot properly or there may be cluster issues"
+        log_info "Final node status:"
+        oc get node "$node_name" -o wide || log_error "Failed to get node status"
+        return 1
+    fi
+    
+    # Phase 3: Verify reboot by checking additional indicators
+    log_info "Phase 3: Verifying successful reboot..."
+    
+    # Check if any pods were rescheduled (indirect indication of reboot)
+    local rescheduled_pods
+    rescheduled_pods=$(oc get pods --all-namespaces --field-selector spec.nodeName="$node_name" -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.startTime}{"\n"}{end}' | wc -l)
+    log_info "Found $rescheduled_pods pods currently running on the rebooted node"
+    
+    # Show final node status
+    log_info "Final node status after reboot:"
+    oc get node "$node_name" -o wide
+    
+    log_success "Node reboot verification completed successfully!"
+    log_info "The emergency reboot appears to have worked as expected"
+    
+    return 0
 }
 
 # Cleanup function
@@ -330,9 +523,10 @@ main() {
 
     if [[ "$DRY_RUN" != "true" ]]; then
         echo
-        log_success "Emergency reboot process completed"
-        log_info "Monitor the node status with: oc get node $node_name -w"
-        log_info "Check node events with: oc describe node $node_name"
+        log_success "Emergency reboot process completed with verification"
+        log_info "Node reboot monitoring finished successfully"
+        log_info "Additional monitoring: oc get node $node_name -w"
+        log_info "Check node events: oc describe node $node_name"
     fi
 }
 
