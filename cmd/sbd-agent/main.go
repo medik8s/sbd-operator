@@ -110,7 +110,7 @@ const (
 	// MaxConsecutiveFailures is the maximum number of consecutive failures before triggering self-fence
 	MaxConsecutiveFailures = 5
 	// FailureCountResetInterval is the interval after which failure counts are reset
-	FailureCountResetInterval = 30 * time.Second
+	FailureCountResetInterval = 10 * time.Minute
 
 	// File locking constants
 	// FileLockTimeout is the maximum time to wait for acquiring a file lock
@@ -818,22 +818,48 @@ func (s *SBDAgent) incrementFailureCount(operationType string) int {
 		s.sbdFailureCount = 0
 		s.heartbeatFailureCount = 0
 		s.lastFailureReset = time.Now()
-		logger.V(1).Info("Reset failure counts due to time interval")
+		logger.V(1).Info("Reset failure counts due to time interval",
+			"watchdogFailureCount", s.watchdogFailureCount,
+			"sbdFailureCount", s.sbdFailureCount,
+			"heartbeatFailureCount", s.heartbeatFailureCount,
+			"lastFailureReset", s.lastFailureReset)
 	}
 
+	counter := 0
 	switch operationType {
 	case "watchdog":
 		s.watchdogFailureCount++
-		return s.watchdogFailureCount
+		counter = s.watchdogFailureCount
 	case "sbd":
 		s.sbdFailureCount++
-		return s.sbdFailureCount
+		counter = s.sbdFailureCount
+		// Increment SBD I/O errors counter
+		sbdIOErrorsCounter.Inc()
 	case "heartbeat":
 		s.heartbeatFailureCount++
-		return s.heartbeatFailureCount
-	default:
-		return 0
+		// Increment SBD I/O errors counter
+		sbdIOErrorsCounter.Inc()
+		counter = s.heartbeatFailureCount
 	}
+
+	s.setSBDHealthy(false)
+	// Mark agent as unhealthy
+	agentHealthyGauge.Set(0)
+
+	logger.V(1).Info("Incremented failure count", "operationType", operationType, "failureCount", counter)
+	if counter > MaxConsecutiveFailures {
+		logger.Error(nil, "Failures exceeded threshold, will trigger self-fence on next watchdog iteration",
+			"failureCount", counter,
+			"threshold", MaxConsecutiveFailures)
+
+		// Try to reinitialize the device on next iteration
+		if s.sbdDevice != nil && !s.sbdDevice.IsClosed() {
+			if closeErr := s.sbdDevice.Close(); closeErr != nil {
+				logger.Error(closeErr, "Failed to close SBD device", "devicePath", s.sbdDevicePath)
+			}
+		}
+	}
+	return counter
 }
 
 // resetFailureCount safely resets the failure count for a specific operation type
@@ -917,6 +943,11 @@ func (s *SBDAgent) writeNodeIDToSBDInternal() error {
 	if err := s.sbdDevice.Sync(); err != nil {
 		return fmt.Errorf("failed to sync SBD device: %w", err)
 	}
+	logger.V(1).Info("Successfully wrote node ID to SBD device",
+		"devicePath", s.sbdDevicePath,
+		"nodeName", s.nodeName,
+		"offset", SBDNodeIDOffset,
+		"bytesWritten", len(nodeData))
 
 	return nil
 }
@@ -993,6 +1024,7 @@ func (s *SBDAgent) readPeerHeartbeat(peerNodeID uint16) error {
 	if err != nil {
 		// Increment SBD I/O errors counter for read failures
 		sbdIOErrorsCounter.Inc()
+		s.incrementFailureCount("heartbeat")
 		return fmt.Errorf("failed to read peer %d heartbeat from offset %d: %w", peerNodeID, slotOffset, err)
 	}
 
@@ -1000,9 +1032,16 @@ func (s *SBDAgent) readPeerHeartbeat(peerNodeID uint16) error {
 		return fmt.Errorf("partial read from peer %d slot: read %d bytes, expected %d", peerNodeID, n, sbdprotocol.SBD_SLOT_SIZE)
 	}
 
-	if len(slotData) == 0 {
-		logger.V(1).Info("Empty slot data from peer",
-			"peerNodeID", peerNodeID)
+	// Check if the slot is empty (all bytes are zero)
+	isEmpty := true
+	for _, b := range slotData {
+		if b != 0 {
+			isEmpty = false
+			break
+		}
+	}
+	if isEmpty {
+		logger.V(2).Info("Peer slot is empty", "peerNodeID", peerNodeID)
 		return nil
 	}
 
@@ -1211,21 +1250,7 @@ func (s *SBDAgent) watchdogLoop() {
 				})
 
 				if err != nil {
-					failureCount := s.incrementFailureCount("watchdog")
-					logger.Error(err, "Failed to pet watchdog after retries",
-						"watchdogPath", s.watchdog.Path(),
-						"failureCount", failureCount,
-						"maxFailures", MaxConsecutiveFailures)
-
-					// Mark agent as unhealthy on watchdog failures
-					agentHealthyGauge.Set(0)
-
-					// Check if we've exceeded the failure threshold
-					if failureCount >= MaxConsecutiveFailures {
-						logger.Error(nil, "Watchdog pet failures exceeded threshold, will trigger self-fence on next iteration",
-							"failureCount", failureCount,
-							"threshold", MaxConsecutiveFailures)
-					}
+					s.incrementFailureCount("watchdog")
 					// Continue trying - don't exit on pet failure, let the failure count mechanism handle it
 				} else {
 					// Success - reset failure count and update metrics
@@ -1279,25 +1304,6 @@ func (s *SBDAgent) sbdDeviceLoop() {
 					"failureCount", failureCount,
 					"maxFailures", MaxConsecutiveFailures)
 
-				s.setSBDHealthy(false)
-				// Increment SBD I/O errors counter
-				sbdIOErrorsCounter.Inc()
-				// Mark agent as unhealthy
-				agentHealthyGauge.Set(0)
-
-				// Check if we've exceeded the failure threshold
-				if failureCount >= MaxConsecutiveFailures {
-					logger.Error(nil, "SBD device failures exceeded threshold, will trigger self-fence on next watchdog iteration",
-						"failureCount", failureCount,
-						"threshold", MaxConsecutiveFailures)
-				}
-
-				// Try to reinitialize the device on next iteration
-				if s.sbdDevice != nil && !s.sbdDevice.IsClosed() {
-					if closeErr := s.sbdDevice.Close(); closeErr != nil {
-						logger.Error(closeErr, "Failed to close SBD device", "devicePath", s.sbdDevicePath)
-					}
-				}
 			} else {
 				// Success - reset failure count and update status
 				s.resetFailureCount("sbd")
@@ -1338,26 +1344,6 @@ func (s *SBDAgent) heartbeatLoop() {
 					"failureCount", failureCount,
 					"maxFailures", MaxConsecutiveFailures)
 
-				s.setSBDHealthy(false)
-				// Increment SBD I/O errors counter
-				sbdIOErrorsCounter.Inc()
-				// Mark agent as unhealthy
-				agentHealthyGauge.Set(0)
-
-				// Check if we've exceeded the failure threshold
-				if failureCount >= MaxConsecutiveFailures {
-					logger.Error(nil, "Heartbeat write failures exceeded threshold, will trigger self-fence on next watchdog iteration",
-						"failureCount", failureCount,
-						"threshold", MaxConsecutiveFailures)
-				}
-
-				// Try to reinitialize the device on next iteration
-				if s.sbdDevice != nil && !s.sbdDevice.IsClosed() {
-					if closeErr := s.sbdDevice.Close(); closeErr != nil {
-						logger.Error(closeErr, "Failed to close SBD device during heartbeat error",
-							"devicePath", s.sbdDevicePath)
-					}
-				}
 			} else {
 				// Success - reset failure count and update status
 				s.resetFailureCount("heartbeat")
@@ -1390,6 +1376,7 @@ func (s *SBDAgent) peerMonitorLoop() {
 			// First, check our own slot for fence messages directed at us
 			if err := s.readOwnSlotForFenceMessage(); err != nil {
 				logger.Info("Error reading own slot for fence messages", "error", err)
+				s.incrementFailureCount("sbd")
 			}
 
 			// If self-fence was detected, stop all operations
