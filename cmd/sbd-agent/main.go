@@ -1513,6 +1513,8 @@ func (s *SBDAgent) setSelfFenceDetected(detected bool) {
 }
 
 // executeSelfFencing performs the self-fencing action based on the configured method
+// The systemctl-reboot method uses multiple aggressive techniques based on destructive testing
+// that showed direct reboot commands are more effective than panic() in containerized environments
 func (s *SBDAgent) executeSelfFencing(reason string) {
 	logger.Error(nil, "Self-fencing initiated",
 		"reason", reason,
@@ -1533,15 +1535,32 @@ func (s *SBDAgent) executeSelfFencing(reason string) {
 
 	switch s.rebootMethod {
 	case "systemctl-reboot":
-		logger.Error(nil, "Attempting systemctl reboot for self-fencing",
+		logger.Error(nil, "Attempting aggressive systemctl reboot for self-fencing",
 			"reason", reason,
 			"nodeID", s.nodeID)
-		if err := exec.Command("sudo", "systemctl", "reboot").Run(); err != nil {
-			logger.Error(err, "Failed to execute systemctl reboot, falling back to panic",
-				"reason", reason,
-				"nodeID", s.nodeID)
-			panic(fmt.Sprintf("Self-fencing via systemctl failed: %v", err))
+
+		// Try multiple aggressive reboot methods based on destructive test results
+		rebootCommands := [][]string{
+			{"systemctl", "reboot", "--force", "--force"},
+			{"reboot", "-f"},
+			{"sh", "-c", "echo b > /proc/sysrq-trigger"},
 		}
+
+		for i, cmd := range rebootCommands {
+			logger.Error(nil, "Attempting reboot method", "method", i+1, "command", cmd)
+			if err := exec.Command(cmd[0], cmd[1:]...).Run(); err != nil {
+				logger.Error(err, "Reboot method failed", "method", i+1, "command", cmd)
+			} else {
+				logger.Error(nil, "Reboot command executed", "method", i+1, "command", cmd)
+				// Command succeeded, no need to try others
+				return
+			}
+		}
+
+		// If all reboot methods failed, fall back to panic
+		logger.Error(nil, "All reboot methods failed, falling back to panic for self-fencing")
+		panic(fmt.Sprintf("Self-fencing via systemctl failed, all methods exhausted: %s", reason))
+
 	case "panic":
 		fallthrough
 	default:

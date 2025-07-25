@@ -57,7 +57,7 @@ const (
 	// MaxIOTimeout is the maximum allowed I/O timeout
 	MaxIOTimeout = 5 * time.Minute
 	// DefaultRebootMethod is the default reboot method for self-fencing
-	DefaultRebootMethod = "panic"
+	DefaultRebootMethod = "systemctl-reboot"
 	// DefaultSBDTimeoutSeconds is the default SBD timeout in seconds
 	DefaultSBDTimeoutSeconds = 30
 	// MinSBDTimeoutSeconds is the minimum allowed SBD timeout in seconds

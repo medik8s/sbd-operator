@@ -107,7 +107,7 @@ const (
 	DefaultLogLevel = "info"
 
 	// DefaultRebootMethod is the default reboot method
-	DefaultRebootMethod = "panic"
+	DefaultRebootMethod = "systemctl-reboot"
 
 	// DefaultMetricsPort is the default metrics port
 	DefaultMetricsPort = 8080
