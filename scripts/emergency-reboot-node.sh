@@ -87,7 +87,8 @@ EXAMPLES:
   $SCRIPT_NAME --timeout 60 worker-node-1
 
 SAFETY NOTES:
-  - This script uses 'systemctl reboot --force --force' for immediate reboot
+  - This script uses 'nsenter' to access host namespaces from debug pod
+  - Uses 'systemctl reboot --force --force' for immediate reboot
   - No graceful shutdown of applications occurs
   - Use only when normal node remediation has failed
   - Ensure you have cluster access before running
@@ -206,15 +207,15 @@ execute_reboot() {
     if [[ "$DRY_RUN" == "true" ]]; then
         log_info "DRY RUN: Would execute emergency reboot on node '$node_name'"
         log_info "DRY RUN: Command that would be executed:"
-        echo "  oc debug node/$node_name -- chroot /host systemctl reboot --force --force"
+        echo "  oc debug node/$node_name -- nsenter -t 1 -m -u -i -n -p -- systemctl reboot --force --force"
         return 0
     fi
 
     log_warn "Executing EMERGENCY REBOOT on node '$node_name'..."
     
     # Create debug session and execute immediate reboot
-    # Using --force --force for systemctl reboot bypasses all normal shutdown procedures
-    local reboot_command="chroot /host bash -c 'echo \"Emergency reboot initiated by SBD operator at \$(date)\" | logger -t sbd-emergency-reboot; systemctl reboot --force --force'"
+    # Using nsenter to enter host namespaces and --force --force for systemctl reboot bypasses all normal shutdown procedures
+    local reboot_command="nsenter -t 1 -m -u -i -n -p -- bash -c 'echo \"Emergency reboot initiated by SBD operator at \$(date)\" | logger -t sbd-emergency-reboot; systemctl reboot --force --force'"
     
     log_info "Creating debug session on node '$node_name'..."
     

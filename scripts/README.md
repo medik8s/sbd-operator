@@ -62,7 +62,7 @@ Immediately and ungracefully reboots a specified OpenShift node using `oc debug`
 - Test cluster resilience to sudden node failures
 
 **Key Features:**
-- Uses `oc debug node/<name>` to access the host
+- Uses `oc debug node/<name>` with `nsenter` to access the host
 - Executes `systemctl reboot --force --force` for immediate reboot
 - Includes comprehensive safety checks and confirmations
 - Supports dry-run mode for testing
@@ -87,7 +87,7 @@ $ ./emergency-reboot-node.sh --force worker-node-1
 $ ./emergency-reboot-node.sh --dry-run worker-node-1
 [INFO] DRY RUN: Would execute emergency reboot on node 'worker-node-1'
 [INFO] DRY RUN: Command that would be executed:
-  oc debug node/worker-node-1 -- chroot /host systemctl reboot --force --force
+  oc debug node/worker-node-1 -- nsenter -t 1 -m -u -i -n -p -- systemctl reboot --force --force
 ```
 
 **Safety Features:**
