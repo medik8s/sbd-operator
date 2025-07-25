@@ -50,6 +50,42 @@ $ ./get-agent-logs.sh worker-1.example.com --tail 50
 ==============================================
 ```
 
+### 🗺️ `show-node-map.sh` - SBD Agent Node Mapping
+Displays the SBD agent node mapping showing which nodes are assigned to which slots.
+
+**Use this when you want to:**
+- View current node-to-slot assignments in the SBD device
+- Check which nodes are active in the cluster
+- Debug slot assignment conflicts or issues
+- Monitor node heartbeat status
+- Understand the SBD agent coordination structure
+
+**Key Features:**
+- Shows hash-based slot assignments for each node
+- Displays last seen timestamps for cluster health
+- Optional real-time heartbeat status from SBD device
+- Supports JSON output for automation
+- Color-coded status indicators (OK/STALE/OFFLINE)
+
+**Example output:**
+```bash
+$ ./show-node-map.sh --heartbeats
+═══════════════════════════════════════════════════════════════
+                     SBD Agent Node Mapping
+═══════════════════════════════════════════════════════════════
+
+Cluster Name: my-openshift-cluster
+Version: 15
+Last Update: 2m ago
+Total Nodes: 3
+
+SLOT NODE NAME                     HASH       LAST SEEN      HEARTBEAT    STATUS
+────────────────────────────────────────────────────────────────────────────────────────
+2    worker-1.example.com          3284157891 1m ago         ACTIVE       OK    
+5    worker-2.example.com          1756284092 45s ago        ACTIVE       OK    
+8    master-1.example.com          2947382845 30s ago        ACTIVE       OK    
+```
+
 ### ⚠️ `emergency-reboot-node.sh` - Emergency Node Reboot
 Immediately and ungracefully reboots a specified OpenShift node using `oc debug`.
 
@@ -115,7 +151,22 @@ $ ./emergency-reboot-node.sh --dry-run worker-node-1
 ./scripts/get-agent-logs.sh <node-name> --follow
 ```
 
-### 4. Emergency node reboot (use with extreme caution!)
+### 4. Display SBD agent node mapping
+```bash
+# Show basic node-to-slot mapping
+./scripts/show-node-map.sh
+
+# Show mapping with current heartbeat status
+./scripts/show-node-map.sh --heartbeats
+
+# Use custom SBD device
+./scripts/show-node-map.sh --device /dev/sbd1
+
+# JSON output for automation
+./scripts/show-node-map.sh --json
+```
+
+### 5. Emergency node reboot (use with extreme caution!)
 ```bash
 # Dry run first to see what would happen
 ./scripts/emergency-reboot-node.sh --dry-run <node-name>
@@ -200,6 +251,13 @@ Scripts provide clear error messages for:
 - ✅ Access to OpenShift/Kubernetes cluster
 - ✅ Read permissions for pods and logs in SBD namespace
 
+### For node mapping script (`show-node-map.sh`):
+- ✅ `jq` command for JSON parsing
+- ✅ Read access to SBD device (e.g., `/dev/sbd0`)
+- ✅ Read access to node mapping file (e.g., `/dev/sbd0.nodemap`)
+- ✅ Optional: `hexdump` for SBD device heartbeat analysis
+- ✅ Optional: `date` command for timestamp formatting
+
 ### For emergency reboot script (`emergency-reboot-node.sh`):
 - ✅ OpenShift CLI (`oc`) or Kubernetes CLI (`kubectl`)
 - ✅ AWS CLI (`aws`) installed and configured
@@ -223,6 +281,17 @@ Scripts provide clear error messages for:
 - Check kubeconfig: `oc cluster-info`
 - Verify login: `oc whoami`
 - Test connectivity: `oc get nodes`
+
+### "Node mapping file not found"
+- Verify SBD device path: `ls -la /dev/sbd*`
+- Check if SBD agent has created mapping: `ls -la /dev/sbd*.nodemap`
+- Ensure SBD agent is running: `./list-agent-pods.sh`
+- Try with correct device path: `./show-node-map.sh --device /dev/sdb`
+
+### "Permission denied reading SBD device"
+- Run with appropriate permissions: `sudo ./show-node-map.sh`
+- Check device permissions: `ls -la /dev/sbd*`
+- Verify device ownership and group access
 
 ### "Emergency reboot failed"
 - Check permissions: `oc auth can-i debug node`
