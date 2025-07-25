@@ -56,6 +56,26 @@ const (
 	MinIOTimeout = 100 * time.Millisecond
 	// MaxIOTimeout is the maximum allowed I/O timeout
 	MaxIOTimeout = 5 * time.Minute
+	// DefaultRebootMethod is the default reboot method for self-fencing
+	DefaultRebootMethod = "panic"
+	// DefaultSBDTimeoutSeconds is the default SBD timeout in seconds
+	DefaultSBDTimeoutSeconds = 30
+	// MinSBDTimeoutSeconds is the minimum allowed SBD timeout in seconds
+	MinSBDTimeoutSeconds = 10
+	// MaxSBDTimeoutSeconds is the maximum allowed SBD timeout in seconds
+	MaxSBDTimeoutSeconds = 300
+	// DefaultSBDUpdateInterval is the default interval for SBD device updates
+	DefaultSBDUpdateInterval = 5 * time.Second
+	// MinSBDUpdateInterval is the minimum allowed SBD update interval
+	MinSBDUpdateInterval = 1 * time.Second
+	// MaxSBDUpdateInterval is the maximum allowed SBD update interval
+	MaxSBDUpdateInterval = 60 * time.Second
+	// DefaultPeerCheckInterval is the default interval for peer check operations
+	DefaultPeerCheckInterval = 5 * time.Second
+	// MinPeerCheckInterval is the minimum allowed peer check interval
+	MinPeerCheckInterval = 1 * time.Second
+	// MaxPeerCheckInterval is the maximum allowed peer check interval
+	MaxPeerCheckInterval = 60 * time.Second
 )
 
 // SBDConfigConditionType represents the type of condition for SBDConfig
@@ -154,6 +174,45 @@ type SBDConfigSpec struct {
 	// +kubebuilder:default="2s"
 	// +optional
 	IOTimeout *metav1.Duration `json:"iotimeout,omitempty"`
+
+	// RebootMethod defines the method to use for self-fencing when a node needs to be rebooted.
+	// Valid values are "panic" (immediate kernel panic) and "systemctl-reboot" (graceful systemctl reboot).
+	// Panic provides the fastest failover but less graceful shutdown, while systemctl-reboot allows
+	// for graceful service shutdown but may be slower.
+	// +kubebuilder:validation:Enum=panic;systemctl-reboot
+	// +kubebuilder:default="panic"
+	// +optional
+	RebootMethod string `json:"rebootMethod,omitempty"`
+
+	// SBDTimeoutSeconds defines the SBD timeout in seconds, which determines the heartbeat interval.
+	// The heartbeat interval is calculated as SBD timeout divided by 2.
+	// This value controls how quickly the cluster can detect and respond to node failures.
+	// The value must be between 10 and 300 seconds.
+	// +kubebuilder:validation:Minimum=10
+	// +kubebuilder:validation:Maximum=300
+	// +kubebuilder:default=30
+	// +optional
+	SBDTimeoutSeconds *int32 `json:"sbdTimeoutSeconds,omitempty"`
+
+	// SBDUpdateInterval defines the interval for updating the SBD device with node status information.
+	// This determines how frequently each node writes its status to the shared SBD device.
+	// More frequent updates provide faster failure detection but increase I/O load on the shared storage.
+	// The value must be between 1 second and 60 seconds.
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(s|m))+$"
+	// +kubebuilder:default="5s"
+	// +optional
+	SBDUpdateInterval *metav1.Duration `json:"sbdUpdateInterval,omitempty"`
+
+	// PeerCheckInterval defines the interval for checking peer node heartbeats in the SBD device.
+	// This determines how frequently each node reads and processes heartbeats from other nodes.
+	// More frequent checks provide faster peer failure detection but increase I/O load on the shared storage.
+	// The value must be between 1 second and 60 seconds.
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(s|m))+$"
+	// +kubebuilder:default="5s"
+	// +optional
+	PeerCheckInterval *metav1.Duration `json:"peerCheckInterval,omitempty"`
 }
 
 // GetSbdWatchdogPath returns the watchdog path with default fallback
@@ -233,6 +292,38 @@ func (s *SBDConfigSpec) GetIOTimeout() time.Duration {
 		return s.IOTimeout.Duration
 	}
 	return DefaultIOTimeout
+}
+
+// GetRebootMethod returns the reboot method with default fallback
+func (s *SBDConfigSpec) GetRebootMethod() string {
+	if s.RebootMethod != "" {
+		return s.RebootMethod
+	}
+	return DefaultRebootMethod
+}
+
+// GetSBDTimeoutSeconds returns the SBD timeout in seconds with default fallback
+func (s *SBDConfigSpec) GetSBDTimeoutSeconds() int32 {
+	if s.SBDTimeoutSeconds != nil {
+		return *s.SBDTimeoutSeconds
+	}
+	return DefaultSBDTimeoutSeconds
+}
+
+// GetSBDUpdateInterval returns the SBD update interval with default fallback
+func (s *SBDConfigSpec) GetSBDUpdateInterval() time.Duration {
+	if s.SBDUpdateInterval != nil {
+		return s.SBDUpdateInterval.Duration
+	}
+	return DefaultSBDUpdateInterval
+}
+
+// GetPeerCheckInterval returns the peer check interval with default fallback
+func (s *SBDConfigSpec) GetPeerCheckInterval() time.Duration {
+	if s.PeerCheckInterval != nil {
+		return s.PeerCheckInterval.Duration
+	}
+	return DefaultPeerCheckInterval
 }
 
 // GetSharedStoragePVCName returns the generated PVC name for shared storage
@@ -417,6 +508,63 @@ func (s *SBDConfigSpec) ValidateSharedStorageClass() error {
 	return nil
 }
 
+// ValidateRebootMethod validates the reboot method value
+func (s *SBDConfigSpec) ValidateRebootMethod() error {
+	method := s.GetRebootMethod()
+
+	switch method {
+	case "panic", "systemctl-reboot":
+		return nil
+	default:
+		return fmt.Errorf("invalid reboot method %q. Valid values are: panic, systemctl-reboot", method)
+	}
+}
+
+// ValidateSBDTimeoutSeconds validates the SBD timeout value
+func (s *SBDConfigSpec) ValidateSBDTimeoutSeconds() error {
+	timeout := s.GetSBDTimeoutSeconds()
+
+	if timeout < MinSBDTimeoutSeconds {
+		return fmt.Errorf("SBD timeout %d seconds is less than minimum %d seconds", timeout, MinSBDTimeoutSeconds)
+	}
+
+	if timeout > MaxSBDTimeoutSeconds {
+		return fmt.Errorf("SBD timeout %d seconds is greater than maximum %d seconds", timeout, MaxSBDTimeoutSeconds)
+	}
+
+	return nil
+}
+
+// ValidateSBDUpdateInterval validates the SBD update interval value
+func (s *SBDConfigSpec) ValidateSBDUpdateInterval() error {
+	interval := s.GetSBDUpdateInterval()
+
+	if interval < MinSBDUpdateInterval {
+		return fmt.Errorf("SBD update interval %v is less than minimum %v", interval, MinSBDUpdateInterval)
+	}
+
+	if interval > MaxSBDUpdateInterval {
+		return fmt.Errorf("SBD update interval %v is greater than maximum %v", interval, MaxSBDUpdateInterval)
+	}
+
+	return nil
+}
+
+// ValidatePeerCheckInterval validates the peer check interval value
+func (s *SBDConfigSpec) ValidatePeerCheckInterval() error {
+	interval := s.GetPeerCheckInterval()
+
+	if interval < MinPeerCheckInterval {
+		return fmt.Errorf("peer check interval %v is less than minimum %v", interval, MinPeerCheckInterval)
+	}
+
+	if interval > MaxPeerCheckInterval {
+		return fmt.Errorf("peer check interval %v is greater than maximum %v", interval, MaxPeerCheckInterval)
+	}
+
+	return nil
+}
+
 // ValidateAll validates all configuration values
 func (s *SBDConfigSpec) ValidateAll() error {
 	if err := s.ValidateStaleNodeTimeout(); err != nil {
@@ -445,6 +593,22 @@ func (s *SBDConfigSpec) ValidateAll() error {
 
 	if err := s.ValidateSharedStorageClass(); err != nil {
 		return fmt.Errorf("shared storage PVC validation failed: %w", err)
+	}
+
+	if err := s.ValidateRebootMethod(); err != nil {
+		return fmt.Errorf("reboot method validation failed: %w", err)
+	}
+
+	if err := s.ValidateSBDTimeoutSeconds(); err != nil {
+		return fmt.Errorf("SBD timeout seconds validation failed: %w", err)
+	}
+
+	if err := s.ValidateSBDUpdateInterval(); err != nil {
+		return fmt.Errorf("SBD update interval validation failed: %w", err)
+	}
+
+	if err := s.ValidatePeerCheckInterval(); err != nil {
+		return fmt.Errorf("peer check interval validation failed: %w", err)
 	}
 
 	return nil

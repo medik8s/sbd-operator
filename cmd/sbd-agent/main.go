@@ -852,7 +852,7 @@ func (s *SBDAgent) incrementFailureCount(operationType string) int {
 	agentHealthyGauge.Set(0)
 
 	logger.V(1).Info("Incremented failure count", "operationType", operationType, "failureCount", counter)
-	if counter > MaxConsecutiveFailures {
+	if counter >= MaxConsecutiveFailures {
 		logger.Error(nil, "Failures exceeded threshold, will trigger self-fence on next watchdog iteration",
 			"failureCount", counter,
 			"threshold", MaxConsecutiveFailures)

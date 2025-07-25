@@ -1449,6 +1449,10 @@ func (r *SBDConfigReconciler) buildSBDAgentArgs(sbdConfig *medik8sv1alpha1.SBDCo
 	watchdogTimeout := sbdConfig.Spec.GetWatchdogTimeout()
 	petInterval := sbdConfig.Spec.GetPetInterval()
 	ioTimeout := sbdConfig.Spec.GetIOTimeout()
+	rebootMethod := sbdConfig.Spec.GetRebootMethod()
+	sbdTimeoutSeconds := sbdConfig.Spec.GetSBDTimeoutSeconds()
+	sbdUpdateInterval := sbdConfig.Spec.GetSBDUpdateInterval()
+	peerCheckInterval := sbdConfig.Spec.GetPeerCheckInterval()
 
 	// Base arguments using shared flag constants
 	args := []string{
@@ -1459,6 +1463,10 @@ func (r *SBDConfigReconciler) buildSBDAgentArgs(sbdConfig *medik8sv1alpha1.SBDCo
 		fmt.Sprintf("--%s=%s", agent.FlagClusterName, sbdConfig.Name),
 		fmt.Sprintf("--%s=%s", agent.FlagStaleNodeTimeout, sbdConfig.Spec.GetStaleNodeTimeout().String()),
 		fmt.Sprintf("--io-timeout=%s", ioTimeout.String()),
+		fmt.Sprintf("--%s=%s", agent.FlagRebootMethod, rebootMethod),
+		fmt.Sprintf("--%s=%d", agent.FlagSBDTimeoutSeconds, sbdTimeoutSeconds),
+		fmt.Sprintf("--%s=%s", agent.FlagSBDUpdateInterval, sbdUpdateInterval.String()),
+		fmt.Sprintf("--%s=%s", agent.FlagPeerCheckInterval, peerCheckInterval.String()),
 	}
 
 	// Add shared storage arguments if configured

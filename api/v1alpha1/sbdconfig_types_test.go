@@ -495,6 +495,388 @@ func TestSBDConfigSpec_ValidatePetIntervalTiming(t *testing.T) {
 	}
 }
 
+func TestSBDConfigSpec_GetRebootMethod(t *testing.T) {
+	tests := []struct {
+		name     string
+		spec     SBDConfigSpec
+		expected string
+	}{
+		{
+			name: "empty reboot method returns default",
+			spec: SBDConfigSpec{
+				RebootMethod: "",
+			},
+			expected: DefaultRebootMethod,
+		},
+		{
+			name: "explicit panic method is returned",
+			spec: SBDConfigSpec{
+				RebootMethod: "panic",
+			},
+			expected: "panic",
+		},
+		{
+			name: "explicit systemctl-reboot method is returned",
+			spec: SBDConfigSpec{
+				RebootMethod: "systemctl-reboot",
+			},
+			expected: "systemctl-reboot",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.spec.GetRebootMethod()
+			if result != tt.expected {
+				t.Errorf("GetRebootMethod() = %v, expected %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSBDConfigSpec_GetSBDTimeoutSeconds(t *testing.T) {
+	tests := []struct {
+		name     string
+		spec     SBDConfigSpec
+		expected int32
+	}{
+		{
+			name: "nil timeout returns default",
+			spec: SBDConfigSpec{
+				SBDTimeoutSeconds: nil,
+			},
+			expected: DefaultSBDTimeoutSeconds,
+		},
+		{
+			name: "explicit timeout is returned",
+			spec: SBDConfigSpec{
+				SBDTimeoutSeconds: func(v int32) *int32 { return &v }(60),
+			},
+			expected: 60,
+		},
+		{
+			name: "minimum timeout is returned",
+			spec: SBDConfigSpec{
+				SBDTimeoutSeconds: func(v int32) *int32 { return &v }(10),
+			},
+			expected: 10,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.spec.GetSBDTimeoutSeconds()
+			if result != tt.expected {
+				t.Errorf("GetSBDTimeoutSeconds() = %v, expected %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSBDConfigSpec_GetSBDUpdateInterval(t *testing.T) {
+	tests := []struct {
+		name     string
+		spec     SBDConfigSpec
+		expected time.Duration
+	}{
+		{
+			name: "nil interval returns default",
+			spec: SBDConfigSpec{
+				SBDUpdateInterval: nil,
+			},
+			expected: DefaultSBDUpdateInterval,
+		},
+		{
+			name: "explicit interval is returned",
+			spec: SBDConfigSpec{
+				SBDUpdateInterval: &metav1.Duration{Duration: 10 * time.Second},
+			},
+			expected: 10 * time.Second,
+		},
+		{
+			name: "minimum interval is returned",
+			spec: SBDConfigSpec{
+				SBDUpdateInterval: &metav1.Duration{Duration: 1 * time.Second},
+			},
+			expected: 1 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.spec.GetSBDUpdateInterval()
+			if result != tt.expected {
+				t.Errorf("GetSBDUpdateInterval() = %v, expected %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSBDConfigSpec_GetPeerCheckInterval(t *testing.T) {
+	tests := []struct {
+		name     string
+		spec     SBDConfigSpec
+		expected time.Duration
+	}{
+		{
+			name: "nil interval returns default",
+			spec: SBDConfigSpec{
+				PeerCheckInterval: nil,
+			},
+			expected: DefaultPeerCheckInterval,
+		},
+		{
+			name: "explicit interval is returned",
+			spec: SBDConfigSpec{
+				PeerCheckInterval: &metav1.Duration{Duration: 3 * time.Second},
+			},
+			expected: 3 * time.Second,
+		},
+		{
+			name: "maximum interval is returned",
+			spec: SBDConfigSpec{
+				PeerCheckInterval: &metav1.Duration{Duration: 60 * time.Second},
+			},
+			expected: 60 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.spec.GetPeerCheckInterval()
+			if result != tt.expected {
+				t.Errorf("GetPeerCheckInterval() = %v, expected %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSBDConfigSpec_ValidateRebootMethod(t *testing.T) {
+	tests := []struct {
+		name    string
+		spec    SBDConfigSpec
+		wantErr bool
+	}{
+		{
+			name: "valid panic method",
+			spec: SBDConfigSpec{
+				RebootMethod: "panic",
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid systemctl-reboot method",
+			spec: SBDConfigSpec{
+				RebootMethod: "systemctl-reboot",
+			},
+			wantErr: false,
+		},
+		{
+			name: "empty method uses default (valid)",
+			spec: SBDConfigSpec{
+				RebootMethod: "",
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid method",
+			spec: SBDConfigSpec{
+				RebootMethod: "invalid-method",
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.spec.ValidateRebootMethod()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateRebootMethod() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestSBDConfigSpec_ValidateSBDTimeoutSeconds(t *testing.T) {
+	tests := []struct {
+		name    string
+		spec    SBDConfigSpec
+		wantErr bool
+	}{
+		{
+			name: "nil timeout uses default (valid)",
+			spec: SBDConfigSpec{
+				SBDTimeoutSeconds: nil,
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid timeout",
+			spec: SBDConfigSpec{
+				SBDTimeoutSeconds: func(v int32) *int32 { return &v }(60),
+			},
+			wantErr: false,
+		},
+		{
+			name: "minimum timeout",
+			spec: SBDConfigSpec{
+				SBDTimeoutSeconds: func(v int32) *int32 { return &v }(10),
+			},
+			wantErr: false,
+		},
+		{
+			name: "maximum timeout",
+			spec: SBDConfigSpec{
+				SBDTimeoutSeconds: func(v int32) *int32 { return &v }(300),
+			},
+			wantErr: false,
+		},
+		{
+			name: "too small timeout",
+			spec: SBDConfigSpec{
+				SBDTimeoutSeconds: func(v int32) *int32 { return &v }(5),
+			},
+			wantErr: true,
+		},
+		{
+			name: "too large timeout",
+			spec: SBDConfigSpec{
+				SBDTimeoutSeconds: func(v int32) *int32 { return &v }(400),
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.spec.ValidateSBDTimeoutSeconds()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateSBDTimeoutSeconds() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestSBDConfigSpec_ValidateSBDUpdateInterval(t *testing.T) {
+	tests := []struct {
+		name    string
+		spec    SBDConfigSpec
+		wantErr bool
+	}{
+		{
+			name: "nil interval uses default (valid)",
+			spec: SBDConfigSpec{
+				SBDUpdateInterval: nil,
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid interval",
+			spec: SBDConfigSpec{
+				SBDUpdateInterval: &metav1.Duration{Duration: 10 * time.Second},
+			},
+			wantErr: false,
+		},
+		{
+			name: "minimum interval",
+			spec: SBDConfigSpec{
+				SBDUpdateInterval: &metav1.Duration{Duration: 1 * time.Second},
+			},
+			wantErr: false,
+		},
+		{
+			name: "maximum interval",
+			spec: SBDConfigSpec{
+				SBDUpdateInterval: &metav1.Duration{Duration: 60 * time.Second},
+			},
+			wantErr: false,
+		},
+		{
+			name: "too small interval",
+			spec: SBDConfigSpec{
+				SBDUpdateInterval: &metav1.Duration{Duration: 500 * time.Millisecond},
+			},
+			wantErr: true,
+		},
+		{
+			name: "too large interval",
+			spec: SBDConfigSpec{
+				SBDUpdateInterval: &metav1.Duration{Duration: 120 * time.Second},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.spec.ValidateSBDUpdateInterval()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateSBDUpdateInterval() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestSBDConfigSpec_ValidatePeerCheckInterval(t *testing.T) {
+	tests := []struct {
+		name    string
+		spec    SBDConfigSpec
+		wantErr bool
+	}{
+		{
+			name: "nil interval uses default (valid)",
+			spec: SBDConfigSpec{
+				PeerCheckInterval: nil,
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid interval",
+			spec: SBDConfigSpec{
+				PeerCheckInterval: &metav1.Duration{Duration: 5 * time.Second},
+			},
+			wantErr: false,
+		},
+		{
+			name: "minimum interval",
+			spec: SBDConfigSpec{
+				PeerCheckInterval: &metav1.Duration{Duration: 1 * time.Second},
+			},
+			wantErr: false,
+		},
+		{
+			name: "maximum interval",
+			spec: SBDConfigSpec{
+				PeerCheckInterval: &metav1.Duration{Duration: 60 * time.Second},
+			},
+			wantErr: false,
+		},
+		{
+			name: "too small interval",
+			spec: SBDConfigSpec{
+				PeerCheckInterval: &metav1.Duration{Duration: 500 * time.Millisecond},
+			},
+			wantErr: true,
+		},
+		{
+			name: "too large interval",
+			spec: SBDConfigSpec{
+				PeerCheckInterval: &metav1.Duration{Duration: 90 * time.Second},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.spec.ValidatePeerCheckInterval()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidatePeerCheckInterval() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestSBDConfigSpec_ValidateAll(t *testing.T) {
 	tests := []struct {
 		name      string
