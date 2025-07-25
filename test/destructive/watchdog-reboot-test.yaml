@@ -14,7 +14,7 @@ spec:
   
   # Target specific node for testing (CHANGE THIS!)
   nodeSelector:
-    kubernetes.io/hostname: "TARGET_NODE_NAME_HERE"
+    kubernetes.io/hostname: "ip-10-0-4-98.ap-southeast-2.compute.internal"
   
   # Required for accessing watchdog device and triggering reboot
   hostPID: true
@@ -23,8 +23,8 @@ spec:
   containers:
   - name: watchdog-test
     # Use custom image with built-in Go test binaries
-    # Change this to your registry: your-registry.com/sbd-destructive-tests:latest
-    image: sbd-destructive-tests:latest
+    # Change this to your registry: your-registry.com/quay.io/medik8s/sbd-destructive-tests:latest
+    image: quay.io/medik8s/sbd-destructive-tests:latest
     imagePullPolicy: IfNotPresent
     
     # Run as root to access watchdog device
@@ -110,7 +110,7 @@ data:
     - Typical timeout is 60 seconds
     
     ## Before running:
-    1. Edit watchdog-reboot-test.yaml and set TARGET_NODE_NAME_HERE
+    1. Edit watchdog-reboot-test.yaml and set ip-10-0-4-98.ap-southeast-2.compute.internal
     2. Ensure the target node can be safely rebooted
     3. Verify /dev/watchdog exists on the target node
     4. Save all work on other nodes

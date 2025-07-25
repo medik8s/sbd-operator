@@ -37,7 +37,7 @@ help:
 .PHONY: build
 build:
 	@echo "Building destructive test image..."
-	podman build -t $(IMAGE_NAME):$(IMAGE_TAG) -f Dockerfile ../..
+	podman build -t $(IMAGE_NAME):$(IMAGE_TAG) -f Dockerfile .
 	@echo "✅ Built image: $(IMAGE_NAME):$(IMAGE_TAG)"
 
 # Tag and push to registry  

@@ -14,7 +14,7 @@ spec:
   
   # Target specific node for testing (CHANGE THIS!)
   nodeSelector:
-    kubernetes.io/hostname: "TARGET_NODE_NAME_HERE"
+    kubernetes.io/hostname: "ip-10-0-4-98.ap-southeast-2.compute.internal"
   
   # Required for triggering node reboot
   hostPID: true
@@ -23,8 +23,8 @@ spec:
   containers:
   - name: panic-test
     # Use custom image with built-in Go test binaries
-    # Change this to your registry: your-registry.com/sbd-destructive-tests:latest
-    image: sbd-destructive-tests:latest
+    # Change this to your registry: your-registry.com/quay.io/medik8s/sbd-destructive-tests:latest
+    image: quay.io/medik8s/sbd-destructive-tests:latest
     imagePullPolicy: IfNotPresent
     
     # Run as root to ensure panic can trigger reboot
@@ -94,7 +94,7 @@ data:
     3. This validates that panic-based self-fencing works
     
     ## Before running:
-    1. Edit panic-reboot-test.yaml and set TARGET_NODE_NAME_HERE
+    1. Edit panic-reboot-test.yaml and set ip-10-0-4-98.ap-southeast-2.compute.internal
     2. Ensure the target node can be safely rebooted
     3. Save all work on other nodes
     4. Have monitoring in place to verify the reboot occurs
