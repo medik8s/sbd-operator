@@ -34,6 +34,7 @@ This directory contains standalone tests that validate node self-fencing mechani
 │                 │    │                  │    │                 │
 │ registry.redhat.│    │ panic() or       │    │ Immediate       │
 │ io/ubi9/ubi     │    │ watchdog timeout │    │ ungraceful      │
+│ (built w/Podman)│    │                  │    │                 │
 └─────────────────┘    └──────────────────┘    └─────────────────┘
 ```
 
@@ -44,7 +45,7 @@ This directory contains standalone tests that validate node self-fencing mechani
 - OpenShift/Kubernetes cluster
 - Cluster admin permissions
 - Target worker node that can be safely rebooted
-- Access to build and push container images
+- Podman installed for building and pushing container images
 
 ### Node Requirements
 - `/dev/watchdog` device available (for watchdog test)
@@ -58,13 +59,13 @@ This directory contains standalone tests that validate node self-fencing mechani
 
 ```bash
 # Build the UBI-based image with test binaries
-docker build -t sbd-destructive-tests:latest -f test/destructive/Dockerfile .
+podman build -t sbd-destructive-tests:latest -f test/destructive/Dockerfile .
 
 # Tag for your registry
-docker tag sbd-destructive-tests:latest your-registry.com/sbd-destructive-tests:latest
+podman tag sbd-destructive-tests:latest your-registry.com/sbd-destructive-tests:latest
 
 # Push to registry
-docker push your-registry.com/sbd-destructive-tests:latest
+podman push your-registry.com/sbd-destructive-tests:latest
 ```
 
 ### 2. Update Manifests
@@ -106,7 +107,7 @@ kubectl apply -f test/destructive/watchdog-reboot-test.yaml
 ### Option 2: Custom Built Image (Recommended)
 
 ```bash
-# 1. Build and push your image (see Setup section)
+# 1. Build and push your image using Podman (see Setup section)
 
 # 2. Update image references in YAML files
 sed -i 's|registry.redhat.io/ubi9/ubi:latest|your-registry.com/sbd-destructive-tests:latest|g' test/destructive/*.yaml

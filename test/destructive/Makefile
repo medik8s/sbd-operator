@@ -4,7 +4,7 @@
 # Configuration
 IMAGE_NAME ?= sbd-destructive-tests
 IMAGE_TAG ?= latest
-REGISTRY ?= your-registry.com
+REGISTRY ?= quay.io/medik8s
 FULL_IMAGE = $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
 
 # Target node for testing (MUST be set before running tests)
@@ -16,7 +16,7 @@ help:
 	@echo "⚠️  DESTRUCTIVE TESTS - WILL REBOOT NODES ⚠️"
 	@echo ""
 	@echo "Available targets:"
-	@echo "  build          - Build the Docker image with Go test binaries"
+	@echo "  build          - Build the Podman image with Go test binaries"
 	@echo "  push           - Push image to registry"
 	@echo "  update-manifests - Update manifests with registry and target node"
 	@echo "  run-panic-test - Run the panic reboot test (REBOOTS NODE!)"
@@ -37,15 +37,15 @@ help:
 .PHONY: build
 build:
 	@echo "Building destructive test image..."
-	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) -f Dockerfile ../..
+	podman build -t $(IMAGE_NAME):$(IMAGE_TAG) -f Dockerfile ../..
 	@echo "✅ Built image: $(IMAGE_NAME):$(IMAGE_TAG)"
 
 # Tag and push to registry  
 .PHONY: push
 push: build
 	@echo "Tagging and pushing to registry..."
-	docker tag $(IMAGE_NAME):$(IMAGE_TAG) $(FULL_IMAGE)
-	docker push $(FULL_IMAGE)
+	podman tag $(IMAGE_NAME):$(IMAGE_TAG) $(FULL_IMAGE)
+	podman push $(FULL_IMAGE)
 	@echo "✅ Pushed image: $(FULL_IMAGE)"
 
 # Update manifests with registry and target node
@@ -152,7 +152,7 @@ test-workflow:
 	@echo "1. Set your target node:"
 	@echo "   export TARGET_NODE=your-worker-node-name"
 	@echo ""
-	@echo "2. Build and push image:"
+	@echo "2. Build and push image (using Podman):"
 	@echo "   make build push"
 	@echo ""
 	@echo "3. Update manifests:"
