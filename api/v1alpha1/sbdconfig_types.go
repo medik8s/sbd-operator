@@ -50,6 +50,12 @@ const (
 	MinPetIntervalMultiple = 3
 	// MaxPetIntervalMultiple is the maximum allowed pet interval multiple
 	MaxPetIntervalMultiple = 20
+	// DefaultIOTimeout is the default timeout for I/O operations
+	DefaultIOTimeout = 2 * time.Second
+	// MinIOTimeout is the minimum allowed I/O timeout
+	MinIOTimeout = 100 * time.Millisecond
+	// MaxIOTimeout is the maximum allowed I/O timeout
+	MaxIOTimeout = 5 * time.Minute
 )
 
 // SBDConfigConditionType represents the type of condition for SBDConfig
@@ -139,6 +145,15 @@ type SBDConfigSpec struct {
 	// +kubebuilder:default="info"
 	// +optional
 	LogLevel string `json:"logLevel,omitempty"`
+
+	// IOTimeout defines the timeout for SBD I/O operations.
+	// This determines how long the system will wait for SBD I/O operations to complete.
+	// The value must be between 100 milliseconds and 5 minutes.
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ms|s|m|h))+$"
+	// +kubebuilder:default="2s"
+	// +optional
+	IOTimeout *metav1.Duration `json:"iotimeout,omitempty"`
 }
 
 // GetSbdWatchdogPath returns the watchdog path with default fallback
@@ -210,6 +225,14 @@ func (s *SBDConfigSpec) GetLogLevel() string {
 		return s.LogLevel
 	}
 	return "warn"
+}
+
+// GetIOTimeout returns the SBD I/O timeout with default fallback
+func (s *SBDConfigSpec) GetIOTimeout() time.Duration {
+	if s.IOTimeout != nil {
+		return s.IOTimeout.Duration
+	}
+	return DefaultIOTimeout
 }
 
 // GetSharedStoragePVCName returns the generated PVC name for shared storage
@@ -332,6 +355,20 @@ func (s *SBDConfigSpec) ValidatePetIntervalTiming() error {
 	if petInterval < time.Second {
 		return fmt.Errorf("pet interval %v is too short. Minimum recommended: 1s", petInterval)
 	}
+	return nil
+}
+
+// ValidateIOTimeout validates the SBD I/O timeout value
+func (s *SBDConfigSpec) ValidateIOTimeout() error {
+	timeout := s.GetIOTimeout()
+
+	if timeout < MinIOTimeout {
+		return fmt.Errorf("I/O timeout %v is less than minimum %v", timeout, MinIOTimeout)
+	}
+
+	if timeout > MaxIOTimeout {
+		return fmt.Errorf("I/O timeout %v is greater than maximum %v", timeout, MaxIOTimeout)
+	}
 
 	return nil
 }
@@ -396,6 +433,10 @@ func (s *SBDConfigSpec) ValidateAll() error {
 
 	if err := s.ValidatePetIntervalTiming(); err != nil {
 		return fmt.Errorf("pet interval timing validation failed: %w", err)
+	}
+
+	if err := s.ValidateIOTimeout(); err != nil {
+		return fmt.Errorf("I/O timeout validation failed: %w", err)
 	}
 
 	if err := s.ValidateImagePullPolicy(); err != nil {

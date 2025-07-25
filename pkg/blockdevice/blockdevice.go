@@ -81,13 +81,47 @@ type Device struct {
 //	}
 //	defer device.Close()
 func Open(path string) (*Device, error) {
-	return OpenWithLogger(path, logr.Discard())
+	return OpenWithTimeout(path, DefaultIOTimeout, logr.Discard())
 }
 
 // OpenWithLogger opens a raw block device with a logger for retry operations
 func OpenWithLogger(path string, logger logr.Logger) (*Device, error) {
+	return OpenWithTimeout(path, DefaultIOTimeout, logger)
+}
+
+// OpenWithTimeout opens a raw block device with custom I/O timeout and logger
+// This allows customization of the timeout for I/O operations to prevent indefinite hanging.
+//
+// Parameters:
+//   - path: The filesystem path to the block device (e.g., "/dev/sdb1")
+//   - ioTimeout: The timeout for individual I/O operations
+//   - logger: Logger for device operations and retries
+//
+// Returns:
+//   - *Device: A new Device instance if successful
+//   - error: An error if the device cannot be opened
+//
+// Example:
+//
+//	device, err := blockdevice.OpenWithTimeout("/dev/sdb1", 45*time.Second, logger)
+//	if err != nil {
+//	    log.Fatalf("Failed to open device: %v", err)
+//	}
+//	defer device.Close()
+func OpenWithTimeout(path string, ioTimeout time.Duration, logger logr.Logger) (*Device, error) {
 	if path == "" {
 		return nil, fmt.Errorf("device path cannot be empty")
+	}
+
+	// Validate I/O timeout
+	if ioTimeout <= 0 {
+		return nil, fmt.Errorf("I/O timeout must be positive, got %v", ioTimeout)
+	}
+	if ioTimeout < 1*time.Second {
+		return nil, fmt.Errorf("I/O timeout %v is too short, minimum is 1 second", ioTimeout)
+	}
+	if ioTimeout > 10*time.Minute {
+		return nil, fmt.Errorf("I/O timeout %v is too long, maximum is 10 minutes", ioTimeout)
 	}
 
 	// Configure retry settings for device operations
@@ -124,7 +158,7 @@ func OpenWithLogger(path string, logger logr.Logger) (*Device, error) {
 		path:        path,
 		logger:      logger.WithName("blockdevice").WithValues("path", path),
 		retryConfig: retryConfig,
-		ioTimeout:   DefaultIOTimeout,
+		ioTimeout:   ioTimeout,
 	}, nil
 }
 

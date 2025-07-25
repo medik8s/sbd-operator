@@ -545,6 +545,27 @@ func TestSBDConfigSpec_ValidateAll(t *testing.T) {
 			},
 			wantError: true,
 		},
+		{
+			name: "invalid I/O timeout - too small",
+			spec: SBDConfigSpec{
+				IOTimeout: &metav1.Duration{Duration: 50 * time.Millisecond}, // Too small
+			},
+			wantError: true,
+		},
+		{
+			name: "invalid I/O timeout - too large",
+			spec: SBDConfigSpec{
+				IOTimeout: &metav1.Duration{Duration: 10 * time.Minute}, // Too large
+			},
+			wantError: true,
+		},
+		{
+			name: "valid I/O timeout",
+			spec: SBDConfigSpec{
+				IOTimeout: &metav1.Duration{Duration: 5 * time.Second}, // Valid
+			},
+			wantError: false,
+		},
 	}
 
 	for _, tt := range tests {

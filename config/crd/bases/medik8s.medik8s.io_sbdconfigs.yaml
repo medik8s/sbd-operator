@@ -55,6 +55,14 @@ spec:
                 - Never
                 - IfNotPresent
                 type: string
+              iotimeout:
+                default: 2s
+                description: |-
+                  IOTimeout defines the timeout for SBD I/O operations.
+                  This determines how long the system will wait for SBD I/O operations to complete.
+                  The value must be between 100 milliseconds and 5 minutes.
+                pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
+                type: string
               logLevel:
                 default: info
                 description: |-

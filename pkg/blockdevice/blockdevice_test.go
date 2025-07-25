@@ -22,6 +22,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/go-logr/logr"
 )
 
 // testingInterface defines the common interface between *testing.T and *testing.B
@@ -629,5 +632,99 @@ func BenchmarkWriteAt(b *testing.B) {
 		if err != nil {
 			b.Fatalf("Write failed: %v", err)
 		}
+	}
+}
+
+func TestOpenWithTimeout(t *testing.T) {
+	devicePath, cleanup := setupTestDevice(t, 4096)
+	defer cleanup()
+
+	tests := []struct {
+		name        string
+		timeout     time.Duration
+		expectError bool
+		errorSubstr string
+	}{
+		{
+			name:        "valid timeout - 30 seconds",
+			timeout:     30 * time.Second,
+			expectError: false,
+		},
+		{
+			name:        "valid timeout - 5 seconds (minimum)",
+			timeout:     5 * time.Second,
+			expectError: false,
+		},
+		{
+			name:        "valid timeout - 5 minutes",
+			timeout:     5 * time.Minute,
+			expectError: false,
+		},
+		{
+			name:        "invalid timeout - zero",
+			timeout:     0,
+			expectError: true,
+			errorSubstr: "I/O timeout must be positive",
+		},
+		{
+			name:        "invalid timeout - negative",
+			timeout:     -1 * time.Second,
+			expectError: true,
+			errorSubstr: "I/O timeout must be positive",
+		},
+		{
+			name:        "invalid timeout - too short",
+			timeout:     500 * time.Millisecond,
+			expectError: true,
+			errorSubstr: "I/O timeout",
+		},
+		{
+			name:        "invalid timeout - too long",
+			timeout:     15 * time.Minute,
+			expectError: true,
+			errorSubstr: "I/O timeout",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			device, err := OpenWithTimeout(devicePath, tt.timeout, logr.Discard())
+
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("Expected error but got none")
+					if device != nil {
+						device.Close()
+					}
+					return
+				}
+				if tt.errorSubstr != "" && !strings.Contains(err.Error(), tt.errorSubstr) {
+					t.Errorf("Expected error to contain %q, got: %v", tt.errorSubstr, err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+				return
+			}
+
+			if device == nil {
+				t.Errorf("Expected valid device, got nil")
+				return
+			}
+
+			// Verify the device works with custom timeout
+			testData := []byte("test data")
+			n, err := device.WriteAt(testData, 0)
+			if err != nil {
+				t.Errorf("Failed to write with custom timeout: %v", err)
+			}
+			if n != len(testData) {
+				t.Errorf("Expected to write %d bytes, wrote %d", len(testData), n)
+			}
+
+			device.Close()
+		})
 	}
 }

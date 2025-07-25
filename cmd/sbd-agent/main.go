@@ -87,6 +87,9 @@ var (
 	// Kubernetes client configuration flags (kubeconfig is auto-registered by controller-runtime)
 	namespace     = flag.String("namespace", "", "Namespace to watch for SBDRemediation CRs (optional, watches all namespaces if not specified)")
 	enableFencing = flag.Bool("enable-fencing", true, "Enable agent-based fencing capabilities (watch and process SBDRemediation CRs)")
+
+	// I/O timeout configuration
+	ioTimeout = flag.Duration("io-timeout", 2*time.Second, "Timeout for I/O operations (prevents indefinite hanging when storage becomes unresponsive)")
 )
 
 const (
@@ -523,6 +526,7 @@ type SBDAgent struct {
 	heartbeatInterval time.Duration
 	peerCheckInterval time.Duration
 	rebootMethod      string
+	ioTimeout         time.Duration
 	ctx               context.Context
 	cancel            context.CancelFunc
 	sbdHealthy        bool
@@ -562,18 +566,18 @@ type SBDAgent struct {
 }
 
 // NewSBDAgent creates a new SBD agent with the specified configuration
-func NewSBDAgent(watchdogPath, sbdDevicePath, nodeName, clusterName string, nodeID uint16, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration, sbdTimeoutSeconds uint, rebootMethod string, metricsPort int, staleNodeTimeout time.Duration, fileLockingEnabled bool, k8sClient client.Client, k8sClientset kubernetes.Interface, watchNamespace string, enableFencing bool) (*SBDAgent, error) {
+func NewSBDAgent(watchdogPath, sbdDevicePath, nodeName, clusterName string, nodeID uint16, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration, sbdTimeoutSeconds uint, rebootMethod string, metricsPort int, staleNodeTimeout time.Duration, fileLockingEnabled bool, ioTimeout time.Duration, k8sClient client.Client, k8sClientset kubernetes.Interface, watchNamespace string, enableFencing bool) (*SBDAgent, error) {
 	// Initialize watchdog first (always required) with softdog fallback for systems without hardware watchdog
 	wd, err := watchdog.NewWithSoftdogFallback(watchdogPath, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize watchdog %s: %w", watchdogPath, err)
 	}
 
-	return NewSBDAgentWithWatchdog(wd, sbdDevicePath, nodeName, clusterName, nodeID, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval, sbdTimeoutSeconds, rebootMethod, metricsPort, staleNodeTimeout, fileLockingEnabled, k8sClient, k8sClientset, watchNamespace, enableFencing)
+	return NewSBDAgentWithWatchdog(wd, sbdDevicePath, nodeName, clusterName, nodeID, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval, sbdTimeoutSeconds, rebootMethod, metricsPort, staleNodeTimeout, fileLockingEnabled, ioTimeout, k8sClient, k8sClientset, watchNamespace, enableFencing)
 }
 
 // NewSBDAgentWithWatchdog creates a new SBD agent with a provided watchdog interface
-func NewSBDAgentWithWatchdog(wd WatchdogInterface, sbdDevicePath, nodeName, clusterName string, nodeID uint16, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration, sbdTimeoutSeconds uint, rebootMethod string, metricsPort int, staleNodeTimeout time.Duration, fileLockingEnabled bool, k8sClient client.Client, k8sClientset kubernetes.Interface, watchNamespace string, enableFencing bool) (*SBDAgent, error) {
+func NewSBDAgentWithWatchdog(wd WatchdogInterface, sbdDevicePath, nodeName, clusterName string, nodeID uint16, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration, sbdTimeoutSeconds uint, rebootMethod string, metricsPort int, staleNodeTimeout time.Duration, fileLockingEnabled bool, ioTimeout time.Duration, k8sClient client.Client, k8sClientset kubernetes.Interface, watchNamespace string, enableFencing bool) (*SBDAgent, error) {
 	// Input validation
 	if wd == nil {
 		return nil, fmt.Errorf("watchdog interface cannot be nil")
@@ -646,6 +650,7 @@ func NewSBDAgentWithWatchdog(wd WatchdogInterface, sbdDevicePath, nodeName, clus
 		heartbeatInterval:    heartbeatInterval,
 		peerCheckInterval:    peerCheckInterval,
 		rebootMethod:         rebootMethod,
+		ioTimeout:            ioTimeout,
 		ctx:                  ctx,
 		cancel:               cancel,
 		sbdHealthy:           false,
@@ -731,13 +736,13 @@ func (s *SBDAgent) initMetrics() error {
 
 // initializeSBDDevice opens and initializes the SBD block device
 func (s *SBDAgent) initializeSBDDevice() error {
-	device, err := blockdevice.Open(s.sbdDevicePath)
+	device, err := blockdevice.OpenWithTimeout(s.sbdDevicePath, s.ioTimeout, logger.WithName("sbd-device"))
 	if err != nil {
-		return fmt.Errorf("failed to open SBD device %s: %w", s.sbdDevicePath, err)
+		return fmt.Errorf("failed to open SBD device %s with timeout %v: %w", s.sbdDevicePath, s.ioTimeout, err)
 	}
 
 	s.sbdDevice = device
-	logger.Info("Successfully opened SBD device", "devicePath", s.sbdDevicePath)
+	logger.Info("Successfully opened SBD device", "devicePath", s.sbdDevicePath, "ioTimeout", s.ioTimeout)
 	return nil
 }
 
@@ -2348,7 +2353,7 @@ func main() {
 	}
 
 	// Create SBD agent (hash mapping is always enabled)
-	agent, err := NewSBDAgent(*watchdogPath, *sbdDevice, nodeNameValue, *clusterName, nodeIDValue, *petInterval, *sbdUpdateInterval, heartbeatInterval, *peerCheckInterval, sbdTimeoutValue, rebootMethodValue, *metricsPort, *staleNodeTimeout, *sbdFileLocking, k8sClient, k8sClientset, *namespace, *enableFencing)
+	agent, err := NewSBDAgent(*watchdogPath, *sbdDevice, nodeNameValue, *clusterName, nodeIDValue, *petInterval, *sbdUpdateInterval, heartbeatInterval, *peerCheckInterval, sbdTimeoutValue, rebootMethodValue, *metricsPort, *staleNodeTimeout, *sbdFileLocking, *ioTimeout, k8sClient, k8sClientset, *namespace, *enableFencing)
 	if err != nil {
 		logger.Error(err, "Failed to create SBD agent",
 			"watchdogPath", *watchdogPath,

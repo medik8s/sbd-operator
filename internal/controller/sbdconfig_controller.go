@@ -1448,6 +1448,7 @@ func (r *SBDConfigReconciler) buildSBDAgentArgs(sbdConfig *medik8sv1alpha1.SBDCo
 	// Get configured watchdog timeout and calculate pet interval
 	watchdogTimeout := sbdConfig.Spec.GetWatchdogTimeout()
 	petInterval := sbdConfig.Spec.GetPetInterval()
+	ioTimeout := sbdConfig.Spec.GetIOTimeout()
 
 	// Base arguments using shared flag constants
 	args := []string{
@@ -1457,6 +1458,7 @@ func (r *SBDConfigReconciler) buildSBDAgentArgs(sbdConfig *medik8sv1alpha1.SBDCo
 		fmt.Sprintf("--%s=%s", agent.FlagLogLevel, sbdConfig.Spec.GetLogLevel()),
 		fmt.Sprintf("--%s=%s", agent.FlagClusterName, sbdConfig.Name),
 		fmt.Sprintf("--%s=%s", agent.FlagStaleNodeTimeout, sbdConfig.Spec.GetStaleNodeTimeout().String()),
+		fmt.Sprintf("--io-timeout=%s", ioTimeout.String()),
 	}
 
 	// Add shared storage arguments if configured

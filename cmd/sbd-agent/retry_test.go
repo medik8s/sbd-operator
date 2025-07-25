@@ -39,7 +39,7 @@ func TestSBDAgent_FailureTracking(t *testing.T) {
 
 	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
 		10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond,
-		30, "panic", 8097, 10*time.Minute, true, k8sClient, k8sClientset, testNamespace, false)
+		30, "panic", 8097, 10*time.Minute, true, 2*time.Second, k8sClient, k8sClientset, testNamespace, false)
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestSBDAgent_SelfFenceThreshold(t *testing.T) {
 
 	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
 		10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond,
-		30, "panic", 8098, 10*time.Minute, true, k8sClient, k8sClientset, testNamespace, false)
+		30, "panic", 8098, 10*time.Minute, true, 2*time.Second, k8sClient, k8sClientset, testNamespace, false)
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestSBDAgent_FailureCountReset(t *testing.T) {
 
 	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
 		10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond,
-		30, "panic", 8099, 10*time.Minute, true, k8sClient, k8sClientset, testNamespace, false)
+		30, "panic", 8099, 10*time.Minute, true, 2*time.Second, k8sClient, k8sClientset, testNamespace, false)
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestSBDAgent_RetryConfiguration(t *testing.T) {
 
 	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
 		1*time.Second, 1*time.Second, 1*time.Second, 1*time.Second,
-		30, "panic", 8100, 10*time.Minute, true, k8sClient, k8sClientset, testNamespace, false)
+		30, "panic", 8100, 10*time.Minute, true, 2*time.Second, k8sClient, k8sClientset, testNamespace, false)
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestSBDAgent_WatchdogRetryMechanism(t *testing.T) {
 
 	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
 		10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond,
-		30, "panic", 8101, 10*time.Minute, true, k8sClient, k8sClientset, testNamespace, false)
+		30, "panic", 8101, 10*time.Minute, true, 2*time.Second, k8sClient, k8sClientset, testNamespace, false)
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
@@ -293,7 +293,7 @@ func TestSBDAgent_HeartbeatRetryMechanism(t *testing.T) {
 
 	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
 		10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond,
-		30, "panic", 8102, 10*time.Minute, true, k8sClient, k8sClientset, testNamespace, false)
+		30, "panic", 8102, 10*time.Minute, true, 2*time.Second, k8sClient, k8sClientset, testNamespace, false)
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
