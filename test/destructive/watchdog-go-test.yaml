@@ -1,0 +1,161 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: watchdog-go-test
+  namespace: default
+  labels:
+    app: sbd-destructive-test
+    test-type: watchdog-go
+  annotations:
+    description: "DESTRUCTIVE TEST: This DaemonSet will cause the target node to REBOOT using Go watchdog binary"
+spec:
+  selector:
+    matchLabels:
+      app: sbd-destructive-test
+      test-type: watchdog-go
+  template:
+    metadata:
+      labels:
+        app: sbd-destructive-test
+        test-type: watchdog-go
+    spec:
+      restartPolicy: Always
+      
+      # Target specific node for testing
+      nodeSelector:
+        kubernetes.io/hostname: "ip-10-0-41-71.ap-southeast-2.compute.internal"
+      
+      hostPID: true
+      hostNetwork: true
+      
+      initContainers:
+      - name: watchdog-go-init
+        image: quay.io/medik8s/sbd-destructive-tests:latest
+        imagePullPolicy: Always
+        
+        command:
+        - sh
+        - -c
+        - |
+          echo "=== WATCHDOG GO BINARY TEST ==="
+          echo "Node: $NODE_NAME"
+          echo "Time: $(date)"
+          echo "Using Go binary for watchdog test..."
+          echo "=================================="
+          
+          # Step 1: Copy Go binary to host filesystem
+          echo "1. Copying Go binary to host filesystem..."
+          cp /usr/local/bin/watchdog-reboot-test /tmp/host/watchdog-reboot-test
+          chmod +x /tmp/host/watchdog-reboot-test
+          
+          echo "2. Verifying binary copied successfully..."
+          ls -la /tmp/host/watchdog-reboot-test
+          
+          # Step 2: Use nsenter to execute the Go binary from host namespace
+          echo "3. Executing Go binary via nsenter..."
+          nsenter --mount=/proc/1/ns/mnt --pid=/proc/1/ns/pid -- \
+            /tmp/watchdog-reboot-test \
+            --delay=10 \
+            --pets=5 \
+            --interval=3s \
+            --watchdog=/dev/watchdog \
+            --node="$NODE_NAME"
+        
+        securityContext:
+          privileged: true
+          runAsUser: 0
+          capabilities:
+            add:
+            - SYS_BOOT
+            - SYS_ADMIN
+            - SYS_MODULE
+        
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+        
+        volumeMounts:
+        - name: host-tmp
+          mountPath: /tmp/host
+        - name: host-dev
+          mountPath: /dev
+          
+      containers:
+      - name: sleeper
+        image: registry.redhat.io/ubi9/ubi-minimal:latest
+        command: ["/bin/sleep", "infinity"]
+        securityContext:
+          runAsUser: 1001
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "50m"
+          limits:
+            memory: "64Mi"
+            cpu: "100m"
+                  
+      volumes:
+      - name: host-tmp
+        hostPath:
+          path: /tmp
+          type: Directory
+      - name: host-dev
+        hostPath:
+          path: /dev
+          type: Directory
+          
+      tolerations:
+      - operator: Exists
+        effect: NoSchedule
+      - operator: Exists
+        effect: NoExecute
+        
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: watchdog-go-test-instructions
+  namespace: default
+data:
+  README.md: |
+    # WATCHDOG GO BINARY TEST
+    
+    ⚠️  **EXTREMELY DANGEROUS - WILL REBOOT THE TARGET NODE** ⚠️
+    
+    ## What this test does:
+    1. Uses the compiled Go watchdog-reboot-test binary
+    2. Copies the binary to host filesystem (/tmp)
+    3. Uses nsenter to execute the binary from host namespace
+    4. Opens /dev/watchdog and stops petting it
+    5. Should trigger an immediate reboot when watchdog times out
+    
+    ## Advantages of Go binary:
+    - More realistic test (matches actual SBD agent behavior)
+    - Better error handling and logging
+    - Configurable parameters
+    - Matches production Go code patterns
+    
+    ## To run:
+    kubectl apply -f watchdog-go-test.yaml
+    
+    ## To monitor:
+    kubectl logs -f daemonset/watchdog-go-test -c watchdog-go-init
+    
+    ## Expected behavior:
+    - Binary copies successfully to host
+    - nsenter executes the Go binary with host privileges
+    - Watchdog device opens and gets petted 5 times
+    - Node should reboot within 60 seconds after petting stops
+    
+    ## To cleanup:
+    kubectl delete daemonset watchdog-go-test 

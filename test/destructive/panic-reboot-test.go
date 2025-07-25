@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"time"
 )
 
@@ -12,6 +13,38 @@ var (
 	delaySeconds = flag.Int("delay", 10, "Delay in seconds before triggering panic")
 	nodeName     = flag.String("node", "", "Node name where this test is running (for logging)")
 )
+
+// executeSystemReboot attempts to reboot the system using multiple methods
+func executeSystemReboot() error {
+	log.Printf("Attempting system reboot via nsenter and systemctl...")
+
+	// Try nsenter to access the host PID namespace and execute reboot
+	cmd := exec.Command("nsenter", "--target", "1", "--mount", "--uts", "--ipc", "--net", "--pid", "--", "systemctl", "reboot", "--force", "--force")
+	err := cmd.Run()
+	if err != nil {
+		log.Printf("nsenter systemctl reboot failed: %v", err)
+
+		// Try direct systemctl if nsenter fails
+		log.Printf("Trying direct systemctl reboot...")
+		cmd = exec.Command("systemctl", "reboot", "--force", "--force")
+		err = cmd.Run()
+		if err != nil {
+			log.Printf("Direct systemctl reboot failed: %v", err)
+
+			// Try reboot command as last resort
+			log.Printf("Trying reboot command...")
+			cmd = exec.Command("reboot", "-f")
+			err = cmd.Run()
+			if err != nil {
+				log.Printf("reboot -f failed: %v", err)
+				return fmt.Errorf("all reboot methods failed: %v", err)
+			}
+		}
+	}
+
+	log.Printf("Reboot command executed successfully")
+	return nil
+}
 
 func main() {
 	flag.Parse()
@@ -37,9 +70,15 @@ func main() {
 		time.Sleep(1 * time.Second)
 	}
 
-	log.Printf("TRIGGERING PANIC NOW - NODE SHOULD REBOOT!")
+	log.Printf("TRIGGERING SYSTEM REBOOT NOW - NODE SHOULD REBOOT!")
 
-	// Force a panic - this should trigger node reboot if running with proper privileges
-	panic(fmt.Sprintf("DESTRUCTIVE TEST: Intentional panic to test node reboot on %s at %s",
-		*nodeName, time.Now().Format(time.RFC3339)))
+	// Execute system reboot via multiple methods to ensure it works
+	log.Printf("Attempting emergency reboot via systemctl...")
+	err := executeSystemReboot()
+	if err != nil {
+		log.Printf("System reboot failed: %v", err)
+		log.Printf("Falling back to panic...")
+		panic(fmt.Sprintf("DESTRUCTIVE TEST: System reboot failed, falling back to panic on %s at %s",
+			*nodeName, time.Now().Format(time.RFC3339)))
+	}
 }

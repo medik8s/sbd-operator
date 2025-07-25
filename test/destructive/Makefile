@@ -106,6 +106,65 @@ endif
 	kubectl apply -f watchdog-reboot-test.yaml
 	@echo "✅ Watchdog test started! Monitor with: make monitor-watchdog"
 
+# Deployment targets using DaemonSet pattern (like medik8s operators)
+.PHONY: deploy-panic deploy-watchdog
+deploy-panic: $(REGISTRY_CHECK)
+	@echo "🚨 WARNING: This will deploy a DESTRUCTIVE DaemonSet that will REBOOT nodes!"
+	@echo "🎯 Using proven DaemonSet + nsenter pattern (like medik8s self-node-remediation)"
+	@echo "📡 Target node: Check nodeSelector in panic-reboot-test.yaml"
+	@echo ""
+	@read -p "Are you sure you want to continue? (type 'YES' to confirm): " confirm; \
+	if [ "$$confirm" = "YES" ]; then \
+		echo "🚀 Deploying panic reboot test (DaemonSet)..."; \
+		kubectl apply -f panic-reboot-test.yaml; \
+		echo "✅ Deployed! Monitor with: kubectl logs -f daemonset/panic-reboot-test -c panic-reboot-init"; \
+	else \
+		echo "❌ Deployment cancelled."; \
+		exit 1; \
+	fi
+
+deploy-watchdog: $(REGISTRY_CHECK)
+	@echo "🚨 WARNING: This will deploy a DESTRUCTIVE DaemonSet that will REBOOT nodes!"
+	@echo "🎯 Using proven DaemonSet + nsenter pattern (like medik8s self-node-remediation)"
+	@echo "📡 Target node: Edit TARGET_NODE_NAME_HERE in watchdog-reboot-test.yaml"
+	@echo ""
+	@read -p "Are you sure you want to continue? (type 'YES' to confirm): " confirm; \
+	if [ "$$confirm" = "YES" ]; then \
+		echo "🚀 Deploying watchdog reboot test (DaemonSet)..."; \
+		kubectl apply -f watchdog-reboot-test.yaml; \
+		echo "✅ Deployed! Monitor with: kubectl logs -f daemonset/watchdog-reboot-test -c watchdog-reboot-init"; \
+	else \
+		echo "❌ Deployment cancelled."; \
+		exit 1; \
+	fi
+
+# Monitor deployed tests
+.PHONY: monitor-panic monitor-watchdog
+monitor-panic:
+	@echo "📊 Monitoring panic reboot test logs..."
+	kubectl logs -f daemonset/panic-reboot-test -c panic-reboot-init
+
+monitor-watchdog:
+	@echo "📊 Monitoring watchdog reboot test logs..."
+	kubectl logs -f daemonset/watchdog-reboot-test -c watchdog-reboot-init
+
+# Cleanup targets for DaemonSets  
+.PHONY: cleanup-panic cleanup-watchdog cleanup-all
+cleanup-panic:
+	@echo "🧹 Cleaning up panic reboot test..."
+	kubectl delete daemonset panic-reboot-test --ignore-not-found
+	kubectl delete configmap panic-test-instructions --ignore-not-found
+	@echo "✅ Panic test cleaned up"
+
+cleanup-watchdog:
+	@echo "🧹 Cleaning up watchdog reboot test..."
+	kubectl delete daemonset watchdog-reboot-test --ignore-not-found
+	kubectl delete configmap watchdog-test-instructions --ignore-not-found
+	@echo "✅ Watchdog test cleaned up"
+
+cleanup-all: cleanup-panic cleanup-watchdog
+	@echo "✅ All destructive tests cleaned up"
+
 # Monitor test logs
 .PHONY: monitor-panic
 monitor-panic:

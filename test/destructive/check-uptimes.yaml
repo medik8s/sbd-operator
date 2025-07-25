@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: check-uptimes
+  namespace: default
+  labels:
+    app: uptime-check
+spec:
+  selector:
+    matchLabels:
+      app: uptime-check
+  template:
+    metadata:
+      labels:
+        app: uptime-check
+    spec:
+      restartPolicy: Always
+      
+      # Only run on worker nodes
+      nodeSelector:
+        node-role.kubernetes.io/worker: ""
+      
+      hostPID: true
+      hostNetwork: true
+      
+      initContainers:
+      - name: uptime-check
+        image: registry.redhat.io/ubi9/ubi:latest
+        imagePullPolicy: Always
+        
+        command:
+        - nsenter
+        - --mount=/proc/1/ns/mnt
+        - --
+        - sh
+        - -c
+        - |
+          echo "=== NODE UPTIME REPORT ==="
+          echo "Node: $(hostname)"
+          echo "Current time: $(date)"
+          echo "Uptime: $(uptime)"
+          echo "Boot time: $(who -b 2>/dev/null || echo 'Boot time unavailable')"
+          echo "=========================="
+        
+        securityContext:
+          privileged: true
+          runAsUser: 0
+          
+      containers:
+      - name: sleeper
+        image: registry.redhat.io/ubi9/ubi-minimal:latest
+        command: ["/bin/sleep", "30"]  # Only run for 30 seconds
+        securityContext:
+          runAsUser: 1001
+          
+      tolerations:
+      - operator: Exists
+        effect: NoSchedule
+      - operator: Exists
+        effect: NoExecute 
