@@ -1016,6 +1016,24 @@ func CleanupSBDConfigs(k8sClient client.Client, testNS TestNamespace, ctx contex
 	}
 }
 
+func CheckClusterConnection() error {
+
+	GinkgoWriter.Print("Checking for Kubernetes configuration\n")
+	testClients, err := SetupKubernetesClients()
+	if err != nil {
+		return fmt.Errorf("failed to setup Kubernetes clients: %v", err)
+	}
+
+	// Verify we can connect to the cluster
+	GinkgoWriter.Print("Verifying cluster connection\n")
+	if serverVersion, err := testClients.Clientset.Discovery().ServerVersion(); err != nil {
+		GinkgoWriter.Printf("Connected to Kubernetes cluster version: %s\n", serverVersion.String())
+		return nil
+	} else {
+		return fmt.Errorf("failed to connect to cluster: %v", err)
+	}
+}
+
 func SuiteSetup(namespace string) (*TestNamespace, error) {
 
 	By("verifying smoke test environment setup")

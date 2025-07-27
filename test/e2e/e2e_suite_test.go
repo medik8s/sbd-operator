@@ -45,11 +45,18 @@ var (
 // CertManager.
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
-	_, _ = fmt.Fprintf(GinkgoWriter, "Starting sbd-operator e2e test suite\n")
+	GinkgoWriter.Print("Starting sbd-operator e2e test suite\n")
 	RunSpecs(t, "e2e suite")
 }
 
+var skipall = false
 var _ = BeforeSuite(func() {
+	// Check cluster connection first - skip entire suite if not available
+	if err := utils.CheckClusterConnection(); err != nil {
+		skipall = true
+		Skip(fmt.Sprintf("Cluster connection not available: %v", err))
+	}
+
 	var err error
 	testNamespace, err = utils.SuiteSetup("sbd-test-e2e")
 	Expect(err).NotTo(HaveOccurred(), "Failed to setup test clients")
@@ -79,6 +86,10 @@ var _ = BeforeSuite(func() {
 })
 
 var _ = AfterSuite(func() {
+	if skipall {
+		return
+	}
+
 	utils.UninstallCertManager()
 
 	By("cleaning up e2e test namespace")

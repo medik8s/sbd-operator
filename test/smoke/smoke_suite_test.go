@@ -50,11 +50,18 @@ const serviceAccountName = "sbd-operator-controller-manager"
 // CertManager.
 func TestSmoke(t *testing.T) {
 	RegisterFailHandler(Fail)
-	_, _ = fmt.Fprintf(GinkgoWriter, "Starting sbd-operator smoke test suite\n")
+	GinkgoWriter.Print("Starting sbd-operator smoke test suite\n")
 	RunSpecs(t, "smoke suite")
 }
 
+var skipall = false
 var _ = BeforeSuite(func() {
+	// Check cluster connection first - skip entire suite if not available
+	if err := utils.CheckClusterConnection(); err != nil {
+		skipall = true
+		Skip(fmt.Sprintf("Cluster connection not available: %v", err))
+	}
+
 	var err error
 	testNamespace, err = utils.SuiteSetup("sbd-test")
 	Expect(err).NotTo(HaveOccurred(), "Failed to setup test clients")
@@ -62,6 +69,10 @@ var _ = BeforeSuite(func() {
 })
 
 var _ = AfterSuite(func() {
+	if skipall {
+		return
+	}
+
 	// Teardown CertManager after the suite if not skipped and if it was not already installed
 	utils.UninstallCertManager()
 	By("cleaning up watchdog smoke test namespace")
