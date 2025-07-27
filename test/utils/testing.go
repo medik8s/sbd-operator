@@ -474,9 +474,9 @@ func (dc *DebugCollector) CollectPodDescription(namespace, podName string) {
 	err := dc.Clients.Client.Get(dc.Clients.Context, client.ObjectKey{Name: podName, Namespace: namespace}, pod)
 	if err == nil {
 		podYAML, _ := yaml.Marshal(pod)
-		_, _ = fmt.Fprintf(GinkgoWriter, "Pod description:\n%s", string(podYAML))
+		GinkgoWriter.Printf("Pod description:\n%s", string(podYAML))
 	} else {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get pod description: %s", err)
+		GinkgoWriter.Printf("Failed to get pod description: %s\n", err)
 	}
 }
 
@@ -1026,7 +1026,7 @@ func CheckClusterConnection() error {
 
 	// Verify we can connect to the cluster
 	GinkgoWriter.Print("Verifying cluster connection\n")
-	if serverVersion, err := testClients.Clientset.Discovery().ServerVersion(); err != nil {
+	if serverVersion, err := testClients.Clientset.Discovery().ServerVersion(); err == nil {
 		GinkgoWriter.Printf("Connected to Kubernetes cluster version: %s\n", serverVersion.String())
 		return nil
 	} else {
@@ -1158,9 +1158,6 @@ func DescribeEnvironment(testClients *TestClients, namespace string) {
 	// Collect Kubernetes events
 	debugCollector.CollectKubernetesEvents(namespace)
 
-	// Collect controller pod description
-	debugCollector.CollectPodDescription(namespace, controllerPodName)
-
 	if isControllerNamespace {
 		By("validating that the controller-manager pod is running as expected")
 		verifyControllerUp := func(g Gomega) {
@@ -1182,6 +1179,9 @@ func DescribeEnvironment(testClients *TestClients, namespace string) {
 
 			controllerPodName = activePods[0].Name
 			g.Expect(controllerPodName).To(ContainSubstring("controller-manager"))
+
+			// Collect controller pod description
+			debugCollector.CollectPodDescription(namespace, controllerPodName)
 
 			// Validate the pod's status
 			g.Expect(activePods[0].Status.Phase).To(Equal(corev1.PodRunning), "Incorrect controller-manager pod status")
@@ -1232,6 +1232,13 @@ func DescribeEnvironment(testClients *TestClients, namespace string) {
 				g.Expect(pod.Name).To(ContainSubstring("sbd-agent"))
 				g.Expect(pod.Status.Phase).To(Equal(corev1.PodRunning), "Incorrect SBD agent pod status")
 			}
+
+			agentPodName := activePods[0].Name
+			g.Expect(agentPodName).To(ContainSubstring("sbd-agent"))
+
+			// Collect agent pod description
+			debugCollector.CollectPodDescription(namespace, agentPodName)
+
 		}
 		Eventually(verifyAgentsUp).Should(Succeed())
 
