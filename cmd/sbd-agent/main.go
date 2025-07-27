@@ -1947,6 +1947,10 @@ func (s *SBDAgent) initializeControllerManager() error {
 		return fmt.Errorf("failed to get Kubernetes config: %w", err)
 	}
 
+	// Set the controller-runtime logger to use our structured logger
+	// This must be done before creating the controller manager
+	ctrl.SetLogger(logger)
+
 	// Create controller-runtime manager options
 	options := ctrl.Options{
 		Scheme: s.getScheme(),
@@ -1966,6 +1970,7 @@ func (s *SBDAgent) initializeControllerManager() error {
 		return fmt.Errorf("failed to add SBDRemediation controller: %w", err)
 	}
 
+	logger.Info("SBDRemediation controller added to manager successfully")
 	return nil
 }
 
