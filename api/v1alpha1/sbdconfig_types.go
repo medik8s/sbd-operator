@@ -176,10 +176,12 @@ type SBDConfigSpec struct {
 	IOTimeout *metav1.Duration `json:"iotimeout,omitempty"`
 
 	// RebootMethod defines the method to use for self-fencing when a node needs to be rebooted.
-	// Valid values are "panic" (immediate kernel panic) and "systemctl-reboot" (graceful systemctl reboot).
+	// Valid values are "panic" (immediate kernel panic), "systemctl-reboot" (graceful systemctl reboot),
+	// and "none" (disable self-fencing, rely only on watchdog hardware timeout).
 	// Panic provides the fastest failover but less graceful shutdown, while systemctl-reboot allows
-	// for graceful service shutdown but may be slower.
-	// +kubebuilder:validation:Enum=panic;systemctl-reboot
+	// for graceful service shutdown but may be slower. The "none" option disables agent-initiated
+	// self-fencing and relies solely on hardware watchdog timeout for node fencing.
+	// +kubebuilder:validation:Enum=panic;systemctl-reboot;none
 	// +kubebuilder:default="panic"
 	// +optional
 	RebootMethod string `json:"rebootMethod,omitempty"`
