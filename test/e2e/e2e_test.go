@@ -282,7 +282,7 @@ func testBasicSBDConfiguration(cluster ClusterInfo) {
 		config.Spec.StaleNodeTimeout = &metav1.Duration{Duration: 2 * time.Hour}
 		config.Spec.WatchdogTimeout = &metav1.Duration{Duration: 90 * time.Second}
 	})
-	Expect(err).NotTo(HaveOccurred())
+	Expect(err).NotTo(HaveOccurred(), "SBDConfig creation failed")
 
 	validator := testNamespace.NewSBDAgentValidator()
 	opts := utils.DefaultValidateAgentDeploymentOptions(sbdConfig.Name)

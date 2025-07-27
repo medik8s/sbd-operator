@@ -1098,84 +1098,129 @@ func DescribeEnvironment(testClients *TestClients, namespace string) {
 	var controllerPodName string
 	By(fmt.Sprintf("Describing the %s environment", namespace))
 
-	By("Fetching SBDConfig CRs")
-	sbdConfigs := &medik8sv1alpha1.SBDConfigList{}
-	err := testClients.Client.List(testClients.Context, sbdConfigs, client.InNamespace(namespace))
-	if err != nil {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get SBDConfig CRs: %s", err)
-	} else {
-		_, _ = fmt.Fprintf(GinkgoWriter, "SBDConfig CRs found: %d\n", len(sbdConfigs.Items))
-		for i, config := range sbdConfigs.Items {
-			_, _ = fmt.Fprintf(GinkgoWriter, "SBDConfig %d:\n", i+1)
-			_, _ = fmt.Fprintf(GinkgoWriter, "  Name: %s\n", config.Name)
-			_, _ = fmt.Fprintf(GinkgoWriter, "  Namespace: %s\n", config.Namespace)
-			_, _ = fmt.Fprintf(GinkgoWriter, "  Status: %+v\n", config.Status)
-			_, _ = fmt.Fprintf(GinkgoWriter, "  Spec: %+v\n", config.Spec)
-		}
-	}
+	// Determine if this is a controller or agent namespace
+	isControllerNamespace := false
+	isAgentNamespace := false
 
-	By("validating that the controller-manager pod is running as expected")
-	verifyControllerUp := func(g Gomega) {
-		// Get controller-manager pods
+	// Heuristic: "sbd-operator-system" is the default controller namespace
+	if namespace == "sbd-operator-system" {
+		isControllerNamespace = true
+	} else {
+		// Check for presence of controller-manager pods
 		pods := &corev1.PodList{}
 		err := testClients.Client.List(testClients.Context, pods,
 			client.InNamespace(namespace),
 			client.MatchingLabels{"control-plane": "controller-manager"})
-		g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve controller-manager pod information")
-
-		// Filter out pods that are being deleted
-		var activePods []corev1.Pod
-		for _, pod := range pods.Items {
-			if pod.DeletionTimestamp == nil {
-				activePods = append(activePods, pod)
-			}
-		}
-		g.Expect(activePods).To(HaveLen(1), "expected 1 controller pod running")
-
-		controllerPodName = activePods[0].Name
-		g.Expect(controllerPodName).To(ContainSubstring("controller-manager"))
-
-		// Validate the pod's status
-		g.Expect(activePods[0].Status.Phase).To(Equal(corev1.PodRunning), "Incorrect controller-manager pod status")
-	}
-	Eventually(verifyControllerUp).Should(Succeed())
-
-	By("validating that SBD agent pods are running as expected")
-	verifyAgentsUp := func(g Gomega) {
-		// Get SBD agent pods
-		pods := &corev1.PodList{}
-		err := testClients.Client.List(testClients.Context, pods,
-			client.InNamespace(namespace),
-			client.MatchingLabels{"app": "sbd-agent"})
-		g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve SBD agent pod information")
-
-		// Filter out pods that are being deleted
-		var activePods []corev1.Pod
-		for _, pod := range pods.Items {
-			if pod.DeletionTimestamp == nil {
-				activePods = append(activePods, pod)
-			}
-		}
-		g.Expect(len(activePods)).To(BeNumerically(">=", 1), "expected at least 1 SBD agent pod running")
-
-		// Validate each agent pod's status
-		for _, pod := range activePods {
-			g.Expect(pod.Name).To(ContainSubstring("sbd-agent"))
-			g.Expect(pod.Status.Phase).To(Equal(corev1.PodRunning), "Incorrect SBD agent pod status")
+		if err == nil && len(pods.Items) > 0 {
+			isControllerNamespace = true
 		}
 	}
-	Eventually(verifyAgentsUp).Should(Succeed())
+
+	// Heuristic: agent pods are labeled "app=sbd-agent"
+	agentPods := &corev1.PodList{}
+	err := testClients.Client.List(testClients.Context, agentPods,
+		client.InNamespace(namespace),
+		client.MatchingLabels{"app": "sbd-agent"})
+	if err == nil && len(agentPods.Items) > 0 {
+		isAgentNamespace = true
+	}
+
+	// Log the determination
+	if isControllerNamespace && isAgentNamespace {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Namespace %q contains both controller and agent pods (hybrid or test namespace)\n", namespace)
+	} else if isControllerNamespace {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Namespace %q is identified as the controller namespace\n", namespace)
+	} else if isAgentNamespace {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Namespace %q is identified as an agent namespace\n", namespace)
+	} else {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Namespace %q does not appear to contain controller or agent pods\n", namespace)
+	}
 
 	debugCollector := testClients.NewDebugCollector()
-
-	// Collect controller logs
-	debugCollector.CollectControllerLogs(namespace, controllerPodName)
-
-	// Collect agent logs
-	debugCollector.CollectAgentLogs(namespace)
-
 	// Collect Kubernetes events
 	debugCollector.CollectKubernetesEvents(namespace)
+
+	// Collect controller pod description
+	debugCollector.CollectPodDescription(namespace, controllerPodName)
+
+	if isControllerNamespace {
+		By("validating that the controller-manager pod is running as expected")
+		verifyControllerUp := func(g Gomega) {
+			// Get controller-manager pods
+			pods := &corev1.PodList{}
+			err := testClients.Client.List(testClients.Context, pods,
+				client.InNamespace(namespace),
+				client.MatchingLabels{"control-plane": "controller-manager"})
+			g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve controller-manager pod information")
+
+			// Filter out pods that are being deleted
+			var activePods []corev1.Pod
+			for _, pod := range pods.Items {
+				if pod.DeletionTimestamp == nil {
+					activePods = append(activePods, pod)
+				}
+			}
+			g.Expect(activePods).To(HaveLen(1), "expected 1 controller pod running")
+
+			controllerPodName = activePods[0].Name
+			g.Expect(controllerPodName).To(ContainSubstring("controller-manager"))
+
+			// Validate the pod's status
+			g.Expect(activePods[0].Status.Phase).To(Equal(corev1.PodRunning), "Incorrect controller-manager pod status")
+		}
+		Eventually(verifyControllerUp).Should(Succeed())
+
+		// Collect controller logs
+		debugCollector.CollectControllerLogs(namespace, controllerPodName)
+	}
+
+	if isAgentNamespace {
+		By("Fetching SBDConfig CRs")
+		sbdConfigs := &medik8sv1alpha1.SBDConfigList{}
+		err := testClients.Client.List(testClients.Context, sbdConfigs, client.InNamespace(namespace))
+		if err != nil {
+			_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get SBDConfig CRs: %s", err)
+		} else {
+			_, _ = fmt.Fprintf(GinkgoWriter, "SBDConfig CRs found: %d\n", len(sbdConfigs.Items))
+			for i, config := range sbdConfigs.Items {
+				_, _ = fmt.Fprintf(GinkgoWriter, "SBDConfig %d:\n", i+1)
+				_, _ = fmt.Fprintf(GinkgoWriter, "  Name: %s\n", config.Name)
+				_, _ = fmt.Fprintf(GinkgoWriter, "  Namespace: %s\n", config.Namespace)
+				_, _ = fmt.Fprintf(GinkgoWriter, "  Status: %+v\n", config.Status)
+				_, _ = fmt.Fprintf(GinkgoWriter, "  Spec: %+v\n", config.Spec)
+			}
+		}
+
+		By("validating that SBD agent pods are running as expected")
+		verifyAgentsUp := func(g Gomega) {
+			// Get SBD agent pods
+			pods := &corev1.PodList{}
+			err := testClients.Client.List(testClients.Context, pods,
+				client.InNamespace(namespace),
+				client.MatchingLabels{"app": "sbd-agent"})
+			g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve SBD agent pod information")
+
+			// Filter out pods that are being deleted
+			var activePods []corev1.Pod
+			for _, pod := range pods.Items {
+				if pod.DeletionTimestamp == nil {
+					activePods = append(activePods, pod)
+				}
+			}
+			g.Expect(len(activePods)).To(BeNumerically(">=", 1), "expected at least 1 SBD agent pod running")
+
+			// Validate each agent pod's status
+			for _, pod := range activePods {
+				g.Expect(pod.Name).To(ContainSubstring("sbd-agent"))
+				g.Expect(pod.Status.Phase).To(Equal(corev1.PodRunning), "Incorrect SBD agent pod status")
+			}
+		}
+		Eventually(verifyAgentsUp).Should(Succeed())
+
+		// Collect agent logs
+		debugCollector.CollectAgentLogs(namespace)
+
+	}
 
 	By("Fetching curl-metrics logs")
 	req := testClients.Clientset.CoreV1().Pods(namespace).GetLogs("curl-metrics", &corev1.PodLogOptions{})
@@ -1189,6 +1234,4 @@ func DescribeEnvironment(testClients *TestClients, namespace string) {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get curl-metrics logs: %s", err)
 	}
 
-	// Collect controller pod description
-	debugCollector.CollectPodDescription(namespace, controllerPodName)
 }
