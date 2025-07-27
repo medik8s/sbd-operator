@@ -29,6 +29,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	gomegatypes "github.com/onsi/gomega/types"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -445,13 +446,13 @@ func getNodeBootID(nodeName string) string {
 	return node.Status.NodeInfo.BootID
 }
 
-func checkNodeReboot(nodeName string, originalBootTime string, timeout time.Duration, target bool) {
+func checkNodeReboot(nodeName, reason, originalBootTime string, timeout time.Duration, target bool) {
 	// Verify that the node has not rebooted during the network disruption
 	rebootText := ""
-	if target {
+	if !target {
 		rebootText = "not "
 	}
-	By(fmt.Sprintf("Verifying node has %srebooted during disruption", rebootText))
+	By(fmt.Sprintf("Verifying node %s has %srebooted %s", nodeName, rebootText, reason))
 	result := Eventually(func() bool {
 		currentBootID := getNodeBootID(nodeName)
 		if originalBootTime != "" && currentBootID != originalBootTime {
@@ -461,16 +462,16 @@ func checkNodeReboot(nodeName string, originalBootTime string, timeout time.Dura
 		return false
 	}, timeout, time.Second*15)
 
-	resultText := fmt.Sprintf("Node should %shave rebooted during network disruption", rebootText)
+	resultText := fmt.Sprintf("Node %s should %shave rebooted %s", nodeName, rebootText, reason)
 	if target {
 		result.Should(BeTrue(), resultText)
 	} else {
-		result.ShouldNot(BeTrue(), resultText)
+		result.Should(BeFalse(), resultText)
 	}
 
 	if target {
 		// Wait longer for node to come back online after reboot
-		By("Waiting for node to come back online after reboot")
+		By(fmt.Sprintf("Waiting for node %s to come back online after reboot", nodeName))
 		Eventually(func() bool {
 			node := &corev1.Node{}
 			err := k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)
@@ -481,12 +482,38 @@ func checkNodeReboot(nodeName string, originalBootTime string, timeout time.Dura
 			// Check if node is Ready again
 			for _, condition := range node.Status.Conditions {
 				if condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue {
-					By(fmt.Sprintf("Node %s has come back online after reboot", nodeName))
+					GinkgoWriter.Printf("Node %s has come back online after reboot\n", nodeName)
 					return true
 				}
 			}
 			return false
 		}, time.Minute*10, time.Second*30).Should(BeTrue())
+	}
+}
+
+func checkNodeNotReady(nodeName, reason string, timeout time.Duration, enforceFn func() gomegatypes.GomegaMatcher) {
+	By(fmt.Sprintf("Checking that node %s %s", nodeName, reason))
+	result := Eventually(func() bool {
+		node := &corev1.Node{}
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)
+		if err != nil {
+			GinkgoWriter.Printf("Node %s is not found: %s\n", nodeName, err)
+			return false
+		}
+
+		// Check if node is NotReady or has storage-related issues
+		for _, condition := range node.Status.Conditions {
+			if condition.Type == corev1.NodeReady && condition.Status != corev1.ConditionTrue {
+				GinkgoWriter.Printf("Node %s is now NotReady: %s\n", nodeName, condition.Reason)
+				return true
+			} else if condition.Type == corev1.NodeReady {
+				GinkgoWriter.Printf("Node %s is now NotReady: %s\n", nodeName, condition.Status)
+			}
+		}
+		return false
+	}, timeout, time.Second*20)
+	if enforceFn != nil {
+		result.Should(enforceFn(), fmt.Sprintf("Node %s should %s", nodeName, reason))
 	}
 }
 
@@ -511,7 +538,7 @@ func testStorageAccessInterruption(cluster ClusterInfo) {
 	// Get AWS instance ID for the target node
 	instanceID, err := getInstanceIDFromNode(targetNode.Metadata.Name)
 	Expect(err).NotTo(HaveOccurred())
-	By(fmt.Sprintf("Target node %s has AWS instance ID: %s", targetNode.Metadata.Name, instanceID))
+	GinkgoWriter.Printf("Target node %s has AWS instance ID: %s\n", targetNode.Metadata.Name, instanceID)
 
 	// Create storage disruption by blocking network access to shared storage
 	By("Creating AWS storage disruption by blocking network access to shared storage")
@@ -520,7 +547,7 @@ func testStorageAccessInterruption(cluster ClusterInfo) {
 		// If storage disruption cannot be created, skip this test
 		Skip(fmt.Sprintf("Skipping storage disruption test: %v", err))
 	}
-	By(fmt.Sprintf("Created %d storage disruptor pods for node %s", len(disruptorPods), targetNode.Metadata.Name))
+	GinkgoWriter.Printf("Created %d storage disruptor pods for node %s\n", len(disruptorPods), targetNode.Metadata.Name)
 
 	// Ensure cleanup happens even if test fails
 	// defer func() {
@@ -538,26 +565,11 @@ func testStorageAccessInterruption(cluster ClusterInfo) {
 	time.Sleep(30 * time.Second)
 
 	// Monitor for node becoming NotReady due to loss of shared storage access
-	By("Checking if node becomes NotReady due to loss of shared storage access")
-	Eventually(func() bool {
-		node := &corev1.Node{}
-		err := k8sClient.Get(ctx, types.NamespacedName{Name: targetNode.Metadata.Name}, node)
-		if err != nil {
-			return false
-		}
-
-		// Check if node is NotReady or has storage-related issues
-		for _, condition := range node.Status.Conditions {
-			if condition.Type == corev1.NodeReady && condition.Status != corev1.ConditionTrue {
-				By(fmt.Sprintf("Node %s is now NotReady: %s", targetNode.Metadata.Name, condition.Reason))
-				return true
-			}
-		}
-		return false
-	}, time.Minute*5, time.Second*20).Should(BeTrue(), "Node should be NotReady due to network disruption")
+	checkNodeNotReady(targetNode.Metadata.Name, "becomes NotReady due to loss of shared storage access", time.Minute*8, nil)
+	//BeTrue()
 
 	// Monitor for node disappearing (panic/reboot) or boot ID change
-	checkNodeReboot(targetNode.Metadata.Name, originalBootTimes[targetNode.Metadata.Name], time.Minute*2, true)
+	checkNodeReboot(targetNode.Metadata.Name, "during storage disruption", originalBootTimes[targetNode.Metadata.Name], time.Minute*2, true)
 
 	// Verify node recovery (instead of the old immediate recovery test)
 	By("Verifying node has fully recovered after fencing and shared storage restoration")
@@ -569,7 +581,7 @@ func testStorageAccessInterruption(cluster ClusterInfo) {
 		if node.Metadata.Name == targetNode.Metadata.Name {
 			continue // Skip the target node
 		}
-		checkNodeReboot(node.Metadata.Name, originalBootTimes[node.Metadata.Name], time.Second, false)
+		checkNodeReboot(node.Metadata.Name, "during storage disruption", originalBootTimes[node.Metadata.Name], time.Second, false)
 	}
 
 	GinkgoWriter.Printf("Network-level storage access interruption test completed\n")
@@ -596,38 +608,29 @@ func testKubeletCommunicationFailure(cluster ClusterInfo) {
 	originalBootTimes := getNodeBootIDs(cluster)
 
 	// Create network disruption using AWS security groups
-	By("Creating AWS network disruption to block kubelet communication")
-	securityGroupID, err := createNetworkDisruption(instanceID)
+	By("Disrupting kubelet communication")
+	disruptionPodName, err := createNetworkDisruption(targetNode.Metadata.Name)
 	Expect(err).NotTo(HaveOccurred())
-	By(fmt.Sprintf("Created temporary security group %s to disrupt network", *securityGroupID))
+	Expect(disruptionPodName).NotTo(BeNil())
 
-	// Wait for network disruption to take effect
-	By("Waiting for network disruption to take effect")
-	time.Sleep(30 * time.Second)
-
-	// Verify that the node becomes NotReady due to kubelet communication failure
-	By("Verifying node becomes NotReady due to network disruption")
-	Eventually(func() bool {
-		node := &corev1.Node{}
-		err := k8sClient.Get(ctx, types.NamespacedName{Name: targetNode.Metadata.Name}, node)
-		if err != nil {
-			GinkgoWriter.Printf("Warning: Node %s not found: %v\n", targetNode.Metadata.Name, err)
-			return false
+	defer func() {
+		By(fmt.Sprintf("Initiating deletion of disruptor pod %v...", disruptionPodName))
+		// Try to delete the disruptor pod so that it isn't restarted when the node becomes Ready
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      *disruptionPodName,
+				Namespace: "default",
+			},
 		}
+		err = k8sClient.Delete(ctx, pod)
+		Expect(err).NotTo(HaveOccurred())
+	}()
 
-		// Check if node is NotReady
-		for _, condition := range node.Status.Conditions {
-			if condition.Type == corev1.NodeReady && condition.Status != corev1.ConditionTrue {
-				GinkgoWriter.Printf("Node %s is now NotReady: %s\n", targetNode.Metadata.Name, condition.Reason)
-				return true
-			} else if condition.Type == corev1.NodeReady {
-				GinkgoWriter.Printf("Warning: Node %s has ready condition: %v\n", targetNode.Metadata.Name, condition)
-			}
-		}
-		return false
-	}, time.Minute*8, time.Second*15).Should(BeTrue(), "Node should be NotReady due to network disruption")
+	// Wait for kubelet to be stopped and node to become NotReady
+	By("Waiting for node to become NotReady due to kubelet termination...")
+	checkNodeNotReady(targetNode.Metadata.Name, "becomes NotReady due to kubelet termination", time.Minute*8, BeTrue)
 
-	checkNodeReboot(targetNode.Metadata.Name, originalBootTimes[targetNode.Metadata.Name], time.Minute*2, false)
+	checkNodeReboot(targetNode.Metadata.Name, "due to kubelet termination", originalBootTimes[targetNode.Metadata.Name], time.Minute*2, false)
 
 	// Create SBDRemediation CR to simulate external operator (e.g., Node Healthcheck Operator)
 	By("Creating SBDRemediation CR to simulate external operator behavior")
@@ -665,12 +668,11 @@ func testKubeletCommunicationFailure(cluster ClusterInfo) {
 	}, time.Minute*5, time.Second*30).Should(BeTrue())
 
 	// Wait for node to actually panic/reboot (the actual SBD fencing)
-	By("Waiting for node to panic/reboot due to SBD fencing")
-	checkNodeReboot(targetNode.Metadata.Name, originalBootTimes[targetNode.Metadata.Name], time.Minute*5, true)
+	checkNodeReboot(targetNode.Metadata.Name, "due to remediation CR", originalBootTimes[targetNode.Metadata.Name], time.Minute*5, true)
 
 	// Verify node recovery (instead of the old immediate recovery test)
-	By("Verifying node has fully recovered after fencing and network restoration")
-	time.Sleep(30 * time.Second) // Give additional time for full recovery
+	GinkgoWriter.Printf("Waiting for the cluster to stabilize after remediation\n")
+	time.Sleep(30 * time.Second)
 
 	// Verify other nodes remain stable during the disruption
 	By("Verifying other nodes remained stable during network disruption")
@@ -678,10 +680,10 @@ func testKubeletCommunicationFailure(cluster ClusterInfo) {
 		if node.Metadata.Name == targetNode.Metadata.Name {
 			continue // Skip the target node
 		}
-		checkNodeReboot(node.Metadata.Name, originalBootTimes[node.Metadata.Name], time.Second, false)
+		checkNodeReboot(node.Metadata.Name, "due to remediation CR", originalBootTimes[node.Metadata.Name], time.Second, false)
 	}
 
-	GinkgoWriter.Printf("AWS-based kubelet communication failure test completed successfully\n")
+	GinkgoWriter.Printf("kubelet-based communication failure test completed successfully\n")
 }
 
 func testSBDAgentCrash(cluster ClusterInfo) {
@@ -1145,17 +1147,7 @@ func getInstanceIDFromNode(nodeName string) (string, error) {
 }
 
 // createNetworkDisruption creates targeted disruption by stopping kubelet service on the target node
-func createNetworkDisruption(instanceID string) (*string, error) {
-	By(fmt.Sprintf("Creating kubelet disruption for instance %s", instanceID))
-
-	// Get the node name from the instance ID
-	nodeName, err := getNodeNameFromInstanceID(instanceID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get node name for instance %s: %w", instanceID, err)
-	}
-
-	By(fmt.Sprintf("Target node: %s", nodeName))
-
+func createNetworkDisruption(nodeName string) (*string, error) {
 	// Create a unique pod name for this disruption
 	disruptorPodName := fmt.Sprintf("sbd-e2e-kubelet-disruptor-%d", time.Now().Unix())
 
@@ -1206,7 +1198,7 @@ spec:
 	// Create the pod using k8s API
 	By(fmt.Sprintf("Creating kubelet disruptor pod: %s", disruptorPodName))
 	var disruptorPod corev1.Pod
-	err = yaml.Unmarshal([]byte(disruptorPodYAML), &disruptorPod)
+	err := yaml.Unmarshal([]byte(disruptorPodYAML), &disruptorPod)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal disruptor pod YAML: %w", err)
 	}
@@ -1225,40 +1217,10 @@ spec:
 		if err != nil {
 			return false
 		}
-		fmt.Printf("Disruptor pod status: %s\n", pod.Status.Phase)
+		GinkgoWriter.Printf("Disruptor pod status: %s\n", pod.Status.Phase)
 		return pod.Status.Phase != corev1.PodPending
 	}, time.Minute*2, time.Second*10)
 
-	// Wait for kubelet to be stopped and node to become NotReady
-	By("Waiting for node to become NotReady due to kubelet termination...")
-	Eventually(func() bool {
-		node := &corev1.Node{}
-		err := k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)
-		if err != nil {
-			return false
-		}
-
-		for _, condition := range node.Status.Conditions {
-			if condition.Type == corev1.NodeReady && condition.Status != corev1.ConditionTrue {
-				By(fmt.Sprintf("Node %s is now NotReady: %s", nodeName, condition.Reason))
-				return true
-			}
-		}
-		return false
-	}, time.Minute*5, time.Second*15).Should(BeTrue())
-
-	By(fmt.Sprintf("Initiating deletion of disruptor pod %v...", disruptorPodName))
-	// Try to delete the disruptor pod so that it isn't restarted when the node becomes Ready
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      disruptorPodName,
-			Namespace: "default",
-		},
-	}
-	err = k8sClient.Delete(ctx, pod)
-	Expect(err).NotTo(HaveOccurred())
-
-	By(fmt.Sprintf("Kubelet disruption successful - node %s is now NotReady", nodeName))
 	return &disruptorPodName, nil
 }
 
@@ -1674,7 +1636,7 @@ spec:
 		return nil, fmt.Errorf("storage disruption validation failed - iptables rules were not successfully applied or are not effective")
 	}
 
-	By(fmt.Sprintf("Storage disruption validation successful - node %s should lose shared storage access", nodeName))
+	GinkgoWriter.Printf("Storage disruption validation successful - node %s should lose shared storage access\n", nodeName)
 	return []string{disruptorPodName}, nil
 }
 
@@ -1803,11 +1765,11 @@ spec:
 // cleanupPreviousTestAttempts removes any leftover artifacts from previous test runs
 func cleanupPreviousTestAttempts() error {
 	if !awsInitialized {
-		By("AWS not initialized - skipping AWS cleanup")
+		GinkgoWriter.Print("AWS not initialized - skipping AWS cleanup\n")
 		return nil
 	}
 
-	By("Cleaning up any leftover artifacts from previous test runs")
+	GinkgoWriter.Print("Cleaning up any leftover artifacts from previous test runs\n")
 
 	// Get all instances in the cluster
 	instances, err := ec2Client.DescribeInstances(&ec2.DescribeInstancesInput{})
@@ -1825,6 +1787,6 @@ func cleanupPreviousTestAttempts() error {
 		}
 	}
 
-	By("Cleanup of previous test attempts completed")
+	GinkgoWriter.Print("Cleanup of previous test attempts completed")
 	return nil
 }
