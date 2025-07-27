@@ -110,7 +110,7 @@ const (
 	DefaultRebootMethod = "systemctl-reboot"
 
 	// DefaultMetricsPort is the default metrics port
-	DefaultMetricsPort = 8080
+	DefaultMetricsPort = 8082
 
 	// DefaultStaleNodeTimeout is the default stale node timeout
 	DefaultStaleNodeTimeout = "1h"

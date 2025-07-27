@@ -202,6 +202,14 @@ func (r *SBDRemediationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
+	// Don't fence ourselves
+	if sbdRemediation.Spec.NodeName == r.ownNodeName {
+		logger.Info("Found own node in remediation request, skipping")
+		r.emitEventOnly(&sbdRemediation, "Normal", ReasonCompleted,
+			"Skipping remediation for own node")
+		return ctrl.Result{}, nil
+	}
+
 	// Add resource-specific context to logger
 	logger = logger.WithValues(
 		"sbdremediation.name", sbdRemediation.Name,
@@ -262,25 +270,16 @@ func (r *SBDRemediationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if r.sbdDevice == nil || r.sbdDevice.IsClosed() {
 		err := fmt.Errorf("SBD device is not available for fencing operations")
 		logger.Error(err, "Cannot perform fencing")
-		r.updateRemediationConditionAndEmitEvent(ctx, &sbdRemediation, medik8sv1alpha1.SBDRemediationConditionReady,
-			metav1.ConditionFalse, ReasonFailed, err.Error(), "Warning", ReasonFailed)
+		r.emitEventOnly(&sbdRemediation, "Warning", ReasonFailed,
+			"SBD device is not available for fencing operations")
 		return ctrl.Result{}, err
 	}
 
 	if r.nodeManager == nil {
 		err := fmt.Errorf("node manager is not available for node ID resolution")
 		logger.Error(err, "Cannot perform fencing")
-		r.updateRemediationConditionAndEmitEvent(ctx, &sbdRemediation, medik8sv1alpha1.SBDRemediationConditionReady,
-			metav1.ConditionFalse, ReasonFailed, err.Error(), "Warning", ReasonFailed)
-		return ctrl.Result{}, err
-	}
-
-	// Don't fence ourselves
-	if sbdRemediation.Spec.NodeName == r.ownNodeName {
-		err := fmt.Errorf("refusing to fence own node")
-		logger.Error(err, "Self-fencing prevention")
-		r.updateRemediationConditionAndEmitEvent(ctx, &sbdRemediation, medik8sv1alpha1.SBDRemediationConditionReady,
-			metav1.ConditionFalse, ReasonFailed, err.Error(), "Warning", ReasonFailed)
+		r.emitEventf(&sbdRemediation, "Warning", ReasonFailed,
+			"Node manager is not available for node ID resolution: %v", err)
 		return ctrl.Result{}, err
 	}
 
@@ -455,16 +454,27 @@ func (r *SBDRemediationReconciler) updateRemediationCondition(ctx context.Contex
 }
 
 // updateRemediationConditionWithEvent updates a condition and emits an event
+// Events are always emitted even if condition updates fail, for better observability
 func (r *SBDRemediationReconciler) updateRemediationConditionWithEvent(ctx context.Context, remediation *medik8sv1alpha1.SBDRemediation, conditionType medik8sv1alpha1.SBDRemediationConditionType, status metav1.ConditionStatus, reason, message string, eventType, eventReason, eventMessage string) error {
-	// Update the condition
+	// Always emit the event first for observability, regardless of whether the update succeeds
+	r.emitEventf(remediation, eventType, eventReason, eventMessage)
+
+	// Then try to update the condition
 	if err := r.updateRemediationCondition(ctx, remediation, conditionType, status, reason, message); err != nil {
+		// Log the condition update failure but don't fail the entire operation
+		// since the event was successfully emitted
+		r.emitEventf(remediation, "Warning", "ConditionUpdateFailed",
+			"Failed to update condition %s: %v", conditionType, err)
 		return err
 	}
 
-	// Emit the event
-	r.emitEventf(remediation, eventType, eventReason, eventMessage)
-
 	return nil
+}
+
+// emitEventOnly emits an event without attempting to update any conditions
+// This is useful for pure observability when condition updates might fail due to RBAC or other issues
+func (r *SBDRemediationReconciler) emitEventOnly(remediation *medik8sv1alpha1.SBDRemediation, eventType, eventReason, eventMessage string) {
+	r.emitEventf(remediation, eventType, eventReason, eventMessage)
 }
 
 // updateRemediationConditionAndEmitEvent is a convenience function that updates a condition and emits an event with the same message
@@ -476,15 +486,25 @@ func (r *SBDRemediationReconciler) updateRemediationConditionAndEmitEvent(ctx co
 func (r *SBDRemediationReconciler) handleFencingFailure(ctx context.Context, remediation *medik8sv1alpha1.SBDRemediation, err error, logger logr.Logger) {
 	logger.Error(err, "Fencing operation failed")
 
-	// Update multiple conditions for failure state
-	r.updateRemediationCondition(ctx, remediation, medik8sv1alpha1.SBDRemediationConditionFencingInProgress,
-		metav1.ConditionFalse, ReasonFailed, err.Error())
-	r.updateRemediationCondition(ctx, remediation, medik8sv1alpha1.SBDRemediationConditionReady,
-		metav1.ConditionFalse, ReasonFailed, err.Error())
+	// Always emit failure event for observability, regardless of whether condition updates succeed
+	r.emitEventOnly(remediation, "Warning", ReasonFencingFailed,
+		fmt.Sprintf("Fencing failed for node '%s': %v", remediation.Spec.NodeName, err))
 
-	// Emit failure event
-	r.emitEventf(remediation, "Warning", ReasonFencingFailed,
-		"Fencing failed for node '%s': %v", remediation.Spec.NodeName, err)
+	// Try to update multiple conditions for failure state
+	// Log but don't fail if these updates don't work (e.g., due to RBAC issues)
+	if updateErr := r.updateRemediationCondition(ctx, remediation, medik8sv1alpha1.SBDRemediationConditionFencingInProgress,
+		metav1.ConditionFalse, ReasonFailed, err.Error()); updateErr != nil {
+		logger.Error(updateErr, "Failed to update FencingInProgress condition")
+		r.emitEventOnly(remediation, "Warning", "ConditionUpdateFailed",
+			fmt.Sprintf("Failed to update FencingInProgress condition: %v", updateErr))
+	}
+
+	if updateErr := r.updateRemediationCondition(ctx, remediation, medik8sv1alpha1.SBDRemediationConditionReady,
+		metav1.ConditionFalse, ReasonFailed, err.Error()); updateErr != nil {
+		logger.Error(updateErr, "Failed to update Ready condition")
+		r.emitEventOnly(remediation, "Warning", "ConditionUpdateFailed",
+			fmt.Sprintf("Failed to update Ready condition: %v", updateErr))
+	}
 }
 
 // handleFencingSuccess is a helper function to handle fencing success consistently
