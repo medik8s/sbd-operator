@@ -104,7 +104,7 @@ test-e2e-clean: build-openshift-installer sync-test-files ## Run e2e tests with 
 .PHONY: test-e2e
 test-e2e: ginkgo ## Run e2e tests again (assumes operator already deployed).
 	@echo "Running e2e tests (operator must be already deployed)..."
-	$(GINKGO) -v test/e2e
+	$(GINKGO) -v  test/e2e | tee test-execution.log
 
 .PHONY: test-e2e-with-webhooks  
 test-e2e-with-webhooks: sync-test-files ## Run e2e tests with webhooks enabled using deployment pipeline.
