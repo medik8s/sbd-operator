@@ -490,8 +490,17 @@ func (dc *DebugCollector) CollectPodDescription(namespace, podName string) {
 	pod := &corev1.Pod{}
 	err := dc.Clients.Client.Get(dc.Clients.Context, client.ObjectKey{Name: podName, Namespace: namespace}, pod)
 	if err == nil {
-		podYAML, _ := yaml.Marshal(pod.Spec)
-		GinkgoWriter.Printf("Pod description:\n%s\n", string(podYAML))
+		podYAML, _ := yaml.Marshal(pod)
+		// Save the pod spec YAML to a file named after the pod
+		podFileName := fmt.Sprintf("%s-podspec.yaml", podName)
+		if f, fileErr := os.Create(podFileName); fileErr == nil {
+			defer f.Close()
+			_, _ = f.Write(podYAML)
+			GinkgoWriter.Printf("Pod spec for %s saved to %s\n", podName, podFileName)
+		} else {
+			GinkgoWriter.Printf("Failed to write pod spec to file %s: %s\n", podFileName, fileErr)
+			GinkgoWriter.Printf("Pod description:\n%s\n", string(podYAML))
+		}
 	} else {
 		GinkgoWriter.Printf("Failed to get pod description: %s\n", err)
 	}
