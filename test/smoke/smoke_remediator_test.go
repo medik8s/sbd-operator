@@ -179,7 +179,7 @@ var _ = Describe("SBD Remediation Smoke Tests", Label("Smoke", "Remediation"), f
 				if err != nil {
 					return false
 				}
-				if foundSBDConfig.Status.Conditions == nil || len(foundSBDConfig.Status.Conditions) == 0 {
+				if len(foundSBDConfig.Status.Conditions) == 0 {
 					return false
 				}
 				for _, condition := range foundSBDConfig.Status.Conditions {
@@ -235,7 +235,7 @@ var _ = Describe("SBD Remediation Smoke Tests", Label("Smoke", "Remediation"), f
 				if err != nil {
 					return false
 				}
-				if foundSBDRemediation.Status.Conditions == nil || len(foundSBDRemediation.Status.Conditions) == 0 {
+				if len(foundSBDRemediation.Status.Conditions) == 0 {
 					return false
 				}
 				for _, condition := range foundSBDRemediation.Status.Conditions {
@@ -320,7 +320,7 @@ var _ = Describe("SBD Remediation Smoke Tests", Label("Smoke", "Remediation"), f
 					// 1. Ready=True (processing completed)
 					// 2. FencingSucceeded=False (no SBD device available)
 					// This validates the agent pipeline works but safely fails at device access
-					if foundSBDRemediation.Status.Conditions != nil && len(foundSBDRemediation.Status.Conditions) > 0 {
+					if len(foundSBDRemediation.Status.Conditions) > 0 {
 						hasReady := false
 						hasFencingFailed := false
 
@@ -389,7 +389,7 @@ var _ = Describe("SBD Remediation Smoke Tests", Label("Smoke", "Remediation"), f
 					return false
 				}
 
-				if foundSBDRemediation.Status.Conditions == nil || len(foundSBDRemediation.Status.Conditions) == 0 {
+				if len(foundSBDRemediation.Status.Conditions) == 0 {
 					return false
 				}
 
