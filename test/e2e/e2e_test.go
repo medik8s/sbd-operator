@@ -17,7 +17,9 @@ limitations under the License.
 package e2e
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"math/rand"
 	"os"
 	"regexp"
@@ -98,18 +100,20 @@ var _ = Describe("SBD Operator", Ordered, Label("e2e"), func() {
 	})
 
 	Context("SBD E2E Failure Simulation Tests", func() {
+
+		It("should handle fake remediation CRs", func() {
+			testFakeRemediation(clusterInfo)
+		})
+
+		It("should handle node remediation", func() {
+			testNodeRemediation(clusterInfo)
+		})
+
 		It("should handle basic SBD configuration and agent deployment", func() {
 			if len(clusterInfo.WorkerNodes) < 3 {
 				Skip("Test requires at least 3 worker nodes")
 			}
 			testBasicSBDConfiguration(clusterInfo)
-		})
-
-		It("should reject incompatible storage classes", func() {
-			if len(clusterInfo.WorkerNodes) < 3 {
-				Skip("Test requires at least 3 worker nodes")
-			}
-			testIncompatibleStorageClass(clusterInfo)
 		})
 
 		It("should trigger fencing when SBD agent loses storage access", func() {
@@ -124,6 +128,13 @@ var _ = Describe("SBD Operator", Ordered, Label("e2e"), func() {
 				Skip("Test requires at least 3 worker nodes for safe communication disruption testing")
 			}
 			testKubeletCommunicationFailure(clusterInfo)
+		})
+
+		It("should reject incompatible storage classes", func() {
+			if len(clusterInfo.WorkerNodes) < 3 {
+				Skip("Test requires at least 3 worker nodes")
+			}
+			testIncompatibleStorageClass(clusterInfo)
 		})
 
 		It("should handle SBD agent crash and recovery", func() {
@@ -504,10 +515,11 @@ func checkNodeNotReady(nodeName, reason string, timeout time.Duration, enforceFn
 		// Check if node is NotReady or has storage-related issues
 		for _, condition := range node.Status.Conditions {
 			if condition.Type == corev1.NodeReady && condition.Status != corev1.ConditionTrue {
-				GinkgoWriter.Printf("Node %s is now NotReady: %s\n", nodeName, condition.Reason)
+				GinkgoWriter.Printf("Node %s now has condition %v: %s - %s\n",
+					nodeName, condition.Type, condition.Status, condition.Reason)
 				return true
 			} else if condition.Type == corev1.NodeReady {
-				GinkgoWriter.Printf("Node %s is now NotReady: %s\n", nodeName, condition.Status)
+				GinkgoWriter.Printf("Node %s now has condition %v: %s\n", nodeName, condition.Type, condition.Status)
 			}
 		}
 		return false
@@ -588,10 +600,6 @@ func testStorageAccessInterruption(cluster ClusterInfo) {
 }
 
 func testKubeletCommunicationFailure(cluster ClusterInfo) {
-	// Skip if AWS is not available
-	if !awsInitialized {
-		Skip("Kubelet communication failure test requires AWS - skipping")
-	}
 
 	By("Setting up SBD configuration for kubelet communication test")
 	testBasicSBDConfiguration(cluster)
@@ -684,6 +692,143 @@ func testKubeletCommunicationFailure(cluster ClusterInfo) {
 	}
 
 	GinkgoWriter.Printf("kubelet-based communication failure test completed successfully\n")
+}
+
+func testFakeRemediation(cluster ClusterInfo) {
+	By("Setting up SBD configuration for remediation loop test")
+	testBasicSBDConfiguration(cluster)
+
+	// Create SBDRemediation CR to simulate external operator (e.g., Node Healthcheck Operator)
+	By("Creating SBDRemediation CR to simulate external operator behavior")
+	sbdRemediation := &medik8sv1alpha1.SBDRemediation{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("network-remediation-%s", "fake-node"),
+			Namespace: testNamespace.Name,
+		},
+		Spec: medik8sv1alpha1.SBDRemediationSpec{
+			NodeName:       "fake-node",
+			Reason:         medik8sv1alpha1.SBDRemediationReasonHeartbeatTimeout,
+			TimeoutSeconds: 300, // 5 minutes timeout for fencing
+		},
+	}
+	err := k8sClient.Create(ctx, sbdRemediation)
+	Expect(err).NotTo(HaveOccurred())
+	By(fmt.Sprintf("Created SBDRemediation CR for node %s", "fake-node"))
+
+	// Verify SBD remediation is triggered and processed
+	By("Verifying SBD remediation is triggered and processed for the disrupted node")
+	Eventually(func() bool {
+		remediations := &medik8sv1alpha1.SBDRemediationList{}
+		err := k8sClient.List(ctx, remediations, client.InNamespace(testNamespace.Name))
+		if err != nil {
+			return false
+		}
+
+		for _, remediation := range remediations.Items {
+			if remediation.Spec.NodeName != "fake-node" {
+				By(fmt.Sprintf("SBD remediation found for node %s: %+v", "fake-node", remediation.Status))
+				return false
+			}
+		}
+
+		expectedLogs := []string{
+			"Starting SBDRemediation reconciliation",
+			"Added finalizer to SBDRemediation",
+			"Starting fencing operation",
+			"Fencing operation completed successfully",
+		}
+
+		agentPods := &corev1.PodList{}
+		err = k8sClient.List(ctx, agentPods, client.InNamespace(testNamespace.Name), client.MatchingLabels{"app": "sbd-agent"})
+		Expect(err).NotTo(HaveOccurred())
+		for _, agentPod := range agentPods.Items {
+			req := testNamespace.Clients.Clientset.CoreV1().Pods(testNamespace.Name).GetLogs(agentPod.Name, &corev1.PodLogOptions{})
+			podLogs, err := req.Stream(testNamespace.Clients.Context)
+			if err == nil {
+				defer podLogs.Close()
+				buf := new(bytes.Buffer)
+				_, _ = io.Copy(buf, podLogs)
+
+				allFound := true
+				for _, log := range expectedLogs {
+					if !strings.Contains(buf.String(), log) {
+						allFound = false
+					} else {
+						GinkgoWriter.Printf("Agent pod %s has log: %s\n", agentPod.Name, log)
+					}
+				}
+				if allFound {
+					GinkgoWriter.Printf("Agent pod %s has all expected logs\n", agentPod.Name)
+					return true
+				}
+			} else {
+				GinkgoWriter.Printf("Agent pod %s has no logs: %v\n", agentPod.Name, err)
+			}
+		}
+		return false
+	}, time.Minute*3, time.Second*30).Should(BeTrue())
+}
+
+func testNodeRemediation(cluster ClusterInfo) {
+	By("Setting up SBD configuration for node remediation test")
+	testBasicSBDConfiguration(cluster)
+
+	// Select a random actual worker node for testing (not control plane)
+	targetNode := selectActualWorkerNode(cluster)
+	originalBootTimes := getNodeBootIDs(cluster)
+
+	// Create SBDRemediation CR to simulate external operator (e.g., Node Healthcheck Operator)
+	By("Creating SBDRemediation CR to simulate external operator behavior")
+	sbdRemediation := &medik8sv1alpha1.SBDRemediation{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("network-remediation-%s", targetNode.Metadata.Name),
+			Namespace: testNamespace.Name,
+		},
+		Spec: medik8sv1alpha1.SBDRemediationSpec{
+			NodeName:       targetNode.Metadata.Name,
+			Reason:         medik8sv1alpha1.SBDRemediationReasonHeartbeatTimeout,
+			TimeoutSeconds: 300, // 5 minutes timeout for fencing
+		},
+	}
+	err := k8sClient.Create(ctx, sbdRemediation)
+	Expect(err).NotTo(HaveOccurred())
+	By(fmt.Sprintf("Created SBDRemediation CR for node %s", targetNode.Metadata.Name))
+
+	// Verify SBD remediation is triggered and processed
+	By("Verifying SBD remediation is triggered and processed for the disrupted node")
+	Eventually(func() bool {
+		remediations := &medik8sv1alpha1.SBDRemediationList{}
+		err := k8sClient.List(ctx, remediations, client.InNamespace(testNamespace.Name))
+		if err != nil {
+			return false
+		}
+
+		for _, remediation := range remediations.Items {
+			if remediation.Spec.NodeName == targetNode.Metadata.Name {
+				By(fmt.Sprintf("SBD remediation found for node %s: %+v", targetNode.Metadata.Name, remediation.Status))
+				return true
+			}
+		}
+		return false
+	}, time.Minute*5, time.Second*30).Should(BeTrue())
+
+	// Wait for node to actually panic/reboot (the actual SBD fencing)
+	checkNodeReboot(targetNode.Metadata.Name, "due to remediation CR", originalBootTimes[targetNode.Metadata.Name], time.Minute*5, true)
+
+	// Verify node recovery (instead of the old immediate recovery test)
+	GinkgoWriter.Printf("Waiting for the cluster to stabilize after remediation\n")
+	time.Sleep(30 * time.Second)
+
+	// Verify other nodes remain stable during the disruption
+	By("Verifying other nodes remained stable during network disruption")
+	for _, node := range cluster.WorkerNodes {
+		if node.Metadata.Name == targetNode.Metadata.Name {
+			continue // Skip the target node
+		}
+		checkNodeReboot(node.Metadata.Name, "due to remediation CR", originalBootTimes[node.Metadata.Name], time.Second, false)
+	}
+
+	GinkgoWriter.Printf("node remediation test completed successfully\n")
 }
 
 func testSBDAgentCrash(cluster ClusterInfo) {
