@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"os"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
@@ -35,6 +36,14 @@ type Config struct {
 	AggressiveCoherency    bool
 	DryRun                 bool
 	UpdateMode             bool
+
+	// AWS Integration
+	EnableAWSIntegration bool
+	AWSRegion            string
+	AWSVolumeType        string
+	AWSIOPS              int
+	AWSThroughput        int
+	AWSKMSKeyID          string
 }
 
 // SetupResult contains the results of ODF storage setup
@@ -76,7 +85,7 @@ func NewManager(ctx context.Context, config *Config) (*Manager, error) {
 	}, nil
 }
 
-// SetupODFStorage orchestrates the complete ODF setup process
+// SetupODFStorage orchestrates the complete ODF setup process with AWS integration
 func (m *Manager) SetupODFStorage(ctx context.Context) (*SetupResult, error) {
 	result := &SetupResult{
 		StorageClassName: m.config.StorageClassName,
@@ -89,6 +98,11 @@ func (m *Manager) SetupODFStorage(ctx context.Context) (*SetupResult, error) {
 	}
 
 	log.Printf("🚀 Starting OpenShift Data Foundation setup...")
+
+	// Step 0: AWS Integration - Check permissions and provision storage if needed
+	if err := m.handleAWSStorageProvisioning(ctx); err != nil {
+		return nil, fmt.Errorf("AWS storage provisioning failed: %w", err)
+	}
 
 	// Step 1: Check and install ODF operator
 	log.Println("🔧 Checking OpenShift Data Foundation operator...")
@@ -637,6 +651,125 @@ func (m *Manager) dryRunSetup(ctx context.Context) (*SetupResult, error) {
 	log.Println("[DRY-RUN] 🧪 Would test CephFS storage with ReadWriteMany PVC")
 
 	return result, nil
+}
+
+// handleAWSStorageProvisioning manages AWS EBS volume provisioning for ODF
+func (m *Manager) handleAWSStorageProvisioning(ctx context.Context) error {
+	// Skip if running in dry-run mode
+	if m.config.DryRun {
+		log.Println("[DRY-RUN] 🔍 Would check AWS permissions and analyze node storage requirements")
+		log.Println("[DRY-RUN] 💾 Would provision additional EBS volumes if needed")
+		return nil
+	}
+
+	log.Println("🔍 Checking AWS integration for storage provisioning...")
+
+	// Create AWS configuration
+	awsConfig := &AWSConfig{
+		Region:          "", // Auto-detect from AWS config
+		VolumeSize:      calculateRequiredVolumeSize(m.config.StorageSize, m.config.ReplicaCount),
+		VolumeType:      "gp3", // Default to gp3 for better performance
+		IOPS:            3000,  // gp3 baseline
+		Throughput:      125,   // gp3 baseline in MB/s
+		Encrypted:       m.config.EnableEncryption,
+		NodeStorageSize: m.config.StorageSize,
+	}
+
+	// Initialize AWS manager
+	awsManager, err := NewAWSManager(ctx, awsConfig)
+	if err != nil {
+		// Not an AWS cluster or AWS SDK not available - skip AWS integration
+		log.Printf("ℹ️ AWS integration unavailable: %v", err)
+		log.Println("ℹ️ Continuing with manual storage configuration...")
+		return nil
+	}
+
+	// Check AWS permissions upfront
+	if err := awsManager.CheckRequiredPermissions(ctx); err != nil {
+		if permErr, isPermErr := IsPermissionError(err); isPermErr {
+			log.Printf("❌ AWS Permission Error: %s", permErr.Message)
+			log.Println("📋 Required IAM Policy:")
+			log.Println(permErr.Policy)
+			return fmt.Errorf("insufficient AWS permissions for storage provisioning")
+		}
+		return fmt.Errorf("AWS permission check failed: %w", err)
+	}
+
+	// Calculate required storage per node
+	requiredStorageGB := calculateRequiredStoragePerNode(m.config.StorageSize, m.config.ReplicaCount)
+
+	// Analyze current node storage
+	nodeStorageInfo, err := awsManager.AnalyzeNodeStorage(ctx, m.clientset, requiredStorageGB)
+	if err != nil {
+		log.Printf("⚠️ Failed to analyze node storage: %v", err)
+		log.Println("ℹ️ Continuing without automatic storage provisioning...")
+		return nil
+	}
+
+	// Provision additional storage if needed
+	if err := awsManager.ProvisionStorageForNodes(ctx, nodeStorageInfo, awsConfig, false); err != nil {
+		return fmt.Errorf("failed to provision storage for nodes: %w", err)
+	}
+
+	log.Println("✅ AWS storage provisioning completed")
+	return nil
+}
+
+// calculateRequiredVolumeSize calculates the EBS volume size needed per node
+func calculateRequiredVolumeSize(totalStorageSize string, replicaCount int) int32 {
+	// Parse storage size (e.g., "2Ti" -> 2048 GB)
+	sizeGB := parseStorageSize(totalStorageSize)
+
+	// Calculate storage per node with overhead
+	storagePerNode := sizeGB / int64(replicaCount)
+
+	// Add 20% overhead for metadata and operational needs
+	storageWithOverhead := int64(float64(storagePerNode) * 1.2)
+
+	// Minimum 100GB per node
+	if storageWithOverhead < 100 {
+		storageWithOverhead = 100
+	}
+
+	return int32(storageWithOverhead)
+}
+
+// calculateRequiredStoragePerNode calculates storage needed per node in GB
+func calculateRequiredStoragePerNode(totalStorageSize string, replicaCount int) int64 {
+	return int64(calculateRequiredVolumeSize(totalStorageSize, replicaCount))
+}
+
+// parseStorageSize converts storage size strings to GB
+func parseStorageSize(sizeStr string) int64 {
+	sizeStr = strings.ToUpper(strings.TrimSpace(sizeStr))
+
+	// Remove any whitespace
+	sizeStr = strings.ReplaceAll(sizeStr, " ", "")
+
+	var multiplier int64 = 1
+	var numStr string
+
+	if strings.HasSuffix(sizeStr, "TI") || strings.HasSuffix(sizeStr, "TB") {
+		multiplier = 1024 // 1 Ti = 1024 Gi
+		numStr = strings.TrimSuffix(strings.TrimSuffix(sizeStr, "TI"), "TB")
+	} else if strings.HasSuffix(sizeStr, "GI") || strings.HasSuffix(sizeStr, "GB") {
+		multiplier = 1
+		numStr = strings.TrimSuffix(strings.TrimSuffix(sizeStr, "GI"), "GB")
+	} else if strings.HasSuffix(sizeStr, "MI") || strings.HasSuffix(sizeStr, "MB") {
+		multiplier = 1 / 1024 // Convert MB to GB
+		numStr = strings.TrimSuffix(strings.TrimSuffix(sizeStr, "MI"), "MB")
+	} else {
+		// Default to GB if no suffix
+		numStr = sizeStr
+	}
+
+	// Parse the numeric part
+	var size float64 = 1024 // Default to 1TB if parsing fails
+	if f, err := strconv.ParseFloat(numStr, 64); err == nil {
+		size = f
+	}
+
+	return int64(size * float64(multiplier))
 }
 
 // buildKubernetesClients creates Kubernetes clients

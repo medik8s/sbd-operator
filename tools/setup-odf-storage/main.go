@@ -24,6 +24,14 @@ type Config struct {
 	EnableEncryption       bool
 	EnableStorageDeviceSet bool
 
+	// AWS Integration
+	EnableAWSIntegration bool
+	AWSRegion            string
+	AWSVolumeType        string
+	AWSIOPS              int
+	AWSThroughput        int
+	AWSKMSKeyID          string
+
 	// Cache Coherency Configuration
 	AggressiveCoherency bool
 
@@ -85,6 +93,14 @@ func parseFlags() *Config {
 	flag.BoolVar(&config.EnableEncryption, "enable-encryption", false, "Enable storage encryption")
 	flag.BoolVar(&config.EnableStorageDeviceSet, "enable-device-set", true, "Enable automatic storage device set creation")
 
+	// AWS Integration
+	flag.BoolVar(&config.EnableAWSIntegration, "enable-aws-integration", true, "Enable automatic AWS EBS volume provisioning")
+	flag.StringVar(&config.AWSRegion, "aws-region", "", "AWS region (auto-detected if not specified)")
+	flag.StringVar(&config.AWSVolumeType, "aws-volume-type", "gp3", "AWS EBS volume type (gp3, gp2, io1, io2)")
+	flag.IntVar(&config.AWSIOPS, "aws-iops", 3000, "AWS EBS volume IOPS (for gp3, io1, io2)")
+	flag.IntVar(&config.AWSThroughput, "aws-throughput", 125, "AWS EBS volume throughput in MB/s (for gp3)")
+	flag.StringVar(&config.AWSKMSKeyID, "aws-kms-key", "", "AWS KMS key ID for encryption")
+
 	// Cache Coherency Configuration
 	flag.BoolVar(&config.AggressiveCoherency, "aggressive-coherency", false, "Enable aggressive cache coherency for strict SBD coordination")
 
@@ -119,6 +135,13 @@ func (c *Config) toODFConfig() *odf.Config {
 		AggressiveCoherency:    c.AggressiveCoherency,
 		DryRun:                 c.DryRun,
 		UpdateMode:             c.UpdateMode,
+		// AWS Integration fields
+		EnableAWSIntegration: c.EnableAWSIntegration,
+		AWSRegion:            c.AWSRegion,
+		AWSVolumeType:        c.AWSVolumeType,
+		AWSIOPS:              c.AWSIOPS,
+		AWSThroughput:        c.AWSThroughput,
+		AWSKMSKeyID:          c.AWSKMSKeyID,
 	}
 }
 
@@ -135,6 +158,14 @@ This tool deploys OpenShift Data Foundation and creates a CephFS StorageClass wi
 SBD-optimized mount options. CephFS provides distributed file storage with full POSIX 
 locking support, enabling proper inter-node heartbeat coordination and preventing 
 split-brain scenarios in SBD clusters.
+
+AWS INTEGRATION:
+For AWS clusters, the tool automatically:
+• Checks required AWS IAM permissions upfront
+• Analyzes existing node storage capacity
+• Provisions additional EBS volumes if needed
+• Attaches volumes to worker nodes automatically
+• Provides complete IAM policy if permissions are missing
 
 OPENSHIFT DATA FOUNDATION COMPONENTS:
 • Ceph Storage Cluster: Provides distributed storage backend
@@ -159,29 +190,38 @@ Use this mode when SBD requires the strictest cache coherency guarantees.
 
 EXAMPLES:
 
-    # Standard ODF setup (automatic node detection)
+    # Standard ODF setup with AWS integration
     %s
 
-    # Custom cluster configuration
-    %s --cluster-name=my-sbd-cluster --storage-size=4Ti --replica-count=3
+    # Custom cluster with specific AWS volume configuration
+    %s --storage-size=4Ti --aws-volume-type=io1 --aws-iops=5000
 
-    # Aggressive coherency for strict SBD coordination
-    %s --aggressive-coherency
+    # Disable AWS integration (manual storage setup)
+    %s --enable-aws-integration=false
 
-    # Setup with encryption enabled
-    %s --enable-encryption --storage-size=1Ti
+    # Aggressive coherency with encrypted storage
+    %s --aggressive-coherency --enable-encryption --aws-kms-key=alias/my-key
 
     # Clean up all ODF resources
     %s --cleanup
 
     # Preview changes without executing
-    %s --dry-run
+    %s --dry-run --verbose
 
 REQUIREMENTS:
     • OpenShift cluster (4.8+) or Kubernetes (1.21+) with OLM
     • At least 3 worker nodes for storage replication
     • Cluster admin permissions
-    • Adequate storage capacity on worker nodes
+    • For AWS clusters: Required AWS IAM permissions (checked automatically)
+
+AWS PERMISSIONS:
+The tool requires the following AWS permissions:
+• EC2: CreateVolume, AttachVolume, DescribeInstances, DescribeVolumes
+• EC2: CreateTags, DescribeTags (for resource tagging)
+• KMS: CreateGrant, Encrypt, Decrypt (if encryption enabled)
+• IAM: GetUser, ListAccessKeys (for identity verification)
+
+If permissions are missing, the tool will display the complete required IAM policy.
 
 STORAGE CLASSES CREATED:
 The tool creates optimized StorageClasses:
