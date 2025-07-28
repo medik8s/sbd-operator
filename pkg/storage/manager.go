@@ -11,6 +11,11 @@ import (
 
 // Config holds all configuration for storage setup
 type Config struct {
+	// Storage Driver Selection
+	StorageDriver string // "efs" or "nfs"
+	NFSServer     string // For Standard NFS CSI driver
+	NFSShare      string // For Standard NFS CSI driver
+
 	// AWS Configuration
 	AWSRegion        string
 	ClusterName      string
@@ -51,9 +56,16 @@ type Manager struct {
 
 // NewManager creates a new storage manager
 func NewManager(ctx context.Context, config *Config) (*Manager, error) {
-	// Auto-detect cluster information if not provided
-	if err := autoDetectConfig(ctx, config); err != nil {
-		return nil, fmt.Errorf("failed to auto-detect configuration: %w", err)
+	// Set default storage driver if not specified
+	if config.StorageDriver == "" {
+		config.StorageDriver = "efs"
+	}
+
+	// Auto-detect cluster information if not provided (only for EFS driver)
+	if config.StorageDriver == "efs" {
+		if err := autoDetectConfig(ctx, config); err != nil {
+			return nil, fmt.Errorf("failed to auto-detect configuration: %w", err)
+		}
 	}
 
 	// Set defaults
@@ -65,18 +77,22 @@ func NewManager(ctx context.Context, config *Config) (*Manager, error) {
 		return &Manager{config: config}, nil
 	}
 
-	// Initialize AWS manager
-	awsManager, err := aws.NewManager(ctx, &aws.Config{
-		Region:                config.AWSRegion,
-		ClusterName:           config.ClusterName,
-		EFSName:               config.EFSName,
-		PerformanceMode:       config.PerformanceMode,
-		ThroughputMode:        config.ThroughputMode,
-		ProvisionedThroughput: config.ProvisionedThroughput,
-		EFSCSIRoleName:        config.EFSCSIRoleName,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create AWS manager: %w", err)
+	// Initialize AWS manager only for EFS driver
+	var awsManager *aws.Manager
+	if config.StorageDriver == "efs" {
+		var err error
+		awsManager, err = aws.NewManager(ctx, &aws.Config{
+			Region:                config.AWSRegion,
+			ClusterName:           config.ClusterName,
+			EFSName:               config.EFSName,
+			PerformanceMode:       config.PerformanceMode,
+			ThroughputMode:        config.ThroughputMode,
+			ProvisionedThroughput: config.ProvisionedThroughput,
+			EFSCSIRoleName:        config.EFSCSIRoleName,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create AWS manager: %w", err)
+		}
 	}
 
 	// Initialize Kubernetes manager
@@ -90,7 +106,7 @@ func NewManager(ctx context.Context, config *Config) (*Manager, error) {
 
 	return &Manager{
 		config:     config,
-		awsManager: awsManager,
+		awsManager: awsManager, // Will be nil for Standard NFS CSI driver
 		k8sManager: k8sManager,
 	}, nil
 }
@@ -103,8 +119,21 @@ func (m *Manager) SetupSharedStorage(ctx context.Context) (*SetupResult, error) 
 		return m.dryRunSetup(ctx)
 	}
 
-	log.Println("🚀 Starting shared storage setup...")
+	log.Printf("🚀 Starting shared storage setup with %s driver...", m.config.StorageDriver)
 
+	// Handle different storage drivers
+	switch m.config.StorageDriver {
+	case "efs":
+		return m.setupEFSStorage(ctx, result)
+	case "nfs":
+		return m.setupStandardNFSStorage(ctx, result)
+	default:
+		return nil, fmt.Errorf("unsupported storage driver: %s", m.config.StorageDriver)
+	}
+}
+
+// setupEFSStorage handles EFS CSI driver setup
+func (m *Manager) setupEFSStorage(ctx context.Context, result *SetupResult) (*SetupResult, error) {
 	// Step 1: Validate AWS permissions
 	log.Println("📋 Step 1: Validating AWS permissions...")
 	if err := m.awsManager.ValidateAWSPermissions(ctx); err != nil {
@@ -155,13 +184,13 @@ func (m *Manager) SetupSharedStorage(ctx context.Context) (*SetupResult, error) 
 	}
 	log.Println("✅ Service account configured")
 
-	// Step 6: Create StorageClass
-	log.Println("💾 Creating StorageClass...")
+	// Step 6: Create StorageClass for EFS
+	log.Println("💾 Creating EFS StorageClass...")
 	if err := m.k8sManager.CreateStorageClass(ctx, efsID); err != nil {
 		return nil, fmt.Errorf("failed to create StorageClass: %w", err)
 	}
 	result.StorageClassName = m.config.StorageClassName
-	log.Printf("✅ StorageClass created: %s", result.StorageClassName)
+	log.Printf("✅ EFS StorageClass created: %s", result.StorageClassName)
 
 	// Step 7: Test credentials
 	log.Println("🧪 Testing EFS CSI driver credentials...")
@@ -175,6 +204,43 @@ func (m *Manager) SetupSharedStorage(ctx context.Context) (*SetupResult, error) 
 			log.Println("✅ Credential test passed")
 		} else {
 			log.Println("⚠️ Credential test failed, but setup completed")
+		}
+	}
+
+	return result, nil
+}
+
+// setupStandardNFSStorage handles Standard NFS CSI driver setup
+func (m *Manager) setupStandardNFSStorage(ctx context.Context, result *SetupResult) (*SetupResult, error) {
+	log.Printf("📋 Setting up Standard NFS CSI storage with server: %s, share: %s", m.config.NFSServer, m.config.NFSShare)
+
+	// Step 1: Check if Standard NFS CSI driver is installed
+	log.Println("🔧 Checking Standard NFS CSI driver installation...")
+	if err := m.k8sManager.CheckStandardNFSCSIDriver(ctx); err != nil {
+		return nil, fmt.Errorf("Standard NFS CSI driver not found. Install it with: kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/deploy/install-driver.yaml")
+	}
+	log.Println("✅ Standard NFS CSI driver found")
+
+	// Step 2: Create StorageClass for Standard NFS CSI
+	log.Println("💾 Creating Standard NFS StorageClass with SBD cache coherency options...")
+	if err := m.k8sManager.CreateStandardNFSStorageClass(ctx, m.config.NFSServer, m.config.NFSShare); err != nil {
+		return nil, fmt.Errorf("failed to create Standard NFS StorageClass: %w", err)
+	}
+	result.StorageClassName = m.config.StorageClassName
+	log.Printf("✅ Standard NFS StorageClass created: %s", result.StorageClassName)
+
+	// Step 3: Test Standard NFS storage
+	log.Println("🧪 Testing Standard NFS CSI driver...")
+	testPassed, err := m.k8sManager.TestCredentials(ctx, result.StorageClassName)
+	if err != nil {
+		log.Printf("⚠️ Storage test failed: %v", err)
+		result.TestPassed = false
+	} else {
+		result.TestPassed = testPassed
+		if testPassed {
+			log.Println("✅ Standard NFS storage test passed")
+		} else {
+			log.Println("⚠️ Storage test failed, but setup completed")
 		}
 	}
 

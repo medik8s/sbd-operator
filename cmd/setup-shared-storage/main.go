@@ -13,6 +13,11 @@ import (
 
 // Configuration holds all the configuration for the storage setup
 type Config struct {
+	// Storage Driver Selection
+	StorageDriver string // "efs" or "nfs"
+	NFSServer     string // For Standard NFS CSI driver
+	NFSShare      string // For Standard NFS CSI driver
+
 	// AWS Configuration
 	AWSRegion        string
 	ClusterName      string
@@ -83,6 +88,11 @@ func main() {
 func parseFlags() *Config {
 	config := &Config{}
 
+	// Storage Driver Selection
+	flag.StringVar(&config.StorageDriver, "storage-driver", "efs", "Storage driver to use (efs|nfs)")
+	flag.StringVar(&config.NFSServer, "nfs-server", "", "NFS server address for Standard NFS CSI driver")
+	flag.StringVar(&config.NFSShare, "nfs-share", "", "NFS share path for Standard NFS CSI driver")
+
 	// AWS Configuration
 	flag.StringVar(&config.AWSRegion, "aws-region", "", "AWS region (auto-detected if not specified)")
 	flag.StringVar(&config.ClusterName, "cluster-name", "", "Cluster name (auto-detected if not specified)")
@@ -117,8 +127,19 @@ func parseFlags() *Config {
 	}
 
 	// Validate configuration
-	if config.EFSFilesystemID != "" {
+	if config.StorageDriver == "nfs" {
+		if config.NFSServer == "" || config.NFSShare == "" {
+			log.Fatalf("For Standard NFS CSI driver, both --nfs-server and --nfs-share are required")
+		}
+		// Disable EFS-specific operations for NFS driver
 		config.CreateEFS = false
+		config.EFSFilesystemID = ""
+	} else if config.StorageDriver == "efs" {
+		if config.EFSFilesystemID != "" {
+			config.CreateEFS = false
+		}
+	} else {
+		log.Fatalf("Invalid storage driver: %s. Must be 'efs' or 'nfs'", config.StorageDriver)
 	}
 
 	return config
@@ -126,6 +147,9 @@ func parseFlags() *Config {
 
 func (c *Config) toStorageConfig() *storage.Config {
 	return &storage.Config{
+		StorageDriver:         c.StorageDriver,
+		NFSServer:             c.NFSServer,
+		NFSShare:              c.NFSShare,
 		AWSRegion:             c.AWSRegion,
 		ClusterName:           c.ClusterName,
 		EFSName:               c.EFSName,
@@ -145,50 +169,74 @@ func showUsage() {
 	fmt.Printf(`
 Usage: %s [OPTIONS]
 
-This tool sets up EFS-based shared storage for OpenShift/Kubernetes clusters.
-It creates an EFS filesystem, configures networking, installs the EFS CSI driver,
-and creates a StorageClass with ReadWriteMany (RWX) access mode optimized for SBD.
+This tool sets up shared storage for OpenShift/Kubernetes clusters optimized for SBD.
+It supports two storage drivers:
+
+1. EFS CSI Driver (default): Creates EFS filesystem with AWS-managed infrastructure
+2. Standard NFS CSI Driver: Uses existing NFS server with explicit cache coherency controls
+
+STORAGE DRIVER OPTIONS:
+
+EFS CSI Driver (--storage-driver=efs):
+• Creates and configures AWS EFS filesystem automatically  
+• Handles networking, security groups, and IAM roles
+• Mount options managed by EFS CSI driver
+• Best for AWS-managed infrastructure
+
+Standard NFS CSI Driver (--storage-driver=nfs):  
+• Uses existing NFS server (like EFS via DNS name)
+• Provides explicit cache coherency controls (cache=none, sync, local_lock=none)
+• Requires manual NFS CSI driver installation
+• Best for SBD clustering requiring strict consistency guarantees
 
 CACHE COHERENCY FOR SBD:
 The tool automatically configures appropriate mount options for SBD cache coherency:
-• For OpenShift (when EFS CSI supports it): Standard NFS with cache=none, sync
-• For EKS or limited EFS CSI drivers: EFS utils mounting (handles coherency internally)
-• Validates configuration to prevent mount option conflicts
-
-For OpenShift on AWS, this tool also configures the proper IAM roles and 
-service account annotations required for the EFS CSI driver.
+• EFS CSI Driver: Uses EFS utils mounting (handles coherency internally)
+• Standard NFS CSI Driver: Uses cache=none, sync, local_lock=none for explicit control
 
 EXAMPLES:
+
+    # EFS CSI Driver Examples:
     # Create new EFS with auto-detection (recommended)
     %s
 
-    # Override auto-detected values
-    %s --cluster-name my-cluster --aws-region us-east-1
+    # Use existing EFS filesystem  
+    %s --storage-driver=efs --filesystem-id fs-1234567890abcdef0
 
-    # Use existing EFS filesystem
-    %s --filesystem-id fs-1234567890abcdef0
+    # Standard NFS CSI Driver Examples:
+    # Use EFS via Standard NFS CSI for explicit cache control
+    %s --storage-driver=nfs --nfs-server=fs-12345.efs.us-east-1.amazonaws.com --nfs-share=/
 
-    # Clean up everything
-    %s --cleanup --efs-name sbd-efs-mycluster
+    # Use any NFS server with Standard NFS CSI
+    %s --storage-driver=nfs --nfs-server=192.168.1.100 --nfs-share=/shared/sbd
+
+    # Clean up (works with both drivers)
+    %s --cleanup --storage-class-name sbd-nfs-coherent
 
     # Preview changes without executing
     %s --dry-run
 
 REQUIREMENTS:
+
+For EFS CSI Driver:
     • OpenShift/Kubernetes cluster with AWS provider
     • AWS credentials configured (via environment, profile, or IAM role)
     • Cluster admin permissions
     • IAM permissions for resource creation
 
+For Standard NFS CSI Driver:
+    • Existing NFS server (EFS, local NFS, etc.)
+    • Standard NFS CSI driver installed: kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/deploy/install-driver.yaml
+    • Cluster admin permissions
+
 MOUNT OPTIONS CONFIGURATION:
-The tool automatically detects your cluster and EFS CSI driver capabilities to choose:
-• Standard NFS mounting (efs-mount): Uses cache=none,sync for explicit cache coherency
-• EFS utils mounting (efs-ap): Uses tls,regional with built-in cache coherency
+• EFS CSI Driver: Automatically managed (no explicit mount options in StorageClass)
+• Standard NFS CSI Driver: Explicit SBD-optimized options (cache=none, sync, local_lock=none)
 
 This ensures optimal SBD operation with proper inter-node heartbeat coordination.
 
 OPTIONS:
-`, os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0])
+`, os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0])
 
 	flag.PrintDefaults()
 }

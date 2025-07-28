@@ -1603,3 +1603,83 @@ func (m *Manager) detectEFSCSICapabilities(ctx context.Context) bool {
 	log.Printf("📋 No efs-mount StorageClasses found, defaulting to EFS utils mounting (efs-ap)")
 	return false
 }
+
+// CheckStandardNFSCSIDriver checks if the Standard NFS CSI driver is installed
+func (m *Manager) CheckStandardNFSCSIDriver(ctx context.Context) error {
+	// Check if the Standard NFS CSI driver DaemonSet exists
+	_, err := m.clientset.AppsV1().DaemonSets("kube-system").Get(ctx, "csi-nfs-node", metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return fmt.Errorf("Standard NFS CSI driver not found")
+		}
+		return fmt.Errorf("failed to check Standard NFS CSI driver: %w", err)
+	}
+
+	// Check if the controller is running
+	_, err = m.clientset.AppsV1().Deployments("kube-system").Get(ctx, "csi-nfs-controller", metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return fmt.Errorf("Standard NFS CSI controller not found")
+		}
+		return fmt.Errorf("failed to check Standard NFS CSI controller: %w", err)
+	}
+
+	return nil
+}
+
+// CreateStandardNFSStorageClass creates a StorageClass for Standard NFS CSI driver with SBD cache coherency options
+func (m *Manager) CreateStandardNFSStorageClass(ctx context.Context, nfsServer, nfsShare string) error {
+	storageClassName := m.config.StorageClassName
+	if storageClassName == "" {
+		storageClassName = "sbd-nfs-coherent"
+	}
+
+	// Check if StorageClass already exists
+	_, err := m.clientset.StorageV1().StorageClasses().Get(ctx, storageClassName, metav1.GetOptions{})
+	if err == nil {
+		log.Printf("💾 StorageClass '%s' already exists", storageClassName)
+		return nil
+	}
+
+	// Create StorageClass with SBD-optimized mount options
+	storageClass := &storagev1.StorageClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: storageClassName,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "sbd-operator",
+				"storage.medik8s.io/type":      "shared-nfs",
+			},
+		},
+		Provisioner: "nfs.csi.k8s.io",
+		Parameters: map[string]string{
+			"server": nfsServer,
+			"share":  nfsShare,
+		},
+		MountOptions: []string{
+			"nfsvers=4.1",     // Use NFSv4.1 for better performance and features
+			"cache=none",      // Disable client-side caching for SBD coherency
+			"sync",            // Force synchronous operations
+			"local_lock=none", // Send all locks to server for distributed coordination
+			"rsize=1048576",   // 1MB read size for performance
+			"wsize=1048576",   // 1MB write size for performance
+			"hard",            // Hard mount - retry indefinitely on server failure
+			"timeo=600",       // 60 second timeout
+			"retrans=2",       // 2 retransmissions before timeout
+		},
+		AllowVolumeExpansion: &[]bool{true}[0],
+		ReclaimPolicy:        &[]corev1.PersistentVolumeReclaimPolicy{corev1.PersistentVolumeReclaimRetain}[0],
+		VolumeBindingMode:    &[]storagev1.VolumeBindingMode{storagev1.VolumeBindingImmediate}[0],
+	}
+
+	_, err = m.clientset.StorageV1().StorageClasses().Create(ctx, storageClass, metav1.CreateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to create StorageClass: %w", err)
+	}
+
+	log.Printf("✅ Standard NFS StorageClass '%s' created with SBD cache coherency options:", storageClassName)
+	log.Printf("   📡 NFS Server: %s", nfsServer)
+	log.Printf("   📁 NFS Share: %s", nfsShare)
+	log.Printf("   🔄 Mount Options: cache=none, sync, local_lock=none (SBD optimized)")
+
+	return nil
+}
