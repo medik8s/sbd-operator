@@ -39,8 +39,8 @@ func TestNodeHasher(t *testing.T) {
 	}
 
 	// Test slot calculation
-	slot1 := hasher.CalculateSlotID("node-1", 0)
-	slot2 := hasher.CalculateSlotID("node-1", 0)
+	slot1 := hasher.CalculateNodeID("node-1", 0)
+	slot2 := hasher.CalculateNodeID("node-1", 0)
 	if slot1 != slot2 {
 		t.Errorf("Slot calculation should be consistent: %d != %d", slot1, slot2)
 	}
@@ -51,7 +51,7 @@ func TestNodeHasher(t *testing.T) {
 	}
 
 	// Test collision resolution produces different slots
-	slot3 := hasher.CalculateSlotID("node-1", 1)
+	slot3 := hasher.CalculateNodeID("node-1", 1)
 	if slot1 == slot3 {
 		t.Errorf("Collision resolution should produce different slots: %d == %d", slot1, slot3)
 	}
@@ -72,7 +72,7 @@ func TestNodeMapTable_BasicOperations(t *testing.T) {
 	}
 
 	// Test retrieving the slot
-	retrievedSlot, found := table.GetSlotForNode("node-1")
+	retrievedSlot, found := table.GetNodeIDForNode("node-1")
 	if !found {
 		t.Error("Node should be found in table")
 	}
@@ -81,7 +81,7 @@ func TestNodeMapTable_BasicOperations(t *testing.T) {
 	}
 
 	// Test retrieving the node by slot
-	nodeName, found := table.GetNodeForSlot(slot)
+	nodeName, found := table.GetNodeForNodeID(slot)
 	if !found {
 		t.Error("Slot should be found in table")
 	}
@@ -127,7 +127,7 @@ func TestNodeMapTable_CollisionDetection(t *testing.T) {
 		assignedSlots[slot] = nodeName
 
 		// Verify the assignment
-		retrievedSlot, found := table.GetSlotForNode(nodeName)
+		retrievedSlot, found := table.GetNodeIDForNode(nodeName)
 		if !found || retrievedSlot != slot {
 			t.Errorf("Node %s assignment verification failed", nodeName)
 		}
@@ -231,7 +231,7 @@ func TestNodeMapTable_Persistence(t *testing.T) {
 	}
 
 	for nodeName, originalSlot := range originalSlots {
-		slot, found := table2.GetSlotForNode(nodeName)
+		slot, found := table2.GetNodeIDForNode(nodeName)
 		if !found {
 			t.Errorf("Node %s not found after unmarshaling", nodeName)
 		}
@@ -284,12 +284,12 @@ func TestNodeMapTable_StaleNodeManagement(t *testing.T) {
 		t.Errorf("Expected 1 remaining node, got %d", len(table.Entries))
 	}
 
-	_, found := table.GetSlotForNode("node-1")
+	_, found := table.GetNodeIDForNode("node-1")
 	if !found {
 		t.Error("Active node should still be present")
 	}
 
-	_, found = table.GetSlotForNode("node-2")
+	_, found = table.GetNodeIDForNode("node-2")
 	if found {
 		t.Error("Stale node should be removed")
 	}
@@ -407,7 +407,7 @@ func TestNodeMapTable_ConcurrentAccess(t *testing.T) {
 				}
 
 				// Verify consistency
-				retrievedSlot, found := table.GetSlotForNode(nodeName)
+				retrievedSlot, found := table.GetNodeIDForNode(nodeName)
 				if !found || retrievedSlot != slot {
 					t.Errorf("Inconsistent slot for %s: expected %d, got %d (found: %v)", nodeName, slot, retrievedSlot, found)
 					return
@@ -679,7 +679,7 @@ func TestNodeMappingEndianness(t *testing.T) {
 
 	// Verify all slots are preserved correctly
 	for nodeName, expectedSlot := range assignedSlots {
-		actualSlot, found := unmarshaledTable.GetSlotForNode(nodeName)
+		actualSlot, found := unmarshaledTable.GetNodeIDForNode(nodeName)
 		if !found {
 			t.Errorf("Node %s not found in unmarshaled table", nodeName)
 			continue
@@ -785,7 +785,7 @@ func TestNodeMapTable_HashCollisionHandling(t *testing.T) {
 				assignedSlots[slot] = true
 
 				// Verify node can be found
-				retrievedSlot, found := table.GetSlotForNode(nodeName)
+				retrievedSlot, found := table.GetNodeIDForNode(nodeName)
 				if !found || retrievedSlot != slot {
 					t.Errorf("Could not retrieve slot for node %s: expected %d, got %d (found: %v)",
 						nodeName, slot, retrievedSlot, found)
@@ -857,10 +857,10 @@ func TestNodeMapTable_SlotExhaustion(t *testing.T) {
 	// Verify all assignments are unique
 	seenSlots := make(map[uint16]bool)
 	for _, entry := range table.Entries {
-		if seenSlots[entry.SlotID] {
-			t.Errorf("Duplicate slot assignment detected: slot %d", entry.SlotID)
+		if seenSlots[entry.NodeID] {
+			t.Errorf("Duplicate slot assignment detected: slot %d", entry.NodeID)
 		}
-		seenSlots[entry.SlotID] = true
+		seenSlots[entry.NodeID] = true
 	}
 }
 
@@ -887,7 +887,7 @@ func TestNodeMapTable_ForcedHashCollisions(t *testing.T) {
 
 	for i, nodeName := range nodeNames {
 		// Calculate preferred slot for this node
-		preferredSlot := hasher.CalculateSlotID(nodeName, 0)
+		preferredSlot := hasher.CalculateNodeID(nodeName, 0)
 
 		slot, err := table.AssignSlot(nodeName, hasher)
 		if err != nil {
@@ -982,7 +982,7 @@ func TestNodeMapTable_CollisionResolutionWithLimitedSlots(t *testing.T) {
 
 	for i, nodeName := range nodes {
 		// Get the preferred slot
-		preferredSlot := hasher.CalculateSlotID(nodeName, 0)
+		preferredSlot := hasher.CalculateNodeID(nodeName, 0)
 
 		slot, err := table.AssignSlot(nodeName, hasher)
 		if err != nil {
@@ -1011,10 +1011,10 @@ func TestNodeMapTable_CollisionResolutionWithLimitedSlots(t *testing.T) {
 	// Verify no slot conflicts
 	seenSlots := make(map[uint16]bool)
 	for _, entry := range table.Entries {
-		if seenSlots[entry.SlotID] {
-			t.Errorf("Duplicate slot assignment detected: slot %d", entry.SlotID)
+		if seenSlots[entry.NodeID] {
+			t.Errorf("Duplicate slot assignment detected: slot %d", entry.NodeID)
 		}
-		seenSlots[entry.SlotID] = true
+		seenSlots[entry.NodeID] = true
 	}
 }
 
@@ -1056,7 +1056,7 @@ func TestNodeMapTable_ExtremHashCollisionStress(t *testing.T) {
 			totalNodes++
 
 			// Calculate preferred slot
-			preferredSlot := hasher.CalculateSlotID(nodeName, 0)
+			preferredSlot := hasher.CalculateNodeID(nodeName, 0)
 
 			slot, err := table.AssignSlot(nodeName, hasher)
 			if err != nil {
@@ -1100,7 +1100,7 @@ func TestNodeMapTable_ExtremHashCollisionStress(t *testing.T) {
 
 	// Verify no slot conflicts occurred
 	for slotID, nodeName := range assignedSlots {
-		if retrievedNode, found := table.GetNodeForSlot(slotID); !found || retrievedNode != nodeName {
+		if retrievedNode, found := table.GetNodeForNodeID(slotID); !found || retrievedNode != nodeName {
 			t.Errorf("Slot mapping inconsistency: slot %d should map to %s, got %s (found: %v)",
 				slotID, nodeName, retrievedNode, found)
 		}
@@ -1153,8 +1153,8 @@ func TestNodeMapTable_SlotExhaustionBoundary(t *testing.T) {
 		t.Errorf("Entry count mismatch: expected %d, got %d", successCount, len(table.Entries))
 	}
 
-	if len(table.SlotUsage) != successCount {
-		t.Errorf("Slot usage count mismatch: expected %d, got %d", successCount, len(table.SlotUsage))
+	if len(table.NodeUsage) != successCount {
+		t.Errorf("Slot usage count mismatch: expected %d, got %d", successCount, len(table.NodeUsage))
 	}
 
 	// Verify stats consistency
@@ -1198,7 +1198,7 @@ func TestNodeMapTable_RetryMechanismValidation(t *testing.T) {
 		// Track which slots would be tried for this node
 		attemptedSlots := make([]uint16, 0, SBD_MAX_RETRIES)
 		for attempt := 0; attempt < SBD_MAX_RETRIES; attempt++ {
-			attemptSlot := hasher.CalculateSlotID(testNode, attempt)
+			attemptSlot := hasher.CalculateNodeID(testNode, attempt)
 			attemptedSlots = append(attemptedSlots, attemptSlot)
 		}
 

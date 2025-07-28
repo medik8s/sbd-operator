@@ -153,26 +153,23 @@ func NewNodeManager(device SBDDevice, config NodeManagerConfig) (*NodeManager, e
 	return manager, nil
 }
 
-// GetSlotForNode returns the slot ID for a given node name, assigning one if necessary
-// This method uses atomic Compare-and-Swap operations to prevent race conditions
-func (nm *NodeManager) GetSlotForNode(nodeName string) (uint16, error) {
-	if nodeName == "" {
-		return 0, fmt.Errorf("node name cannot be empty")
-	}
-
-	// First, try to get the slot without locking if it already exists locally
+// GetNodeIDForNode returns the node ID for a given node name, assigning one if necessary
+// This is the main API for obtaining a node's ID for SBD protocol operations
+func (nm *NodeManager) GetNodeIDForNode(nodeName string) (uint16, error) {
 	nm.mutex.RLock()
-	if slot, found := nm.table.GetSlotForNode(nodeName); found {
+
+	// Check if we already have a node ID assignment
+	if nodeID, found := nm.table.GetNodeIDForNode(nodeName); found {
 		nm.mutex.RUnlock()
 		// Update last seen timestamp atomically
 		if err := nm.atomicUpdateLastSeen(nodeName); err != nil {
 			nm.logger.Error(err, "Failed to update last seen timestamp atomically", "nodeName", nodeName)
 		}
-		return slot, nil
+		return nodeID, nil
 	}
 	nm.mutex.RUnlock()
 
-	// Node doesn't exist locally, use atomic assignment
+	// No assignment found, need to assign a new node ID
 	return nm.atomicAssignSlot(nodeName)
 }
 
@@ -198,7 +195,7 @@ func (nm *NodeManager) atomicAssignSlot(nodeName string) (uint16, error) {
 
 		// Step 2: Check if node already exists (another node might have assigned it)
 		nm.mutex.RLock()
-		if slot, found := nm.table.GetSlotForNode(nodeName); found {
+		if slot, found := nm.table.GetNodeIDForNode(nodeName); found {
 			nm.mutex.RUnlock()
 			nm.logger.Info("Node found in mapping during atomic assignment", "nodeName", nodeName, "slotID", slot)
 			return slot, nil
@@ -241,7 +238,7 @@ func (nm *NodeManager) atomicAssignSlot(nodeName string) (uint16, error) {
 		}
 
 		// Success!
-		nm.logger.Info("Assigned new slot to node atomically", "nodeName", nodeName, "slotID", slot, "entries", len(nm.table.Entries))
+		nm.logger.Info("Assigned new slot to node atomically", "nodeName", nodeName, "nodeID", slot, "entries", len(nm.table.Entries))
 		return slot, nil
 	}
 
@@ -284,12 +281,12 @@ func (nm *NodeManager) atomicUpdateLastSeen(nodeName string) error {
 	return fmt.Errorf("%w: failed to update last seen for node %s", ErrMaxRetriesExceeded, nodeName)
 }
 
-// GetNodeForSlot returns the node name for a given slot ID
-func (nm *NodeManager) GetNodeForSlot(slotID uint16) (string, bool) {
+// GetNodeForNodeID returns the node name for a given slot ID
+func (nm *NodeManager) GetNodeForNodeID(slotID uint16) (string, bool) {
 	nm.mutex.RLock()
 	defer nm.mutex.RUnlock()
 
-	return nm.table.GetNodeForSlot(slotID)
+	return nm.table.GetNodeForNodeID(slotID)
 }
 
 // RemoveNode removes a node from the mapping table
@@ -698,30 +695,30 @@ func (nm *NodeManager) ValidateIntegrity() error {
 	// Check for duplicate slots
 	slotCount := make(map[uint16]int)
 	for _, entry := range nm.table.Entries {
-		slotCount[entry.SlotID]++
+		slotCount[entry.NodeID]++
 	}
 
-	for slotID, count := range slotCount {
+	for nodeID, count := range slotCount {
 		if count > 1 {
-			return fmt.Errorf("duplicate slot assignment detected: slot %d assigned to %d nodes", slotID, count)
+			return fmt.Errorf("duplicate slot assignment detected: slot %d assigned to %d nodes", nodeID, count)
 		}
 	}
 
 	// Check for orphaned slots in SlotUsage
-	for slotID, nodeName := range nm.table.SlotUsage {
+	for nodeID, nodeName := range nm.table.NodeUsage {
 		if entry, exists := nm.table.Entries[nodeName]; !exists {
-			return fmt.Errorf("orphaned slot usage: slot %d points to non-existent node %s", slotID, nodeName)
-		} else if entry.SlotID != slotID {
-			return fmt.Errorf("slot usage mismatch: slot %d points to node %s, but node has slot %d", slotID, nodeName, entry.SlotID)
+			return fmt.Errorf("orphaned slot usage: slot %d points to non-existent node %s", nodeID, nodeName)
+		} else if entry.NodeID != nodeID {
+			return fmt.Errorf("slot usage mismatch: slot %d points to node %s, but node has slot %d", nodeID, nodeName, entry.NodeID)
 		}
 	}
 
 	// Check for orphaned entries
 	for nodeName, entry := range nm.table.Entries {
-		if usedNode, exists := nm.table.SlotUsage[entry.SlotID]; !exists {
-			return fmt.Errorf("orphaned entry: node %s has slot %d, but slot is not in usage map", nodeName, entry.SlotID)
+		if usedNode, exists := nm.table.NodeUsage[entry.NodeID]; !exists {
+			return fmt.Errorf("orphaned entry: node %s has slot %d, but slot is not in usage map", nodeName, entry.NodeID)
 		} else if usedNode != nodeName {
-			return fmt.Errorf("entry mismatch: node %s has slot %d, but slot is assigned to %s", nodeName, entry.SlotID, usedNode)
+			return fmt.Errorf("entry mismatch: node %s has slot %d, but slot is assigned to %s", nodeName, entry.NodeID, usedNode)
 		}
 	}
 

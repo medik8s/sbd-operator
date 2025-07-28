@@ -334,7 +334,7 @@ func (r *SBDRemediationReconciler) executeFencing(ctx context.Context, remediati
 	targetNodeName := remediation.Spec.NodeName
 
 	// Get target node ID using node manager
-	targetNodeID, err := r.nodeManager.GetSlotForNode(targetNodeName)
+	targetNodeID, err := r.nodeManager.GetNodeIDForNode(targetNodeName)
 	if err != nil {
 		return fmt.Errorf("failed to get node ID for target node %s: %w", targetNodeName, err)
 	}
@@ -636,7 +636,7 @@ func (r *SBDRemediationReconciler) hasNodeStoppedHeartbeating(nodeName string, l
 	}
 
 	// Get target node ID
-	targetNodeID, err := r.nodeManager.GetSlotForNode(nodeName)
+	targetNodeID, err := r.nodeManager.GetNodeIDForNode(nodeName)
 	if err != nil {
 		return false, fmt.Errorf("failed to get node ID for %s: %w", nodeName, err)
 	}

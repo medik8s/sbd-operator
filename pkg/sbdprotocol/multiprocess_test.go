@@ -444,7 +444,7 @@ func runNodeProcess(config MultiProcessTestConfig) (*MultiProcessTestResult, err
 	defer nodeManager.Close()
 
 	// Get or assign slot for this node
-	slotID, err := nodeManager.GetSlotForNode(config.NodeName)
+	slotID, err := nodeManager.GetNodeIDForNode(config.NodeName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get slot for node: %w", err)
 	}

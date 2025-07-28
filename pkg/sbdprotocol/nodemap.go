@@ -57,7 +57,7 @@ const (
 // NodeMapEntry represents a single entry in the node mapping table
 type NodeMapEntry struct {
 	NodeName    string    `json:"node_name"`
-	SlotID      uint16    `json:"slot_id"`
+	NodeID      uint16    `json:"node_id"`
 	Hash        uint32    `json:"hash"`
 	Timestamp   time.Time `json:"timestamp"`
 	LastSeen    time.Time `json:"last_seen"`
@@ -70,7 +70,7 @@ type NodeMapTable struct {
 	Version     uint64                   `json:"version"`
 	ClusterName string                   `json:"cluster_name"`
 	Entries     map[string]*NodeMapEntry `json:"entries"`
-	SlotUsage   map[uint16]string        `json:"slot_usage"` // slot_id -> node_name
+	NodeUsage   map[uint16]string        `json:"node_usage"` // node_id -> node_name
 	LastUpdate  time.Time                `json:"last_update"`
 	Checksum    uint32                   `json:"-"`
 	mutex       sync.RWMutex             `json:"-"`
@@ -86,7 +86,7 @@ func NewNodeMapTable(clusterName string) *NodeMapTable {
 		Version:     1, // Start with version 1
 		ClusterName: clusterName,
 		Entries:     make(map[string]*NodeMapEntry),
-		SlotUsage:   make(map[uint16]string),
+		NodeUsage:   make(map[uint16]string),
 		LastUpdate:  time.Now(),
 	}
 }
@@ -116,18 +116,18 @@ func (h *NodeHasher) HashNodeName(nodeName string) uint32 {
 	return binary.LittleEndian.Uint32(hash[:4])
 }
 
-// CalculateSlotID calculates the preferred slot ID for a node based on its hash
-func (h *NodeHasher) CalculateSlotID(nodeName string, attempt int) uint16 {
+// CalculateNodeID calculates the preferred node ID for a node based on its hash
+func (h *NodeHasher) CalculateNodeID(nodeName string, attempt int) uint16 {
 	hash := h.HashNodeName(nodeName)
 
 	// Add attempt number to handle collisions
 	hash = crc32.ChecksumIEEE([]byte(fmt.Sprintf("%d-%d", hash, attempt)))
 
-	// Map to usable slot range [1, 255]
-	slotRange := SBD_USABLE_SLOTS_END - SBD_USABLE_SLOTS_START + 1
-	slotID := uint16(hash%uint32(slotRange)) + SBD_USABLE_SLOTS_START
+	// Map to usable node ID range [1, 255]
+	nodeRange := SBD_USABLE_SLOTS_END - SBD_USABLE_SLOTS_START + 1
+	nodeID := uint16(hash%uint32(nodeRange)) + SBD_USABLE_SLOTS_START
 
-	return slotID
+	return nodeID
 }
 
 // AssignSlot assigns a slot to a node name using consistent hashing with collision detection
@@ -145,20 +145,20 @@ func (table *NodeMapTable) AssignSlot(nodeName string, hasher *NodeHasher) (uint
 		entry.LastSeen = time.Now()
 		table.LastUpdate = time.Now()
 		table.Version++ // Increment version for any change
-		return entry.SlotID, nil
+		return entry.NodeID, nil
 	}
 
-	// Try to find an available slot using collision resolution
+	// Try to find an available node ID using collision resolution
 	for attempt := 0; attempt < SBD_MAX_RETRIES; attempt++ {
-		preferredSlot := hasher.CalculateSlotID(nodeName, attempt)
+		preferredNodeID := hasher.CalculateNodeID(nodeName, attempt)
 
-		// Check if slot is available
-		if existingNode, occupied := table.SlotUsage[preferredSlot]; !occupied {
-			// Slot is available, assign it
+		// Check if node ID is available
+		if existingNode, occupied := table.NodeUsage[preferredNodeID]; !occupied {
+			// Node ID is available, assign it
 			hash := hasher.HashNodeName(nodeName)
 			entry := &NodeMapEntry{
 				NodeName:    nodeName,
-				SlotID:      preferredSlot,
+				NodeID:      preferredNodeID,
 				Hash:        hash,
 				Timestamp:   time.Now(),
 				LastSeen:    time.Now(),
@@ -166,38 +166,38 @@ func (table *NodeMapTable) AssignSlot(nodeName string, hasher *NodeHasher) (uint
 			}
 
 			table.Entries[nodeName] = entry
-			table.SlotUsage[preferredSlot] = nodeName
+			table.NodeUsage[preferredNodeID] = nodeName
 			table.LastUpdate = time.Now()
-			table.Version++ // Increment version for slot assignment
+			table.Version++ // Increment version for node assignment
 
-			return preferredSlot, nil
+			return preferredNodeID, nil
 		} else if existingNode == nodeName {
 			// This shouldn't happen, but handle gracefully
-			return preferredSlot, nil
+			return preferredNodeID, nil
 		}
-		// Slot is occupied by another node, try next attempt
+		// Node ID is occupied by another node, try next attempt
 	}
 
-	return 0, fmt.Errorf("failed to assign slot for node %s after %d attempts: all preferred slots are occupied", nodeName, SBD_MAX_RETRIES)
+	return 0, fmt.Errorf("failed to assign node ID for node %s after %d attempts: all preferred node IDs are occupied", nodeName, SBD_MAX_RETRIES)
 }
 
-// GetSlotForNode returns the slot ID for a given node name
-func (table *NodeMapTable) GetSlotForNode(nodeName string) (uint16, bool) {
+// GetNodeIDForNode returns the node ID for a given node name
+func (table *NodeMapTable) GetNodeIDForNode(nodeName string) (uint16, bool) {
 	table.mutex.RLock()
 	defer table.mutex.RUnlock()
 
 	if entry, exists := table.Entries[nodeName]; exists {
-		return entry.SlotID, true
+		return entry.NodeID, true
 	}
 	return 0, false
 }
 
-// GetNodeForSlot returns the node name for a given slot ID
-func (table *NodeMapTable) GetNodeForSlot(slotID uint16) (string, bool) {
+// GetNodeForNodeID returns the node name for a given node ID
+func (table *NodeMapTable) GetNodeForNodeID(nodeID uint16) (string, bool) {
 	table.mutex.RLock()
 	defer table.mutex.RUnlock()
 
-	if nodeName, exists := table.SlotUsage[slotID]; exists {
+	if nodeName, exists := table.NodeUsage[nodeID]; exists {
 		return nodeName, true
 	}
 	return "", false
@@ -214,7 +214,7 @@ func (table *NodeMapTable) RemoveNode(nodeName string) error {
 	}
 
 	delete(table.Entries, nodeName)
-	delete(table.SlotUsage, entry.SlotID)
+	delete(table.NodeUsage, entry.NodeID)
 	table.LastUpdate = time.Now()
 	table.Version++ // Increment version for removal
 
@@ -284,7 +284,7 @@ func (table *NodeMapTable) CleanupStaleNodes(maxAge time.Duration) []string {
 	for nodeName, entry := range table.Entries {
 		if entry.LastSeen.Before(cutoff) {
 			delete(table.Entries, nodeName)
-			delete(table.SlotUsage, entry.SlotID)
+			delete(table.NodeUsage, entry.NodeID)
 			removedNodes = append(removedNodes, nodeName)
 		}
 	}
@@ -309,14 +309,14 @@ func (table *NodeMapTable) Marshal() ([]byte, error) {
 		Version     uint64                   `json:"version"`
 		ClusterName string                   `json:"cluster_name"`
 		Entries     map[string]*NodeMapEntry `json:"entries"`
-		SlotUsage   map[uint16]string        `json:"slot_usage"`
+		NodeUsage   map[uint16]string        `json:"node_usage"`
 		LastUpdate  time.Time                `json:"last_update"`
 	}{
 		Magic:       table.Magic,
 		Version:     table.Version,
 		ClusterName: table.ClusterName,
 		Entries:     table.Entries,
-		SlotUsage:   table.SlotUsage,
+		NodeUsage:   table.NodeUsage,
 		LastUpdate:  table.LastUpdate,
 	}
 
@@ -357,7 +357,7 @@ func UnmarshalNodeMapTable(data []byte) (*NodeMapTable, error) {
 		Version     uint64                   `json:"version"`
 		ClusterName string                   `json:"cluster_name"`
 		Entries     map[string]*NodeMapEntry `json:"entries"`
-		SlotUsage   map[uint16]string        `json:"slot_usage"`
+		NodeUsage   map[uint16]string        `json:"node_usage"`
 		LastUpdate  time.Time                `json:"last_update"`
 	}
 
@@ -383,7 +383,7 @@ func UnmarshalNodeMapTable(data []byte) (*NodeMapTable, error) {
 		Version:     serializedData.Version,
 		ClusterName: serializedData.ClusterName,
 		Entries:     serializedData.Entries,
-		SlotUsage:   serializedData.SlotUsage,
+		NodeUsage:   serializedData.NodeUsage,
 		LastUpdate:  serializedData.LastUpdate,
 	}
 
@@ -391,8 +391,8 @@ func UnmarshalNodeMapTable(data []byte) (*NodeMapTable, error) {
 	if table.Entries == nil {
 		table.Entries = make(map[string]*NodeMapEntry)
 	}
-	if table.SlotUsage == nil {
-		table.SlotUsage = make(map[uint16]string)
+	if table.NodeUsage == nil {
+		table.NodeUsage = make(map[uint16]string)
 	}
 
 	return table, nil
@@ -419,8 +419,8 @@ func (table *NodeMapTable) GetStats() map[string]interface{} {
 		"total_nodes":     len(table.Entries),
 		"active_nodes":    activeCount,
 		"stale_nodes":     staleCount,
-		"slots_used":      len(table.SlotUsage),
-		"slots_available": int(SBD_USABLE_SLOTS_END-SBD_USABLE_SLOTS_START+1) - len(table.SlotUsage),
+		"slots_used":      len(table.NodeUsage),
+		"slots_available": int(SBD_USABLE_SLOTS_END-SBD_USABLE_SLOTS_START+1) - len(table.NodeUsage),
 		"cluster_name":    table.ClusterName,
 		"last_update":     table.LastUpdate,
 	}

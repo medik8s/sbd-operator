@@ -43,13 +43,12 @@ import (
 	"github.com/medik8s/sbd-operator/pkg/sbdprotocol"
 )
 
-// SBDSlotSummary represents a summary of SBD slot information for display purposes
-type SBDSlotSummary struct {
-	SlotID    uint16
+// SBDNodeSummary represents a summary of SBD node information for display purposes
+type SBDNodeSummary struct {
 	NodeID    uint16
-	Type      string
 	Timestamp time.Time
 	Sequence  uint64
+	Type      string
 	HasData   bool
 }
 
@@ -68,7 +67,7 @@ func (tc *TestClients) GetNodeMapFromPod(podName, namespace string) (*sbdprotoco
 }
 
 // GetSBDDeviceInfoFromPod extracts SBD device information from an SBD agent pod
-func (tc *TestClients) GetSBDDeviceInfoFromPod(podName, namespace string) ([]SBDSlotSummary, error) {
+func (tc *TestClients) GetSBDDeviceInfoFromPod(podName, namespace string) ([]SBDNodeSummary, error) {
 	// Execute command to read SBD device content
 	// Read first 255 slots (255 * 512 bytes = 130560 bytes)
 
@@ -89,7 +88,7 @@ func (tc *TestClients) GetSBDDeviceInfoFromPod(podName, namespace string) ([]SBD
 }
 
 // GetFenceDeviceInfoFromPod extracts fence device information from an SBD agent pod
-func (tc *TestClients) GetFenceDeviceInfoFromPod(podName, namespace string) ([]SBDSlotSummary, error) {
+func (tc *TestClients) GetFenceDeviceInfoFromPod(podName, namespace string) ([]SBDNodeSummary, error) {
 	// Execute command to read fence device content
 	// Read first 255 slots (255 * 512 bytes = 130560 bytes)
 
@@ -117,28 +116,28 @@ func PrintNodeMap(nodeMapTable *sbdprotocol.NodeMapTable) {
 	fmt.Printf("Last update: %s\n", nodeMapTable.LastUpdate)
 	fmt.Printf("Checksum: %d\n", nodeMapTable.Checksum)
 	fmt.Printf("Entries: %d\n", len(nodeMapTable.Entries))
-	fmt.Printf("Slot usage: %v\n", nodeMapTable.SlotUsage)
+	fmt.Printf("Node usage: %v\n", nodeMapTable.NodeUsage)
 
 	if len(nodeMapTable.Entries) == 0 {
 		fmt.Printf("No active node mappings found.\n")
 		return
 	}
 
-	fmt.Printf("%-6s %-30s %-20s\n", "Slot", "Node Name", "Last Seen")
-	fmt.Printf("%-6s %-30s %-20s\n", "----", "---------", "---------")
+	fmt.Printf("%-6s %-30s %-20s\n", "NodeID", "Node Name", "Last Seen")
+	fmt.Printf("%-6s %-30s %-20s\n", "------", "---------", "---------")
 
 	for _, entry := range nodeMapTable.Entries {
 		lastSeenStr := "Never"
 		if !entry.LastSeen.IsZero() {
 			lastSeenStr = entry.LastSeen.Format("2006-01-02 15:04:05")
 		}
-		fmt.Printf("%-6d %-30s %-20s\n", entry.SlotID, entry.NodeName, lastSeenStr)
+		fmt.Printf("%-6d %-30s %-20s\n", entry.NodeID, entry.NodeName, lastSeenStr)
 	}
 	fmt.Printf("\n")
 }
 
 // PrintSBDDevice prints the SBD device summary to stdout
-func PrintSBDDevice(slots []SBDSlotSummary) {
+func PrintSBDDevice(slots []SBDNodeSummary) {
 	fmt.Printf("=== SBD Device Summary ===\n")
 	fmt.Printf("Total slots with data: %d\n\n", len(slots))
 
@@ -147,23 +146,22 @@ func PrintSBDDevice(slots []SBDSlotSummary) {
 		return
 	}
 
-	fmt.Printf("%-6s %-8s %-30s %-12s %-20s %-10s\n", "Slot", "NodeID", "Node Name", "Type", "Timestamp", "Sequence")
-	fmt.Printf("%-6s %-8s %-30s %-12s %-20s %-10s\n", "----", "------", "---------", "----", "---------", "--------")
+	fmt.Printf("%-8s %-12s %-20s %-10s\n", "NodeID", "Type", "Timestamp", "Sequence")
+	fmt.Printf("%-8s %-12s %-20s %-10s\n", "------", "----", "---------", "--------")
 
 	for _, slot := range slots {
 		timestampStr := "N/A"
 		if !slot.Timestamp.IsZero() {
 			timestampStr = slot.Timestamp.Format("15:04:05")
 		}
-		nodeNameStr := "Unknown" // We don't have node name in the SBD message
-		fmt.Printf("%-6d %-8d %-30s %-12s %-20s %-10d\n",
-			slot.SlotID, slot.NodeID, nodeNameStr, slot.Type, timestampStr, slot.Sequence)
+		fmt.Printf("%-8d %-12s %-20s %-10d\n",
+			slot.NodeID, slot.Type, timestampStr, slot.Sequence)
 	}
 	fmt.Printf("\n")
 }
 
 // PrintFenceDevice prints the fence device summary to stdout
-func PrintFenceDevice(slots []SBDSlotSummary) {
+func PrintFenceDevice(slots []SBDNodeSummary) {
 	fmt.Printf("=== Fence Device Summary ===\n")
 	fmt.Printf("Total slots with data: %d\n\n", len(slots))
 
@@ -172,17 +170,16 @@ func PrintFenceDevice(slots []SBDSlotSummary) {
 		return
 	}
 
-	fmt.Printf("%-6s %-8s %-30s %-12s %-20s %-10s\n", "Slot", "NodeID", "Node Name", "Type", "Timestamp", "Sequence")
-	fmt.Printf("%-6s %-8s %-30s %-12s %-20s %-10s\n", "----", "------", "---------", "----", "---------", "--------")
+	fmt.Printf("%-8s %-12s %-20s %-10s\n", "NodeID", "Type", "Timestamp", "Sequence")
+	fmt.Printf("%-8s %-12s %-20s %-10s\n", "------", "----", "---------", "--------")
 
 	for _, slot := range slots {
 		timestampStr := "N/A"
 		if !slot.Timestamp.IsZero() {
 			timestampStr = slot.Timestamp.Format("15:04:05")
 		}
-		nodeNameStr := "Unknown" // We don't have node name in the fence message
-		fmt.Printf("%-6d %-8d %-30s %-12s %-20s %-10d\n",
-			slot.SlotID, slot.NodeID, nodeNameStr, slot.Type, timestampStr, slot.Sequence)
+		fmt.Printf("%-8d %-12s %-20s %-10d\n",
+			slot.NodeID, slot.Type, timestampStr, slot.Sequence)
 	}
 	fmt.Printf("\n")
 }
@@ -202,22 +199,22 @@ func SaveNodeMapToFile(nodeMapTable *sbdprotocol.NodeMapTable, filename string) 
 	fmt.Fprintf(file, "Last update: %s\n", nodeMapTable.LastUpdate)
 	fmt.Fprintf(file, "Checksum: %d\n", nodeMapTable.Checksum)
 	fmt.Fprintf(file, "Entries: %d\n", len(nodeMapTable.Entries))
-	fmt.Fprintf(file, "Slot usage: %v\n", nodeMapTable.SlotUsage)
+	fmt.Fprintf(file, "Node usage: %v\n", nodeMapTable.NodeUsage)
 
 	if len(nodeMapTable.Entries) == 0 {
 		fmt.Fprintf(file, "No active node mappings found.\n")
 		return nil
 	}
 
-	fmt.Fprintf(file, "%-6s %-30s %-20s\n", "Slot", "Node Name", "Last Seen")
-	fmt.Fprintf(file, "%-6s %-30s %-20s\n", "----", "---------", "---------")
+	fmt.Fprintf(file, "%-6s %-30s %-20s\n", "NodeID", "Node Name", "Last Seen")
+	fmt.Fprintf(file, "%-6s %-30s %-20s\n", "------", "---------", "---------")
 
 	for _, entry := range nodeMapTable.Entries {
 		lastSeenStr := "Never"
 		if !entry.LastSeen.IsZero() {
 			lastSeenStr = entry.LastSeen.Format("2006-01-02 15:04:05")
 		}
-		fmt.Fprintf(file, "%-6d %-30s %-20s\n", entry.SlotID, entry.NodeName, lastSeenStr)
+		fmt.Fprintf(file, "%-6d %-30s %-20s\n", entry.NodeID, entry.NodeName, lastSeenStr)
 	}
 	fmt.Fprintf(file, "\n")
 
@@ -225,7 +222,7 @@ func SaveNodeMapToFile(nodeMapTable *sbdprotocol.NodeMapTable, filename string) 
 }
 
 // SaveSBDDeviceToFile saves the SBD device summary to a file
-func SaveSBDDeviceToFile(slots []SBDSlotSummary, filename string) error {
+func SaveSBDDeviceToFile(slots []SBDNodeSummary, filename string) error {
 	file, err := os.Create(filename)
 	if err != nil {
 		return fmt.Errorf("failed to create file %s: %w", filename, err)
@@ -241,8 +238,8 @@ func SaveSBDDeviceToFile(slots []SBDSlotSummary, filename string) error {
 		return nil
 	}
 
-	fmt.Fprintf(file, "%-6s %-8s %-30s %-12s %-20s %-10s\n", "Slot", "NodeID", "Node Name", "Type", "Timestamp", "Sequence")
-	fmt.Fprintf(file, "%-6s %-8s %-30s %-12s %-20s %-10s\n", "----", "------", "---------", "----", "---------", "--------")
+	fmt.Fprintf(file, "%-8s %-30s %-12s %-20s %-10s\n", "NodeID", "Node Name", "Type", "Timestamp", "Sequence")
+	fmt.Fprintf(file, "%-8s %-30s %-12s %-20s %-10s\n", "------", "---------", "----", "---------", "--------")
 
 	for _, slot := range slots {
 		timestampStr := "N/A"
@@ -250,8 +247,8 @@ func SaveSBDDeviceToFile(slots []SBDSlotSummary, filename string) error {
 			timestampStr = slot.Timestamp.Format("15:04:05")
 		}
 		nodeNameStr := "Unknown" // We don't have node name in the SBD message
-		fmt.Fprintf(file, "%-6d %-8d %-30s %-12s %-20s %-10d\n",
-			slot.SlotID, slot.NodeID, nodeNameStr, slot.Type, timestampStr, slot.Sequence)
+		fmt.Fprintf(file, "%-8d %-30s %-12s %-20s %-10d\n",
+			slot.NodeID, nodeNameStr, slot.Type, timestampStr, slot.Sequence)
 	}
 	fmt.Fprintf(file, "\n")
 
@@ -259,7 +256,7 @@ func SaveSBDDeviceToFile(slots []SBDSlotSummary, filename string) error {
 }
 
 // SaveFenceDeviceToFile saves the fence device summary to a file
-func SaveFenceDeviceToFile(slots []SBDSlotSummary, filename string) error {
+func SaveFenceDeviceToFile(slots []SBDNodeSummary, filename string) error {
 	file, err := os.Create(filename)
 	if err != nil {
 		return fmt.Errorf("failed to create file %s: %w", filename, err)
@@ -275,8 +272,8 @@ func SaveFenceDeviceToFile(slots []SBDSlotSummary, filename string) error {
 		return nil
 	}
 
-	fmt.Fprintf(file, "%-6s %-8s %-30s %-12s %-20s %-10s\n", "Slot", "NodeID", "Node Name", "Type", "Timestamp", "Sequence")
-	fmt.Fprintf(file, "%-6s %-8s %-30s %-12s %-20s %-10s\n", "----", "------", "---------", "----", "---------", "--------")
+	fmt.Fprintf(file, "%-8s %-30s %-12s %-20s %-10s\n", "NodeID", "Node Name", "Type", "Timestamp", "Sequence")
+	fmt.Fprintf(file, "%-8s %-30s %-12s %-20s %-10s\n", "------", "---------", "----", "---------", "--------")
 
 	for _, slot := range slots {
 		timestampStr := "N/A"
@@ -284,8 +281,8 @@ func SaveFenceDeviceToFile(slots []SBDSlotSummary, filename string) error {
 			timestampStr = slot.Timestamp.Format("15:04:05")
 		}
 		nodeNameStr := "Unknown" // We don't have node name in the fence message
-		fmt.Fprintf(file, "%-6d %-8d %-30s %-12s %-20s %-10d\n",
-			slot.SlotID, slot.NodeID, nodeNameStr, slot.Type, timestampStr, slot.Sequence)
+		fmt.Fprintf(file, "%-8d %-30s %-12s %-20s %-10d\n",
+			slot.NodeID, nodeNameStr, slot.Type, timestampStr, slot.Sequence)
 	}
 	fmt.Fprintf(file, "\n")
 
@@ -386,11 +383,11 @@ func parseNodeMapping(data []byte) (*sbdprotocol.NodeMapTable, error) {
 }
 
 // parseSBDDevice parses binary SBD device data
-func parseSBDDevice(data []byte) ([]SBDSlotSummary, error) {
+func parseSBDDevice(data []byte) ([]SBDNodeSummary, error) {
 	const slotSize = sbdprotocol.SBD_SLOT_SIZE
 	magic := sbdprotocol.SBD_MAGIC
 
-	var slots []SBDSlotSummary
+	var slots []SBDNodeSummary
 
 	for i := 0; i < len(data)/slotSize; i++ {
 		start := i * slotSize
@@ -406,6 +403,9 @@ func parseSBDDevice(data []byte) ([]SBDSlotSummary, error) {
 			slot, err := parseSBDSlot(uint16(i+1), slotData)
 			if err == nil && slot.HasData {
 				slots = append(slots, slot)
+			} else {
+				fmt.Printf("Failed to parse SBD slot: %v\n", err)
+				return nil, fmt.Errorf("failed to parse SBD slot: %w", err)
 			}
 		}
 	}
@@ -414,20 +414,23 @@ func parseSBDDevice(data []byte) ([]SBDSlotSummary, error) {
 }
 
 // parseSBDSlot parses a single SBD slot
-func parseSBDSlot(slotID uint16, data []byte) (SBDSlotSummary, error) {
+func parseSBDSlot(nodeID uint16, data []byte) (SBDNodeSummary, error) {
 	if len(data) < sbdprotocol.SBD_HEADER_SIZE {
-		return SBDSlotSummary{}, fmt.Errorf("slot data too short")
+		return SBDNodeSummary{}, fmt.Errorf("slot data too short")
 	}
 
 	// Parse SBD header (simplified)
 	magic := string(data[:8])
 	if magic != sbdprotocol.SBD_MAGIC {
-		return SBDSlotSummary{SlotID: slotID, HasData: false}, nil
+		return SBDNodeSummary{NodeID: nodeID, HasData: false}, nil
 	}
 
 	// Read basic header fields (skip version since it's not used)
 	msgType := data[10]
-	nodeID := binary.LittleEndian.Uint16(data[11:13])
+	if nodeID != binary.LittleEndian.Uint16(data[11:13]) {
+		return SBDNodeSummary{}, fmt.Errorf("nodeID mismatch: %d != %d", nodeID, binary.LittleEndian.Uint16(data[11:13]))
+	}
+
 	timestamp := binary.LittleEndian.Uint64(data[13:21])
 	sequence := binary.LittleEndian.Uint64(data[21:29])
 
@@ -437,12 +440,11 @@ func parseSBDSlot(slotID uint16, data []byte) (SBDSlotSummary, error) {
 	// Convert timestamp from nanoseconds to time.Time
 	ts := time.Unix(0, int64(timestamp))
 
-	return SBDSlotSummary{
-		SlotID:    slotID,
+	return SBDNodeSummary{
 		NodeID:    nodeID,
-		Type:      typeStr,
 		Timestamp: ts,
 		Sequence:  sequence,
+		Type:      typeStr,
 		HasData:   true,
 	}, nil
 }

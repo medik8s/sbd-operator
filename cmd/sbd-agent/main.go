@@ -282,7 +282,7 @@ func (pm *PeerMonitor) UpdatePeer(nodeID uint16, timestamp, sequence uint64) {
 			if err := pm.nodeManager.ReloadFromDevice(); err != nil {
 				pm.logger.Error(err, "Failed to reload node map from device", "nodeID", nodeID)
 			}
-			if name, found := pm.nodeManager.GetNodeForSlot(nodeID); found {
+			if name, found := pm.nodeManager.GetNodeForNodeID(nodeID); found {
 				nodeName = name
 			}
 		}
@@ -804,16 +804,16 @@ func (s *SBDAgent) initializeNodeManagers(clusterName string, fileLockingEnabled
 	s.nodeManager = nodeManager
 
 	// Get or assign slot for this node (same slot used for both devices)
-	slotID, err := s.nodeManager.GetSlotForNode(s.nodeName)
+	nodeID, err := s.nodeManager.GetNodeIDForNode(s.nodeName)
 	if err != nil {
 		return fmt.Errorf("failed to get slot for node %s: %w", s.nodeName, err)
 	}
 
 	// Update the node ID to use the hash-based slot
-	s.nodeID = slotID
+	s.nodeID = nodeID
 	logger.Info("Node assigned to slot via hash-based mapping",
 		"nodeName", s.nodeName,
-		"slotID", slotID,
+		"nodeID", nodeID,
 		"clusterName", clusterName,
 		"fileLockingEnabled", fileLockingEnabled,
 		"coordinationStrategy", s.nodeManager.GetCoordinationStrategy())

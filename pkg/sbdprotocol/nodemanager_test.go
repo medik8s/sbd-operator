@@ -207,7 +207,7 @@ func TestNodeManager_DevicePersistence(t *testing.T) {
 
 	originalSlots := make(map[string]uint16)
 	for _, nodeName := range testNodes {
-		slot, err := nm1.GetSlotForNode(nodeName)
+		slot, err := nm1.GetNodeIDForNode(nodeName)
 		if err != nil {
 			t.Fatalf("Failed to get slot for node %s: %v", nodeName, err)
 		}
@@ -252,7 +252,7 @@ func TestNodeManager_DevicePersistence(t *testing.T) {
 
 	// Phase 3: Verify all nodes are correctly loaded
 	for nodeName, expectedSlot := range originalSlots {
-		slot, err := nm2.GetSlotForNode(nodeName)
+		slot, err := nm2.GetNodeIDForNode(nodeName)
 		if err != nil {
 			t.Errorf("Failed to get slot for node %s in second manager: %v", nodeName, err)
 			continue
@@ -263,7 +263,7 @@ func TestNodeManager_DevicePersistence(t *testing.T) {
 		}
 
 		// Verify reverse lookup also works
-		foundNodeName, found := nm2.GetNodeForSlot(slot)
+		foundNodeName, found := nm2.GetNodeForNodeID(slot)
 		if !found {
 			t.Errorf("Failed to find node for slot %d", slot)
 		} else if foundNodeName != nodeName {
@@ -275,7 +275,7 @@ func TestNodeManager_DevicePersistence(t *testing.T) {
 
 	// Phase 4: Test that we can add new nodes to the persisted table
 	newNode := "new-persistent-node"
-	newSlot, err := nm2.GetSlotForNode(newNode)
+	newSlot, err := nm2.GetNodeIDForNode(newNode)
 	if err != nil {
 		t.Fatalf("Failed to add new node to persisted table: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestNodeManager_DevicePersistence(t *testing.T) {
 	// Phase 5: Test ReloadFromDevice method
 	// First, add another node and sync
 	anotherNode := "reload-test-node"
-	reloadSlot, err := nm2.GetSlotForNode(anotherNode)
+	reloadSlot, err := nm2.GetNodeIDForNode(anotherNode)
 	if err != nil {
 		t.Fatalf("Failed to add reload test node: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestNodeManager_DevicePersistence(t *testing.T) {
 	}
 
 	// Verify the reload test node is still there
-	foundSlot, err := nm2.GetSlotForNode(anotherNode)
+	foundSlot, err := nm2.GetNodeIDForNode(anotherNode)
 	if err != nil {
 		t.Errorf("Reload test node not found after reload: %v", err)
 	} else if foundSlot != reloadSlot {
@@ -341,7 +341,7 @@ func TestNodeManager_CorruptionRecovery_DISABLED(t *testing.T) {
 	// Add some nodes
 	testNodes := []string{"node-1", "node-2", "node-3"}
 	for _, nodeName := range testNodes {
-		_, err := nm1.GetSlotForNode(nodeName)
+		_, err := nm1.GetNodeIDForNode(nodeName)
 		if err != nil {
 			t.Fatalf("Failed to assign slot for %s: %v", nodeName, err)
 		}
@@ -375,7 +375,7 @@ func TestNodeManager_CorruptionRecovery_DISABLED(t *testing.T) {
 						t.Fatalf("Failed to create temp node manager: %v", err)
 					}
 					for _, nodeName := range testNodes {
-						nm_temp.GetSlotForNode(nodeName)
+						nm_temp.GetNodeIDForNode(nodeName)
 					}
 					nm_temp.Sync()
 					nm_temp.Close()
@@ -397,7 +397,7 @@ func TestNodeManager_CorruptionRecovery_DISABLED(t *testing.T) {
 
 						// Verify recovery worked by adding a new node
 						recoveryNode := "recovery-test-node"
-						slot, err := nm2.GetSlotForNode(recoveryNode)
+						slot, err := nm2.GetNodeIDForNode(recoveryNode)
 						if err != nil {
 							t.Errorf("Failed to add node after recovery in %s: %v", tt.name, err)
 						} else {
@@ -434,7 +434,7 @@ func TestNodeManager_CorruptionRecovery_DISABLED(t *testing.T) {
 
 			// Add a node and sync
 			originalNode := "original-test-node"
-			_, err = nm.GetSlotForNode(originalNode)
+			_, err = nm.GetNodeIDForNode(originalNode)
 			if err != nil {
 				t.Fatalf("Failed to add test node: %v", err)
 			}
@@ -454,7 +454,7 @@ func TestNodeManager_CorruptionRecovery_DISABLED(t *testing.T) {
 			}
 
 			// Verify that the original node is no longer in the table (since recovery created a new clean table)
-			_, err = nm.GetSlotForNode(originalNode)
+			_, err = nm.GetNodeIDForNode(originalNode)
 			if err != nil {
 				t.Logf("As expected, original node %s is not found after recovery created new table", originalNode)
 			} else {
@@ -464,7 +464,7 @@ func TestNodeManager_CorruptionRecovery_DISABLED(t *testing.T) {
 
 			// Verify the node manager works after recovery
 			newNode := "post-recovery-test-node"
-			newSlot, err := nm.GetSlotForNode(newNode)
+			newSlot, err := nm.GetNodeIDForNode(newNode)
 			if err != nil {
 				t.Errorf("NodeManager should work after recovery: %v", err)
 			} else {
@@ -477,7 +477,7 @@ func TestNodeManager_CorruptionRecovery_DISABLED(t *testing.T) {
 
 			// This should trigger recovery, but fail at the sync step
 			anotherNode := "write-fail-test-node"
-			_, err = nm.GetSlotForNode(anotherNode)
+			_, err = nm.GetNodeIDForNode(anotherNode)
 			if err != nil {
 				t.Logf("Expected failure when device write/sync fail: %v", err)
 			}

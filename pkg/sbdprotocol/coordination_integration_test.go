@@ -161,7 +161,7 @@ func runSingleConcurrentNode(t *testing.T, devicePath, nodeName string, fileLock
 	defer nm.Close()
 
 	// Get slot assignment
-	slotID, err := nm.GetSlotForNode(nodeName)
+	slotID, err := nm.GetNodeIDForNode(nodeName)
 	if err != nil {
 		t.Errorf("Failed to get slot for %s: %v", nodeName, err)
 		return nil
