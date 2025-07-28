@@ -655,26 +655,25 @@ set -e
 HEARTBEAT_DEVICE_PATH="/sbd-shared/%s"
 FENCE_DEVICE_PATH="/sbd-shared/%s"
 SBD_DEVICE_SIZE_KB=1024
-HEARTBEAT_NODE_MAP_FILE="$HEARTBEAT_DEVICE_PATH.nodemap"
-FENCE_NODE_MAP_FILE="$FENCE_DEVICE_PATH.nodemap"
+NODE_MAP_FILE="$HEARTBEAT_DEVICE_PATH.nodemap"
 CLUSTER_NAME="${CLUSTER_NAME:-default-cluster}"
 
 echo "Initializing SBD devices: heartbeat at $HEARTBEAT_DEVICE_PATH, fence at $FENCE_DEVICE_PATH"
+echo "Using shared node mapping file: $NODE_MAP_FILE"
 
 # Function to create initial node mapping file
 create_initial_node_mapping() {
     local node_map_file="$1"
     local cluster_name="$2"
-    local device_type="$3"
     
-    echo "Creating initial node mapping file: $node_map_file (for $device_type device)"
+    echo "Creating initial shared node mapping file: $node_map_file"
     
     # Create minimal valid node mapping table JSON
     local json_data="{
   \"magic\": [83, 66, 68, 78, 77, 65, 80, 49],
   \"version\": 1,
   \"cluster_name\": \"$cluster_name\",
-  \"device_type\": \"$device_type\",
+  \"device_type\": \"shared\",
   \"entries\": {},
   \"slot_usage\": {},
   \"last_update\": \"$(date -u +%%Y-%%m-%%dT%%H:%%M:%%S.%%3NZ)\"
@@ -711,49 +710,59 @@ create_sbd_device() {
     echo "$device_type SBD device created successfully at $device_path"
 }
 
-# Check if both heartbeat and fence devices and their node mapping files exist
+# Check if both heartbeat and fence devices and the shared node mapping file exist
 HEARTBEAT_EXISTS=false
 FENCE_EXISTS=false
+NODE_MAP_EXISTS=false
 
-if [ -f "$HEARTBEAT_DEVICE_PATH" ] && [ -s "$HEARTBEAT_DEVICE_PATH" ] && [ -f "$HEARTBEAT_NODE_MAP_FILE" ] && [ -s "$HEARTBEAT_NODE_MAP_FILE" ]; then
-    echo "Heartbeat SBD device and node mapping file already exist and are non-empty"
+if [ -f "$HEARTBEAT_DEVICE_PATH" ] && [ -s "$HEARTBEAT_DEVICE_PATH" ]; then
+    echo "Heartbeat SBD device already exists and is non-empty"
     HEARTBEAT_EXISTS=true
 fi
 
-if [ -f "$FENCE_DEVICE_PATH" ] && [ -s "$FENCE_DEVICE_PATH" ] && [ -f "$FENCE_NODE_MAP_FILE" ] && [ -s "$FENCE_NODE_MAP_FILE" ]; then
-    echo "Fence SBD device and node mapping file already exist and are non-empty"
+if [ -f "$FENCE_DEVICE_PATH" ] && [ -s "$FENCE_DEVICE_PATH" ]; then
+    echo "Fence SBD device already exists and is non-empty"
     FENCE_EXISTS=true
 fi
 
-if [ "$HEARTBEAT_EXISTS" = true ] && [ "$FENCE_EXISTS" = true ]; then
-    echo "Both heartbeat and fence SBD devices are properly initialized"
+if [ -f "$NODE_MAP_FILE" ] && [ -s "$NODE_MAP_FILE" ]; then
+    echo "Shared node mapping file already exists and is non-empty"
+    NODE_MAP_EXISTS=true
+fi
+
+if [ "$HEARTBEAT_EXISTS" = true ] && [ "$FENCE_EXISTS" = true ] && [ "$NODE_MAP_EXISTS" = true ]; then
+    echo "Both SBD devices and shared node mapping are properly initialized"
     exit 0
 fi
 
 # Create heartbeat device if needed
 if [ "$HEARTBEAT_EXISTS" = false ]; then
-    echo "Creating heartbeat SBD device and node mapping..."
+    echo "Creating heartbeat SBD device..."
     create_sbd_device "$HEARTBEAT_DEVICE_PATH" "heartbeat"
-    create_initial_node_mapping "$HEARTBEAT_NODE_MAP_FILE" "$CLUSTER_NAME" "heartbeat"
 fi
 
 # Create fence device if needed
 if [ "$FENCE_EXISTS" = false ]; then
-    echo "Creating fence SBD device and node mapping..."
+    echo "Creating fence SBD device..."
     create_sbd_device "$FENCE_DEVICE_PATH" "fence"
-    create_initial_node_mapping "$FENCE_NODE_MAP_FILE" "$CLUSTER_NAME" "fence"
 fi
 
-# Verify both devices were created successfully
-if [ -f "$HEARTBEAT_DEVICE_PATH" ] && [ -s "$HEARTBEAT_DEVICE_PATH" ] && [ -f "$HEARTBEAT_NODE_MAP_FILE" ] && [ -s "$HEARTBEAT_NODE_MAP_FILE" ] && \
-   [ -f "$FENCE_DEVICE_PATH" ] && [ -s "$FENCE_DEVICE_PATH" ] && [ -f "$FENCE_NODE_MAP_FILE" ] && [ -s "$FENCE_NODE_MAP_FILE" ]; then
-    echo "Both SBD devices successfully initialized:"
+# Create shared node mapping file if needed
+if [ "$NODE_MAP_EXISTS" = false ]; then
+    echo "Creating shared node mapping file..."
+    create_initial_node_mapping "$NODE_MAP_FILE" "$CLUSTER_NAME"
+fi
+
+# Verify all components were created successfully
+if [ -f "$HEARTBEAT_DEVICE_PATH" ] && [ -s "$HEARTBEAT_DEVICE_PATH" ] && \
+   [ -f "$FENCE_DEVICE_PATH" ] && [ -s "$FENCE_DEVICE_PATH" ] && \
+   [ -f "$NODE_MAP_FILE" ] && [ -s "$NODE_MAP_FILE" ]; then
+    echo "Both SBD devices and shared node mapping successfully initialized:"
     echo "  Heartbeat device: $HEARTBEAT_DEVICE_PATH ($(ls -lh "$HEARTBEAT_DEVICE_PATH" | awk '{print $5}'))"
-    echo "  Heartbeat node mapping: $HEARTBEAT_NODE_MAP_FILE ($(ls -lh "$HEARTBEAT_NODE_MAP_FILE" | awk '{print $5}'))"
     echo "  Fence device: $FENCE_DEVICE_PATH ($(ls -lh "$FENCE_DEVICE_PATH" | awk '{print $5}'))"
-    echo "  Fence node mapping: $FENCE_NODE_MAP_FILE ($(ls -lh "$FENCE_NODE_MAP_FILE" | awk '{print $5}'))"
+    echo "  Shared node mapping: $NODE_MAP_FILE ($(ls -lh "$NODE_MAP_FILE" | awk '{print $5}'))"
 else
-    echo "ERROR: Failed to create one or more SBD devices or node mapping files"
+    echo "ERROR: Failed to create one or more SBD devices or the shared node mapping file"
     exit 1
 fi
 

@@ -1632,15 +1632,15 @@ func TestSBDAgent_FileLockingConfiguration(t *testing.T) {
 		defer agent.Stop()
 
 		// Verify file locking is enabled via NodeManager
-		if agent.heartbeatNodeManager == nil {
+		if agent.nodeManager == nil {
 			t.Error("Expected NodeManager to be initialized")
-		} else if !agent.heartbeatNodeManager.IsFileLockingEnabled() {
+		} else if !agent.nodeManager.IsFileLockingEnabled() {
 			t.Error("Expected file locking to be enabled")
 		}
 
 		// Verify coordination strategy
-		if agent.heartbeatNodeManager != nil {
-			strategy := agent.heartbeatNodeManager.GetCoordinationStrategy()
+		if agent.nodeManager != nil {
+			strategy := agent.nodeManager.GetCoordinationStrategy()
 			if strategy != "file-locking" && strategy != "jitter-fallback" {
 				t.Errorf("Expected file-locking or jitter-fallback strategy, got: %s", strategy)
 			}
@@ -1667,15 +1667,15 @@ func TestSBDAgent_FileLockingConfiguration(t *testing.T) {
 		defer agent.Stop()
 
 		// Verify file locking is disabled via NodeManager
-		if agent.heartbeatNodeManager == nil {
+		if agent.nodeManager == nil {
 			t.Error("Expected NodeManager to be initialized")
-		} else if agent.heartbeatNodeManager.IsFileLockingEnabled() {
+		} else if agent.nodeManager.IsFileLockingEnabled() {
 			t.Error("Expected file locking to be disabled")
 		}
 
 		// Verify coordination strategy
-		if agent.heartbeatNodeManager != nil {
-			strategy := agent.heartbeatNodeManager.GetCoordinationStrategy()
+		if agent.nodeManager != nil {
+			strategy := agent.nodeManager.GetCoordinationStrategy()
 			if strategy != "jitter-only" {
 				t.Errorf("Expected jitter-only strategy, got: %s", strategy)
 			}

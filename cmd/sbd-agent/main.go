@@ -551,10 +551,9 @@ type SBDAgent struct {
 	metricsServer       *http.Server
 
 	// Node mapping for hash-based slot assignment (always enabled)
-	heartbeatNodeManager *sbdprotocol.NodeManager // Node manager for heartbeat device
-	fenceNodeManager     *sbdprotocol.NodeManager // Node manager for fence device
-	nodeManagerStop      chan struct{}
-	staleNodeTimeout     time.Duration
+	nodeManager      *sbdprotocol.NodeManager // Shared node manager for both devices
+	nodeManagerStop  chan struct{}
+	staleNodeTimeout time.Duration
 
 	// Failure tracking and retry configuration
 	watchdogFailureCount  int
@@ -707,7 +706,7 @@ func NewSBDAgentWithWatchdog(wd WatchdogInterface, heartbeatDevicePath, nodeName
 	}
 
 	// Initialize the PeerMonitor
-	agent.peerMonitor = NewPeerMonitor(sbdTimeoutSeconds, nodeID, agent.heartbeatNodeManager, logger)
+	agent.peerMonitor = NewPeerMonitor(sbdTimeoutSeconds, nodeID, agent.nodeManager, logger)
 
 	// Initialize metrics
 	if err := agent.initMetrics(); err != nil {
@@ -788,59 +787,36 @@ func (s *SBDAgent) initializeNodeManagers(clusterName string, fileLockingEnabled
 		return fmt.Errorf("SBD devices must be initialized before node managers")
 	}
 
-	heartbeatConfig := sbdprotocol.NodeManagerConfig{
+	// Use heartbeat device for shared node manager (both devices will use same slot assignments)
+	config := sbdprotocol.NodeManagerConfig{
 		ClusterName:        clusterName,
 		SyncInterval:       30 * time.Second,
 		StaleNodeTimeout:   s.staleNodeTimeout,
-		Logger:             logger.WithName("heartbeat-node-manager"),
+		Logger:             logger.WithName("node-manager"),
 		FileLockingEnabled: fileLockingEnabled,
 	}
 
-	fenceConfig := sbdprotocol.NodeManagerConfig{
-		ClusterName:        clusterName,
-		SyncInterval:       30 * time.Second,
-		StaleNodeTimeout:   s.staleNodeTimeout,
-		Logger:             logger.WithName("fence-node-manager"),
-		FileLockingEnabled: fileLockingEnabled,
-	}
-
-	heartbeatNodeManager, err := sbdprotocol.NewNodeManager(s.heartbeatDevice, heartbeatConfig)
+	nodeManager, err := sbdprotocol.NewNodeManager(s.heartbeatDevice, config)
 	if err != nil {
-		return fmt.Errorf("failed to create heartbeat node manager: %w", err)
+		return fmt.Errorf("failed to create node manager: %w", err)
 	}
 
-	fenceNodeManager, err := sbdprotocol.NewNodeManager(s.fenceDevice, fenceConfig)
+	s.nodeManager = nodeManager
+
+	// Get or assign slot for this node (same slot used for both devices)
+	slotID, err := s.nodeManager.GetSlotForNode(s.nodeName)
 	if err != nil {
-		return fmt.Errorf("failed to create fence node manager: %w", err)
-	}
-
-	s.heartbeatNodeManager = heartbeatNodeManager
-	s.fenceNodeManager = fenceNodeManager
-
-	// Get or assign slot for this node
-	heartbeatSlotID, err := s.heartbeatNodeManager.GetSlotForNode(s.nodeName)
-	if err != nil {
-		return fmt.Errorf("failed to get slot for node %s on heartbeat device: %w", s.nodeName, err)
-	}
-
-	fenceSlotID, err := s.fenceNodeManager.GetSlotForNode(s.nodeName)
-	if err != nil {
-		return fmt.Errorf("failed to get slot for node %s on fence device: %w", s.nodeName, err)
-	}
-
-	// Ensure both devices use the same slot ID for the node
-	if heartbeatSlotID != fenceSlotID {
-		return fmt.Errorf("slot ID mismatch between devices: heartbeat=%d, fence=%d", heartbeatSlotID, fenceSlotID)
+		return fmt.Errorf("failed to get slot for node %s: %w", s.nodeName, err)
 	}
 
 	// Update the node ID to use the hash-based slot
-	s.nodeID = heartbeatSlotID
-	logger.Info("Node assigned to slots via hash-based mapping",
+	s.nodeID = slotID
+	logger.Info("Node assigned to slot via hash-based mapping",
 		"nodeName", s.nodeName,
-		"slotID", heartbeatSlotID,
+		"slotID", slotID,
 		"clusterName", clusterName,
 		"fileLockingEnabled", fileLockingEnabled,
-		"coordinationStrategy", s.heartbeatNodeManager.GetCoordinationStrategy())
+		"coordinationStrategy", s.nodeManager.GetCoordinationStrategy())
 
 	return nil
 }
@@ -971,9 +947,9 @@ func (s *SBDAgent) shouldTriggerSelfFence() (bool, string) {
 
 // writeNodeIDToSBD writes the node name to the SBD device at the predefined offset
 func (s *SBDAgent) writeNodeIDToSBD() error {
-	if s.heartbeatNodeManager != nil {
+	if s.nodeManager != nil {
 		// Use NodeManager's file locking for coordination
-		return s.heartbeatNodeManager.WriteWithLock("write node ID", func() error {
+		return s.nodeManager.WriteWithLock("write node ID", func() error {
 			return s.writeNodeIDToSBDInternal()
 		})
 	}
@@ -1019,9 +995,9 @@ func (s *SBDAgent) writeNodeIDToSBDInternal() error {
 
 // writeHeartbeatToSBD writes a heartbeat message to the node's designated slot
 func (s *SBDAgent) writeHeartbeatToSBD() error {
-	if s.heartbeatNodeManager != nil {
+	if s.nodeManager != nil {
 		// Use NodeManager's file locking for coordination
-		return s.heartbeatNodeManager.WriteWithLock("write heartbeat", func() error {
+		return s.nodeManager.WriteWithLock("write heartbeat", func() error {
 			return s.writeHeartbeatToSBDInternal()
 		})
 	}
@@ -1154,8 +1130,8 @@ func (s *SBDAgent) Start() error {
 		"peerCheckInterval", s.peerCheckInterval)
 
 	// Start node manager periodic sync if using hash mapping
-	if s.heartbeatNodeManager != nil {
-		s.nodeManagerStop = s.heartbeatNodeManager.StartPeriodicSync()
+	if s.nodeManager != nil {
+		s.nodeManagerStop = s.nodeManager.StartPeriodicSync()
 	}
 
 	// Start the watchdog monitoring goroutine
@@ -2021,7 +1997,7 @@ func (s *SBDAgent) addSBDRemediationController() error {
 		return fmt.Errorf("fence device is not of expected type *blockdevice.Device")
 	}
 
-	reconciler.SetNodeManager(s.fenceNodeManager)
+	reconciler.SetNodeManager(s.nodeManager)
 	reconciler.SetOwnNodeInfo(s.nodeID, s.nodeName)
 
 	// Set up the controller with the manager
