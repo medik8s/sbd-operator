@@ -135,6 +135,7 @@ func (tc *TestClients) CreateTestNamespace(namePrefix string) (*TestNamespace, e
 
 	// Create the artifacts directory for this test namespace
 	err := os.MkdirAll(fmt.Sprintf("../../%s", artifactsDir), 0755)
+	err = os.MkdirAll("../../sbd-operator-system", 0755)
 	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to create artifacts directory %s", artifactsDir))
 
 	ns := &corev1.Namespace{
