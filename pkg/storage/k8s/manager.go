@@ -129,15 +129,13 @@ func (m *Manager) CreateStandardNFSStorageClass(ctx context.Context, nfsServer, 
 			"share":  nfsShare,
 		},
 		MountOptions: []string{
-			"nfsvers=4.1",     // Use NFSv4.1 for better performance and features
-			"cache=none",      // Disable client-side caching for SBD coherency
-			"sync",            // Force synchronous operations
-			"local_lock=none", // Send all locks to server for distributed coordination
-			"rsize=1048576",   // 1MB read size for performance
-			"wsize=1048576",   // 1MB write size for performance
-			"hard",            // Hard mount - retry indefinitely on server failure
-			"timeo=600",       // 60 second timeout
-			"retrans=2",       // 2 retransmissions before timeout
+			"nfsvers=4.1",   // Use NFSv4.1 for better performance and features
+			"rsize=1048576", // 1MB read size for performance
+			"wsize=1048576", // 1MB write size for performance
+			"hard",          // Hard mount - retry indefinitely on server failure
+			"timeo=600",     // 60 second timeout
+			"retrans=2",     // 2 retransmissions before timeout
+			"noresvport",    // AWS recommended for EFS cache coherency and reconnection
 		},
 		AllowVolumeExpansion: &[]bool{true}[0],
 		ReclaimPolicy:        &[]corev1.PersistentVolumeReclaimPolicy{corev1.PersistentVolumeReclaimRetain}[0],
@@ -152,7 +150,7 @@ func (m *Manager) CreateStandardNFSStorageClass(ctx context.Context, nfsServer, 
 	log.Printf("✅ Standard NFS StorageClass '%s' created with SBD cache coherency options:", storageClassName)
 	log.Printf("   📡 NFS Server: %s", nfsServer)
 	log.Printf("   📁 NFS Share: %s", nfsShare)
-	log.Printf("   🔄 Mount Options: cache=none, sync, local_lock=none (SBD optimized)")
+	log.Printf("   🔄 Mount Options: EFS-optimized (nfsvers=4.1, hard, noresvport for reliability)")
 
 	return nil
 }

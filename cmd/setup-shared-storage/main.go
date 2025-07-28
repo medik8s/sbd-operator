@@ -119,10 +119,11 @@ mount options including cache=none, sync, and local_lock=none to ensure proper
 inter-node heartbeat coordination and prevent split-brain scenarios.
 
 CACHE COHERENCY FOR SBD:
-• cache=none: Disables client-side caching for immediate visibility of writes
-• sync: Forces synchronous operations ensuring writes are committed to storage
-• local_lock=none: Uses server-side locking for distributed coordination
+• EFS provides built-in cache coherency across all NFS clients
 • nfsvers=4.1: Modern NFS protocol with better performance and features
+• hard: Ensures reliable mounting with automatic retries on server failure
+• noresvport: AWS-recommended for better reconnection and cache consistency
+• timeo/retrans: Optimized timeout and retry settings for EFS
 
 EXAMPLES:
 
@@ -150,9 +151,10 @@ INSTALLATION OF STANDARD NFS CSI DRIVER:
     kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/deploy/install-driver.yaml
 
 MOUNT OPTIONS APPLIED:
-The tool creates a StorageClass with these SBD-optimized mount options:
-• nfsvers=4.1, cache=none, sync, local_lock=none
-• hard, rsize=1048576, wsize=1048576, timeo=600, retrans=2
+The tool creates a StorageClass with these EFS-optimized mount options:
+• nfsvers=4.1, hard, noresvport (reliability and cache coherency)
+• rsize=1048576, wsize=1048576 (performance optimization)
+• timeo=600, retrans=2 (EFS-optimized timeout and retry settings)
 
 This ensures optimal SBD operation with proper inter-node heartbeat coordination.
 
