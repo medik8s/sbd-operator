@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	medik8sv1alpha1 "github.com/medik8s/sbd-operator/api/v1alpha1"
+	"github.com/medik8s/sbd-operator/pkg/agent"
 	"github.com/medik8s/sbd-operator/test/utils"
 )
 
@@ -304,7 +305,7 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 			By("verifying the sbd-agent container has the correct volume mount")
 			hasSharedStorageMount := false
 			for _, mount := range sbdAgentContainer.VolumeMounts {
-				if mount.Name == "shared-storage" && mount.MountPath == "/sbd-shared" {
+				if mount.Name == "shared-storage" && mount.MountPath == agent.SharedStorageSBDDeviceDirectory {
 					hasSharedStorageMount = true
 					break
 				}

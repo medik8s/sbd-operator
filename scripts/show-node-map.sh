@@ -19,7 +19,7 @@ set -euo pipefail
 # Script configuration
 SCRIPT_NAME="show-node-map.sh"
 SCRIPT_VERSION="1.0.0"
-SBD_DEVICE_PATH="/sbd-shared/sbd-device"
+SBD_DEVICE_PATH="/dev/sbd/sbd-device"
 SHOW_HEARTBEATS=false
 JSON_OUTPUT=false
 VERBOSE=false
@@ -91,7 +91,7 @@ EXAMPLES:
   $SCRIPT_NAME --verbose --heartbeats
 
 DESCRIPTION:
-  This script reads the SBD node mapping file (.nodemap) from running SBD agent pods
+  This script reads the SBD node mapping file (-nodemap) from running SBD agent pods
   and displays:
   - Node names and their assigned slot IDs
   - Hash values used for slot assignment
@@ -100,7 +100,7 @@ DESCRIPTION:
   - Optional: Current heartbeat status from SBD device slots
 
   The script reads from SBD agent pods via kubectl/oc.
-  SBD device is always located at /sbd-shared/sbd-device in the pods.
+  SBD device is always located at /dev/sbd/sbd-device in the pods.
 
 REQUIREMENTS:
   - kubectl or oc command available
@@ -246,7 +246,7 @@ find_sbd_agent_pod() {
 # Read node mapping from Kubernetes pod
 read_node_mapping_from_k8s() {
     local pod_name="$1"
-    local nodemap_file="${SBD_DEVICE_PATH}.nodemap"
+    local nodemap_file="${SBD_DEVICE_PATH}-nodemap"
     
     log_debug "Reading node mapping from pod $pod_name at path: $nodemap_file"
     

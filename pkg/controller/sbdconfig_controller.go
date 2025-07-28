@@ -652,10 +652,11 @@ func (r *SBDConfigReconciler) ensureSBDDevice(ctx context.Context, sbdConfig *me
 							Args: []string{
 								fmt.Sprintf(`
 set -e
-HEARTBEAT_DEVICE_PATH="/sbd-shared/%s"
-FENCE_DEVICE_PATH="/sbd-shared/%s"
 SBD_DEVICE_SIZE_KB=1024
-NODE_MAP_FILE="$HEARTBEAT_DEVICE_PATH.nodemap"
+SBD_DEVICE_PREFIX="%s"
+HEARTBEAT_DEVICE_PATH="$SBD_DEVICE_PREFIX/%s"
+FENCE_DEVICE_PATH="$HEARTBEAT_DEVICE_PATH%s"
+NODE_MAP_FILE="$HEARTBEAT_DEVICE_PATH%s"
 CLUSTER_NAME="${CLUSTER_NAME:-default-cluster}"
 
 echo "Initializing SBD devices: heartbeat at $HEARTBEAT_DEVICE_PATH, fence at $FENCE_DEVICE_PATH"
@@ -767,7 +768,11 @@ else
 fi
 
 echo "SBD devices initialization completed successfully"
-`, agent.SharedStorageSBDDeviceFile, agent.SharedStorageFenceDeviceFile),
+`,
+									agent.SharedStorageSBDDeviceDirectory,
+									agent.SharedStorageSBDDeviceFile,
+									agent.SharedStorageFenceDeviceSuffix,
+									agent.SharedStorageNodeMappingSuffix),
 							},
 							Env: []corev1.EnvVar{
 								{

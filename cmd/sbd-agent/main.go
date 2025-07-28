@@ -520,7 +520,7 @@ func (rle *RemediationLeaderElector) setLeader(leader bool) {
 // generateFenceDevicePath creates the fence device path from the heartbeat device path
 // by appending the fence device suffix from agent constants
 func generateFenceDevicePath(heartbeatDevicePath string) string {
-	return heartbeatDevicePath + agent.FenceDeviceSuffix
+	return heartbeatDevicePath + agent.SharedStorageFenceDeviceSuffix
 }
 
 // SBDAgent represents the main SBD agent with self-fencing capabilities

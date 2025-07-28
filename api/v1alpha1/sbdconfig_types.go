@@ -22,6 +22,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/medik8s/sbd-operator/pkg/agent"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -360,7 +361,7 @@ func (s *SBDConfigSpec) GetSharedStorageAccessModes() []string {
 // GetSharedStorageMountPath returns the shared storage mount path
 // The controller automatically chooses a sensible path for mounting shared storage
 func (s *SBDConfigSpec) GetSharedStorageMountPath() string {
-	return "/sbd-shared"
+	return agent.SharedStorageSBDDeviceDirectory
 }
 
 // HasSharedStorage returns true if shared storage is configured

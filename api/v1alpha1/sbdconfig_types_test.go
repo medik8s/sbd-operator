@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/medik8s/sbd-operator/pkg/agent"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -1275,7 +1276,7 @@ func TestSBDConfigSpec_GetSharedStorageMountPath(t *testing.T) {
 		{
 			name:     "returns fixed path",
 			spec:     SBDConfigSpec{},
-			expected: "/sbd-shared",
+			expected: agent.SharedStorageSBDDeviceDirectory,
 		},
 	}
 

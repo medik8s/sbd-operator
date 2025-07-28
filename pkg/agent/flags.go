@@ -122,14 +122,11 @@ const (
 	SharedStorageSBDDeviceFile = "sbd-device"
 
 	// SharedStorageFenceDeviceFile is the filename for the fence device within shared storage
-	SharedStorageFenceDeviceFile = "sbd-fence"
-
-	// FenceDeviceSuffix is appended to heartbeat device name to create fence device name
-	FenceDeviceSuffix = "-fence"
+	SharedStorageFenceDeviceSuffix = "-fence"
 
 	// SharedStorageNodeMappingFile is the filename for the node mapping within shared storage
-	SharedStorageNodeMappingSuffix = ".nodemap"
+	SharedStorageNodeMappingSuffix = "-nodemap"
 
 	// SharedStorageSBDDeviceDirectory is the directory for the SBD device within shared storage
-	SharedStorageSBDDeviceDirectory = "/sbd-shared"
+	SharedStorageSBDDeviceDirectory = "/dev/sbd"
 )

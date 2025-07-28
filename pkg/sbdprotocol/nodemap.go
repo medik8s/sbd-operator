@@ -26,6 +26,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/medik8s/sbd-operator/pkg/agent"
 )
 
 // SBD Node Mapping Constants
@@ -33,7 +35,7 @@ const (
 	// SBD_NODE_MAP_FILE_SUFFIX is the suffix for the node mapping file
 	// The node mapping is stored in a separate file alongside the SBD device
 	// e.g., /dev/sbd0 -> /dev/sbd0.nodemap
-	SBD_NODE_MAP_FILE_SUFFIX = ".nodemap"
+	SBD_NODE_MAP_FILE_SUFFIX = agent.SharedStorageNodeMappingSuffix
 
 	// SBD_NODE_MAP_MAGIC is the magic string for node mapping data
 	SBD_NODE_MAP_MAGIC = "SBDNMAP1"
