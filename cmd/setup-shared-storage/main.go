@@ -13,33 +13,16 @@ import (
 
 // Configuration holds all the configuration for the storage setup
 type Config struct {
-	// Storage Driver Selection
-	StorageDriver string // "efs" or "nfs"
-	NFSServer     string // For Standard NFS CSI driver
-	NFSShare      string // For Standard NFS CSI driver
-
-	// AWS Configuration
-	AWSRegion        string
-	ClusterName      string
-	EFSName          string
-	EFSFilesystemID  string
+	// NFS Configuration
+	NFSServer        string
+	NFSShare         string
 	StorageClassName string
 
 	// Behavior flags
-	CreateEFS         bool
-	DryRun            bool
-	Cleanup           bool
-	UpdateMode        bool
-	Verbose           bool
-	GenerateIAMPolicy bool
-
-	// EFS Configuration
-	PerformanceMode       string
-	ThroughputMode        string
-	ProvisionedThroughput int64
-
-	// IAM Configuration
-	EFSCSIRoleName string
+	DryRun     bool
+	Cleanup    bool
+	UpdateMode bool
+	Verbose    bool
 }
 
 func main() {
@@ -51,14 +34,8 @@ func main() {
 		log.SetFlags(log.LstdFlags | log.Lshortfile)
 	}
 
-	// Handle IAM policy generation
-	if config.GenerateIAMPolicy {
-		generateIAMPolicy()
-		return
-	}
-
 	// Create storage manager
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
 	storageManager, err := storage.NewManager(ctx, config.toStorageConfig())
@@ -88,33 +65,16 @@ func main() {
 func parseFlags() *Config {
 	config := &Config{}
 
-	// Storage Driver Selection
-	flag.StringVar(&config.StorageDriver, "storage-driver", "efs", "Storage driver to use (efs|nfs)")
-	flag.StringVar(&config.NFSServer, "nfs-server", "", "NFS server address for Standard NFS CSI driver")
-	flag.StringVar(&config.NFSShare, "nfs-share", "", "NFS share path for Standard NFS CSI driver")
-
-	// AWS Configuration
-	flag.StringVar(&config.AWSRegion, "aws-region", "", "AWS region (auto-detected if not specified)")
-	flag.StringVar(&config.ClusterName, "cluster-name", "", "Cluster name (auto-detected if not specified)")
-	flag.StringVar(&config.EFSName, "efs-name", "", "EFS filesystem name (default: sbd-efs-CLUSTER_NAME)")
-	flag.StringVar(&config.EFSFilesystemID, "filesystem-id", "", "Use existing EFS filesystem ID")
-	flag.StringVar(&config.StorageClassName, "storage-class-name", "", "StorageClass name (default: sbd-efs-sc)")
+	// NFS Configuration
+	flag.StringVar(&config.NFSServer, "nfs-server", "", "NFS server address (required)")
+	flag.StringVar(&config.NFSShare, "nfs-share", "", "NFS share path (required)")
+	flag.StringVar(&config.StorageClassName, "storage-class-name", "sbd-nfs-coherent", "StorageClass name")
 
 	// Behavior flags
-	flag.BoolVar(&config.CreateEFS, "create-efs", true, "Create new EFS filesystem")
 	flag.BoolVar(&config.DryRun, "dry-run", false, "Show what would be done without executing")
-	flag.BoolVar(&config.Cleanup, "cleanup", false, "Clean up all created resources")
+	flag.BoolVar(&config.Cleanup, "cleanup", false, "Clean up created StorageClass")
 	flag.BoolVar(&config.UpdateMode, "update-mode", false, "Force update/recreation of StorageClass")
 	flag.BoolVar(&config.Verbose, "verbose", false, "Enable verbose logging")
-	flag.BoolVar(&config.GenerateIAMPolicy, "generate-iam-policy", false, "Generate and print the required IAM policy for the EFS CSI driver")
-
-	// EFS Configuration
-	flag.StringVar(&config.PerformanceMode, "performance-mode", "generalPurpose", "EFS performance mode (generalPurpose|maxIO)")
-	flag.StringVar(&config.ThroughputMode, "throughput-mode", "provisioned", "EFS throughput mode (provisioned|burstingThroughput)")
-	flag.Int64Var(&config.ProvisionedThroughput, "provisioned-throughput", 10, "Provisioned throughput in MiB/s")
-
-	// IAM Configuration
-	flag.StringVar(&config.EFSCSIRoleName, "efs-csi-role-name", "", "EFS CSI IAM role name (auto-generated if not specified)")
 
 	// Show help
 	help := flag.Bool("help", false, "Show help message")
@@ -126,20 +86,11 @@ func parseFlags() *Config {
 		os.Exit(0)
 	}
 
-	// Validate configuration
-	if config.StorageDriver == "nfs" {
-		if config.NFSServer == "" || config.NFSShare == "" {
-			log.Fatalf("For Standard NFS CSI driver, both --nfs-server and --nfs-share are required")
+	// Validate required configuration
+	if config.NFSServer == "" || config.NFSShare == "" {
+		if !config.Cleanup {
+			log.Fatalf("Both --nfs-server and --nfs-share are required")
 		}
-		// Disable EFS-specific operations for NFS driver
-		config.CreateEFS = false
-		config.EFSFilesystemID = ""
-	} else if config.StorageDriver == "efs" {
-		if config.EFSFilesystemID != "" {
-			config.CreateEFS = false
-		}
-	} else {
-		log.Fatalf("Invalid storage driver: %s. Must be 'efs' or 'nfs'", config.StorageDriver)
 	}
 
 	return config
@@ -147,21 +98,11 @@ func parseFlags() *Config {
 
 func (c *Config) toStorageConfig() *storage.Config {
 	return &storage.Config{
-		StorageDriver:         c.StorageDriver,
-		NFSServer:             c.NFSServer,
-		NFSShare:              c.NFSShare,
-		AWSRegion:             c.AWSRegion,
-		ClusterName:           c.ClusterName,
-		EFSName:               c.EFSName,
-		EFSFilesystemID:       c.EFSFilesystemID,
-		StorageClassName:      c.StorageClassName,
-		CreateEFS:             c.CreateEFS,
-		DryRun:                c.DryRun,
-		UpdateMode:            c.UpdateMode,
-		PerformanceMode:       c.PerformanceMode,
-		ThroughputMode:        c.ThroughputMode,
-		ProvisionedThroughput: c.ProvisionedThroughput,
-		EFSCSIRoleName:        c.EFSCSIRoleName,
+		NFSServer:        c.NFSServer,
+		NFSShare:         c.NFSShare,
+		StorageClassName: c.StorageClassName,
+		DryRun:           c.DryRun,
+		UpdateMode:       c.UpdateMode,
 	}
 }
 
@@ -169,74 +110,54 @@ func showUsage() {
 	fmt.Printf(`
 Usage: %s [OPTIONS]
 
-This tool sets up shared storage for OpenShift/Kubernetes clusters optimized for SBD.
-It supports two storage drivers:
+This tool sets up Standard NFS CSI shared storage for Kubernetes clusters optimized for SBD.
+It provides explicit cache coherency controls required for reliable SBD cluster coordination.
 
-1. EFS CSI Driver (default): Creates EFS filesystem with AWS-managed infrastructure
-2. Standard NFS CSI Driver: Uses existing NFS server with explicit cache coherency controls
-
-STORAGE DRIVER OPTIONS:
-
-EFS CSI Driver (--storage-driver=efs):
-• Creates and configures AWS EFS filesystem automatically  
-• Handles networking, security groups, and IAM roles
-• Mount options managed by EFS CSI driver
-• Best for AWS-managed infrastructure
-
-Standard NFS CSI Driver (--storage-driver=nfs):  
-• Uses existing NFS server (like EFS via DNS name)
-• Provides explicit cache coherency controls (cache=none, sync, local_lock=none)
-• Requires manual NFS CSI driver installation
-• Best for SBD clustering requiring strict consistency guarantees
+DESCRIPTION:
+This tool creates a StorageClass using the Standard NFS CSI driver with SBD-optimized 
+mount options including cache=none, sync, and local_lock=none to ensure proper 
+inter-node heartbeat coordination and prevent split-brain scenarios.
 
 CACHE COHERENCY FOR SBD:
-The tool automatically configures appropriate mount options for SBD cache coherency:
-• EFS CSI Driver: Uses EFS utils mounting (handles coherency internally)
-• Standard NFS CSI Driver: Uses cache=none, sync, local_lock=none for explicit control
+• cache=none: Disables client-side caching for immediate visibility of writes
+• sync: Forces synchronous operations ensuring writes are committed to storage
+• local_lock=none: Uses server-side locking for distributed coordination
+• nfsvers=4.1: Modern NFS protocol with better performance and features
 
 EXAMPLES:
 
-    # EFS CSI Driver Examples:
-    # Create new EFS with auto-detection (recommended)
-    %s
+    # Use EFS filesystem via Standard NFS CSI for explicit cache control
+    %s --nfs-server=fs-12345.efs.us-east-1.amazonaws.com --nfs-share=/
 
-    # Use existing EFS filesystem  
-    %s --storage-driver=efs --filesystem-id fs-1234567890abcdef0
+    # Use any existing NFS server
+    %s --nfs-server=192.168.1.100 --nfs-share=/shared/sbd
 
-    # Standard NFS CSI Driver Examples:
-    # Use EFS via Standard NFS CSI for explicit cache control
-    %s --storage-driver=nfs --nfs-server=fs-12345.efs.us-east-1.amazonaws.com --nfs-share=/
+    # Custom StorageClass name
+    %s --nfs-server=my-nfs.example.com --nfs-share=/sbd --storage-class-name=my-sbd-storage
 
-    # Use any NFS server with Standard NFS CSI
-    %s --storage-driver=nfs --nfs-server=192.168.1.100 --nfs-share=/shared/sbd
-
-    # Clean up (works with both drivers)
+    # Clean up created StorageClass
     %s --cleanup --storage-class-name sbd-nfs-coherent
 
     # Preview changes without executing
-    %s --dry-run
+    %s --nfs-server=fs-12345.efs.us-east-1.amazonaws.com --nfs-share=/ --dry-run
 
 REQUIREMENTS:
-
-For EFS CSI Driver:
-    • OpenShift/Kubernetes cluster with AWS provider
-    • AWS credentials configured (via environment, profile, or IAM role)
-    • Cluster admin permissions
-    • IAM permissions for resource creation
-
-For Standard NFS CSI Driver:
-    • Existing NFS server (EFS, local NFS, etc.)
-    • Standard NFS CSI driver installed: kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/deploy/install-driver.yaml
+    • Existing NFS server (EFS, local NFS, NetApp, etc.)
+    • Standard NFS CSI driver installed in cluster
     • Cluster admin permissions
 
-MOUNT OPTIONS CONFIGURATION:
-• EFS CSI Driver: Automatically managed (no explicit mount options in StorageClass)
-• Standard NFS CSI Driver: Explicit SBD-optimized options (cache=none, sync, local_lock=none)
+INSTALLATION OF STANDARD NFS CSI DRIVER:
+    kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/deploy/install-driver.yaml
+
+MOUNT OPTIONS APPLIED:
+The tool creates a StorageClass with these SBD-optimized mount options:
+• nfsvers=4.1, cache=none, sync, local_lock=none
+• hard, rsize=1048576, wsize=1048576, timeo=600, retrans=2
 
 This ensures optimal SBD operation with proper inter-node heartbeat coordination.
 
 OPTIONS:
-`, os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0])
+`, os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0])
 
 	flag.PrintDefaults()
 }
@@ -245,143 +166,14 @@ func printResults(result *storage.SetupResult) {
 	fmt.Println("\n🎉 Shared Storage Setup Completed Successfully!")
 	fmt.Println("==========================================")
 
-	if result.EFSFilesystemID != "" {
-		fmt.Printf("📁 EFS Filesystem: %s\n", result.EFSFilesystemID)
-	}
-
 	if result.StorageClassName != "" {
 		fmt.Printf("💾 StorageClass: %s\n", result.StorageClassName)
-	}
-
-	if result.IAMRoleARN != "" {
-		fmt.Printf("🔐 IAM Role: %s\n", result.IAMRoleARN)
 	}
 
 	if len(result.MountTargets) > 0 {
 		fmt.Printf("🔗 Mount Targets: %d created\n", len(result.MountTargets))
 	}
 
-	if result.SecurityGroupID != "" {
-		fmt.Printf("🛡️  Security Group: %s\n", result.SecurityGroupID)
-	}
-
 	fmt.Println("\n✅ Your cluster now has ReadWriteMany (RWX) storage capability!")
 	fmt.Printf("   Use StorageClass '%s' in your PVCs for shared storage.\n", result.StorageClassName)
-}
-
-// generateIAMPolicy generates and prints the required IAM policy for the EFS CSI driver
-func generateIAMPolicy() {
-	policy := `{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "EC2ReadOnlyPermissions",
-      "Effect": "Allow",
-      "Action": [
-        "ec2:DescribeVpcs",
-        "ec2:DescribeSubnets",
-        "ec2:DescribeSecurityGroups"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Sid": "EC2SecurityGroupManagement",
-      "Effect": "Allow",
-      "Action": [
-        "ec2:CreateSecurityGroup",
-        "ec2:AuthorizeSecurityGroupIngress"
-      ],
-      "Resource": [
-        "arn:aws:ec2:*:*:security-group/*",
-        "arn:aws:ec2:*:*:vpc/*"
-      ]
-    },
-    {
-      "Sid": "EC2Tagging",
-      "Effect": "Allow",
-      "Action": [
-        "ec2:CreateTags"
-      ],
-      "Resource": "arn:aws:ec2:*:*:security-group/*",
-      "Condition": {
-        "StringEquals": {
-          "ec2:CreateAction": "CreateSecurityGroup"
-        }
-      }
-    },
-    {
-      "Sid": "EFSReadOperations",
-      "Effect": "Allow",
-      "Action": [
-        "elasticfilesystem:DescribeFileSystems",
-        "elasticfilesystem:DescribeMountTargets",
-        "elasticfilesystem:DescribeTags",
-        "elasticfilesystem:DescribeAccessPoints"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Sid": "EFSWriteOperations", 
-      "Effect": "Allow",
-      "Action": [
-        "elasticfilesystem:CreateFileSystem",
-        "elasticfilesystem:CreateMountTarget",
-        "elasticfilesystem:CreateTags",
-        "elasticfilesystem:TagResource",
-        "elasticfilesystem:CreateAccessPoint",
-        "elasticfilesystem:DeleteAccessPoint"
-      ],
-      "Resource": [
-        "arn:aws:elasticfilesystem:*:*:file-system/*",
-        "arn:aws:elasticfilesystem:*:*:mount-target/*",
-        "arn:aws:elasticfilesystem:*:*:access-point/*"
-      ]
-    }
-  ]
-}`
-
-	fmt.Println("📋 Secure IAM Policy for OpenShift EFS CSI Driver Setup")
-	fmt.Println("=======================================================")
-	fmt.Println()
-	fmt.Println("🔒 SECURITY IMPROVEMENTS (v2):")
-	fmt.Println("   • Separate statements for read vs write operations")
-	fmt.Println("   • Resource-scoped permissions (no blanket '*' access)")
-	fmt.Println("   • Conditional tagging (only during resource creation)")
-	fmt.Println("   • Principle of least privilege applied")
-	fmt.Println()
-	fmt.Println("⚠️  CRITICAL: EFS tagging permissions are MANDATORY!")
-	fmt.Println("🚨 Without elasticfilesystem:DescribeTags + elasticfilesystem:TagResource, this tool will:")
-	fmt.Println("   • NOT detect existing EFS filesystems")
-	fmt.Println("   • CREATE DUPLICATE EFS resources")
-	fmt.Println("   • WASTE MONEY on unnecessary AWS charges")
-	fmt.Println("   • FAIL to create EFS with required tags")
-	fmt.Println()
-	fmt.Println("This policy grants the minimum required permissions for the")
-	fmt.Println("setup-shared-storage tool to create and configure EFS resources")
-	fmt.Println("for OpenShift clusters while avoiding resource duplication.")
-	fmt.Println()
-	fmt.Println("POLICY STRUCTURE EXPLAINED:")
-	fmt.Println("• Statement 1 (EC2ReadOnly):     Uses '*' - needed for region-wide discovery")
-	fmt.Println("• Statement 2 (EC2Create):       Resource-scoped - only SG & VPC ARNs")
-	fmt.Println("• Statement 3 (EC2Tagging):      Conditional - only on SG creation")
-	fmt.Println("• Statement 4 (EFSRead):         Uses '*' - needed to discover existing EFS")
-	fmt.Println("• Statement 5 (EFSWrite):        Resource-scoped - only EFS ARNs")
-	fmt.Println()
-	fmt.Println("KEY PERMISSIONS EXPLAINED:")
-	fmt.Println("• elasticfilesystem:DescribeTags  - REQUIRED to find existing EFS by name to avoid duplicates")
-	fmt.Println("• elasticfilesystem:TagResource   - REQUIRED to tag new EFS filesystems during creation")
-	fmt.Println("• elasticfilesystem:CreateTags    - Legacy API for tagging existing resources")
-	fmt.Println("• ec2:CreateTags                  - REQUIRED to tag security groups for management")
-	fmt.Println("• All other permissions are required for EFS creation and networking")
-	fmt.Println()
-	fmt.Println("USAGE:")
-	fmt.Println("1. Save this policy as 'efs-setup-policy.json'")
-	fmt.Println("2. Create IAM policy: aws iam create-policy --policy-name EFS-Setup-Policy --policy-document file://efs-setup-policy.json")
-	fmt.Println("3. Attach to user/role: aws iam attach-user-policy --user-name YOUR_USER --policy-arn arn:aws:iam::ACCOUNT:policy/EFS-Setup-Policy")
-	fmt.Println()
-	fmt.Println("POLICY JSON:")
-	fmt.Println(policy)
-	fmt.Println()
-	fmt.Println("NOTE: This policy is for the setup tool only. The EFS CSI driver itself")
-	fmt.Println("uses AWS credentials from the 'aws-creds' secret in OpenShift clusters.")
 }
