@@ -225,8 +225,6 @@ build-agent: manifests generate fmt vet ## Build SBD agent binary.
 
 ##@ Tools
 
-.PHONY##@ Tools
-
 .PHONY: setup-odf-storage
 setup-odf-storage: ## Build the OpenShift Data Foundation setup tool.
 	@echo "🔨 Building setup-odf-storage tool..."
