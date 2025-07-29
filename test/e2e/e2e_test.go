@@ -903,6 +903,10 @@ func testSBDInspection(cluster ClusterInfo) {
 
 	for _, pod := range allPods.Items {
 		slots, err := testNamespace.Clients.GetSBDDeviceInfoFromPod(pod.Name, testNamespace.Name)
+		GinkgoWriter.Printf("Pod %s SBD device slots:\n", pod.Name)
+		for _, slot := range slots {
+			GinkgoWriter.Printf("  - NodeID: %v, Type: %v, Sequence: %v, Timestamp: %v\n", slot.NodeID, slot.Type, slot.Sequence, slot.Timestamp)
+		}
 		Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to get SBD device info from pod %s", pod.Name))
 		summaries = append(summaries, podDeviceSummary{
 			PodName: pod.Name,

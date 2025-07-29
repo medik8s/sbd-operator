@@ -117,7 +117,6 @@ func PrintNodeMap(nodeMapTable *sbdprotocol.NodeMapTable) {
 	fmt.Printf("Last update: %s\n", nodeMapTable.LastUpdate)
 	fmt.Printf("Checksum: %d\n", nodeMapTable.Checksum)
 	fmt.Printf("Entries: %d\n", len(nodeMapTable.Entries))
-	fmt.Printf("Node usage: %v\n", nodeMapTable.NodeUsage)
 
 	if len(nodeMapTable.Entries) == 0 {
 		fmt.Printf("No active node mappings found.\n")
