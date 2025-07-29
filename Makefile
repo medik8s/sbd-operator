@@ -96,23 +96,6 @@ sync-test-files: ## Sync shared configuration files to test directories.
 	@chmod +x scripts/sync-test-files.sh
 	@scripts/sync-test-files.sh
 
-##@ Tools
-
-.PHONY: setup-odf-storage
-setup-odf-storage: ## Build the OpenShift Data Foundation setup tool.
-	@echo "🔨 Building setup-odf-storage tool..."
-	@$(MAKE) -C tools/setup-odf-storage build
-	@echo "✅ Built bin/setup-odf-storage"
-
-.PHONY: setup-shared-storage  
-setup-shared-storage: ## Build the shared storage setup tool.
-	@echo "🔨 Building setup-shared-storage tool..."
-	@$(MAKE) -C tools/setup-shared-storage build
-	@echo "✅ Built bin/setup-shared-storage"
-
-.PHONY: tools
-tools: setup-odf-storage setup-shared-storage ## Build all standalone tools.
-
 .PHONY: test-e2e-clean
 test-e2e-clean: test-prep test-e2e ## Run e2e tests with complete deployment pipeline.
 
@@ -242,29 +225,25 @@ build-agent: manifests generate fmt vet ## Build SBD agent binary.
 
 ##@ Tools
 
+.PHONY##@ Tools
+
+.PHONY: setup-odf-storage
+setup-odf-storage: ## Build the OpenShift Data Foundation setup tool.
+	@echo "🔨 Building setup-odf-storage tool..."
+	@$(MAKE) -C tools/setup-odf-storage build
+
+.PHONY: setup-shared-storage  
+setup-shared-storage: ## Build the shared storage setup tool.
+	@echo "🔨 Building setup-shared-storage tool..."
+	@$(MAKE) -C tools/setup-shared-storage build
+
+.PHONY: validate-sbd-consistency
+validate-sbd-consistency: ## Build the shared storage setup tool.
+	@echo "🔨 Building validate-sbd-consistency tool..."
+	@$(MAKE) -C tools/validate-sbd-consistency build
+
 .PHONY: build-tools
-build-tools: build-storage-tool build-watchdog-demo build-validate-sbd-consistency ## Build all tools.
-
-.PHONY: build-storage-tool
-build-storage-tool: manifests generate fmt vet ## Build setup-shared-storage tool binary.
-	go build -ldflags="-X 'github.com/medik8s/sbd-operator/pkg/version.GitCommit=$(GIT_COMMIT)' \
-		-X 'github.com/medik8s/sbd-operator/pkg/version.GitDescribe=$(GIT_DESCRIBE)' \
-		-X 'github.com/medik8s/sbd-operator/pkg/version.BuildDate=$(BUILD_DATE)'" \
-		-o bin/setup-shared-storage tools/setup-shared-storage/main.go
-
-.PHONY: build-watchdog-demo
-build-watchdog-demo: manifests generate fmt vet ## Build watchdog-demo tool binary.
-	go build -ldflags="-X 'github.com/medik8s/sbd-operator/pkg/version.GitCommit=$(GIT_COMMIT)' \
-		-X 'github.com/medik8s/sbd-operator/pkg/version.GitDescribe=$(GIT_DESCRIBE)' \
-		-X 'github.com/medik8s/sbd-operator/pkg/version.BuildDate=$(BUILD_DATE)'" \
-		-o bin/watchdog-demo tools/watchdog-demo/main.go
-
-.PHONY: build-validate-sbd-consistency
-build-validate-sbd-consistency: manifests generate fmt vet ## Build validate-sbd-consistency tool binary.
-	go build -ldflags="-X 'github.com/medik8s/sbd-operator/pkg/version.GitCommit=$(GIT_COMMIT)' \
-		-X 'github.com/medik8s/sbd-operator/pkg/version.GitDescribe=$(GIT_DESCRIBE)' \
-		-X 'github.com/medik8s/sbd-operator/pkg/version.BuildDate=$(BUILD_DATE)'" \
-		-o bin/validate-sbd-consistency tools/validate-sbd-consistency/main.go
+build-tools: setup-odf-storage setup-shared-storage validate-sbd-consistency
 
 .PHONY: run
 run: manifests generate fmt vet webhook-certs ## Run a controller from your host.
