@@ -41,8 +41,8 @@ func main() {
 			fmt.Printf("Failed to create mock watchdog file: %v\n", err)
 			return
 		}
-		mockFile.Close()
-		defer os.Remove(watchdogPath)
+		_ = mockFile.Close()
+		defer func() { _ = os.Remove(watchdogPath) }()
 	}
 
 	// Create a new watchdog instance
@@ -51,7 +51,7 @@ func main() {
 		fmt.Printf("Failed to create watchdog: %v\n", err)
 		return
 	}
-	defer wd.Close()
+	defer func() { _ = wd.Close() }()
 
 	fmt.Printf("Successfully opened watchdog device: %s\n", wd.Path())
 	fmt.Printf("Watchdog is open: %t\n", wd.IsOpen())

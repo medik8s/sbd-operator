@@ -661,13 +661,13 @@ var _ = Describe("SBDConfig Controller", func() {
 			resource := &medik8sv1alpha1.SBDConfig{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			if err == nil {
-				k8sClient.Delete(ctx, resource)
+				_ = k8sClient.Delete(ctx, resource)
 			}
 
 			testNamespace := &corev1.Namespace{}
 			err = k8sClient.Get(ctx, types.NamespacedName{Name: namespace}, testNamespace)
 			if err == nil {
-				k8sClient.Delete(ctx, testNamespace)
+				_ = k8sClient.Delete(ctx, testNamespace)
 			}
 		})
 

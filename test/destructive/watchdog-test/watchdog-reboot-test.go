@@ -56,7 +56,7 @@ func main() {
 	}
 	defer func() {
 		log.Printf("Closing watchdog device (this will start countdown to reboot!)")
-		watchdog.Close()
+		_ = watchdog.Close()
 	}()
 
 	log.Printf("Successfully opened watchdog device")

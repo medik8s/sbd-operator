@@ -31,8 +31,8 @@ func TestIOTimeoutConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
-	defer os.Remove(tmpFile.Name())
-	defer tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	defer func() { _ = tmpFile.Close() }()
 
 	// Open the device with the blockdevice package
 	device, err := OpenWithLogger(tmpFile.Name(), logr.Discard())
@@ -84,8 +84,8 @@ func TestTimeoutErrorMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
-	defer os.Remove(tmpFile.Name())
-	defer tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	defer func() { _ = tmpFile.Close() }()
 
 	device, err := OpenWithLogger(tmpFile.Name(), logr.Discard())
 	if err != nil {
@@ -131,8 +131,8 @@ func TestTimeoutPreventsHanging(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
-	defer os.Remove(tmpFile.Name())
-	defer tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	defer func() { _ = tmpFile.Close() }()
 
 	device, err := OpenWithLogger(tmpFile.Name(), logr.Discard())
 	if err != nil {
@@ -168,8 +168,8 @@ func TestStrictTimeoutEnforcement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
-	defer os.Remove(tmpFile.Name())
-	defer tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	defer func() { _ = tmpFile.Close() }()
 
 	device, err := OpenWithLogger(tmpFile.Name(), logr.Discard())
 	if err != nil {
@@ -258,8 +258,8 @@ func TestRetryWithTimeouts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
-	defer os.Remove(tmpFile.Name())
-	defer tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	defer func() { _ = tmpFile.Close() }()
 
 	device, err := OpenWithLogger(tmpFile.Name(), logr.Discard())
 	if err != nil {
@@ -308,8 +308,8 @@ func TestTimeoutMechanismComparison(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
-	defer os.Remove(tmpFile.Name())
-	defer tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	defer func() { _ = tmpFile.Close() }()
 
 	device, err := OpenWithLogger(tmpFile.Name(), logr.Discard())
 	if err != nil {

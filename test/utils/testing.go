@@ -404,12 +404,12 @@ func (dc *DebugCollector) CollectControllerLogs(namespace, podName string) {
 	req := dc.Clients.Clientset.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{})
 	podLogs, err := req.Stream(dc.Clients.Context)
 	if err == nil {
-		defer podLogs.Close()
+		defer func() { _ = podLogs.Close() }()
 		buf := new(bytes.Buffer)
 		_, _ = io.Copy(buf, podLogs)
 		logFileName := fmt.Sprintf("%s/%s.log", dc.ArtifactsDir, podName)
 		if f, fileErr := os.Create(logFileName); fileErr == nil {
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 			_, _ = f.Write(buf.Bytes())
 			GinkgoWriter.Printf("Controller logs for pod %s saved to %s\n", podName, logFileName)
 		} else {
@@ -456,13 +456,13 @@ func (dc *DebugCollector) CollectAgentLogs(namespace string) {
 		req := dc.Clients.Clientset.CoreV1().Pods(namespace).GetLogs(pod.Name, &corev1.PodLogOptions{})
 		podLogs, err := req.Stream(dc.Clients.Context)
 		if err == nil {
-			defer podLogs.Close()
+			defer func() { _ = podLogs.Close() }()
 			buf := new(bytes.Buffer)
 			_, _ = io.Copy(buf, podLogs)
 			// Save the logs to a file named after the pod name
 			logFileName := fmt.Sprintf("%s/%s.log", dc.ArtifactsDir, pod.Name)
 			if f, fileErr := os.Create(logFileName); fileErr == nil {
-				defer f.Close()
+				defer func() { _ = f.Close() }()
 				_, _ = f.Write(buf.Bytes())
 				GinkgoWriter.Printf("Agent logs for pod %s saved to %s\n", pod.Name, logFileName)
 			} else {
@@ -506,7 +506,7 @@ func (dc *DebugCollector) CollectPodDescription(namespace, podName string) {
 		// Save the pod spec YAML to a file named after the pod
 		podFileName := fmt.Sprintf("%s/%s-podspec.yaml", dc.ArtifactsDir, podName)
 		if f, fileErr := os.Create(podFileName); fileErr == nil {
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 			_, _ = f.Write(podYAML)
 			GinkgoWriter.Printf("Pod spec for %s saved to %s\n", podName, podFileName)
 		} else {
@@ -1323,7 +1323,7 @@ func DescribeEnvironment(testClients *TestClients, testNamespace *TestNamespace)
 	req := testClients.Clientset.CoreV1().Pods(testNamespace.Name).GetLogs("curl-metrics", &corev1.PodLogOptions{})
 	podLogs, err := req.Stream(testClients.Context)
 	if err == nil {
-		defer podLogs.Close()
+		defer func() { _ = podLogs.Close() }()
 		buf := new(bytes.Buffer)
 		_, _ = io.Copy(buf, podLogs)
 		GinkgoWriter.Printf("Metrics logs:\n %s\n", buf.String())

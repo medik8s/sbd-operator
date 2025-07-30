@@ -115,7 +115,7 @@ var _ = AfterEach(func() {
 		utils.DescribeEnvironment(testClients, testNamespace)
 	}
 	By("Cleaning up previous test attempts")
-	cleanupPreviousTestAttempts()
+	_ = cleanupPreviousTestAttempts()
 })
 
 // var _ = AfterAll(func() {

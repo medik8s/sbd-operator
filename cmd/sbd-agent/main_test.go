@@ -390,7 +390,7 @@ func TestSBDAgent_ReadPeerHeartbeat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
-	defer agent.Stop()
+	defer func() { _ = agent.Stop() }()
 
 	// Set the mock device after creation to override the real device
 	agent.setSBDDevices(mockDevice, mockDevice)
@@ -453,7 +453,7 @@ func TestSBDAgent_ReadPeerHeartbeat_InvalidMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
-	defer agent.Stop()
+	defer func() { _ = agent.Stop() }()
 
 	// Set the mock device after creation
 	agent.setSBDDevices(mockDevice, mockDevice)
@@ -498,7 +498,7 @@ func TestSBDAgent_ReadPeerHeartbeat_DeviceError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
-	defer agent.Stop()
+	defer func() { _ = agent.Stop() }()
 
 	// Set the mock device after creation
 	agent.setSBDDevices(mockDevice, mockDevice)
@@ -532,7 +532,7 @@ func TestSBDAgent_ReadPeerHeartbeat_NodeIDMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
-	defer agent.Stop()
+	defer func() { _ = agent.Stop() }()
 
 	// Set the mock device after creation
 	agent.setSBDDevices(mockDevice, mockDevice)
@@ -586,7 +586,7 @@ func TestSBDAgent_PeerMonitorLoop_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create agent: %v", err)
 	}
-	defer agent.Stop()
+	defer func() { _ = agent.Stop() }()
 
 	// Set the mock device after creation
 	agent.setSBDDevices(mockDevice, mockDevice)
@@ -653,7 +653,7 @@ func TestSBDAgent_NewSBDAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
-	defer agent.Stop()
+	defer func() { _ = agent.Stop() }()
 
 	// Verify configuration
 	if agent.nodeName != "test-node" {
@@ -693,7 +693,7 @@ func TestSBDAgent_WriteHeartbeatToSBD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
-	defer agent.Stop()
+	defer func() { _ = agent.Stop() }()
 
 	agent.setSBDDevices(mockDevice, mockDevice)
 
@@ -750,7 +750,7 @@ func TestSBDAgent_WriteHeartbeatToSBD_DeviceError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
-	defer agent.Stop()
+	defer func() { _ = agent.Stop() }()
 
 	agent.setSBDDevices(mockDevice, mockDevice)
 
@@ -782,7 +782,7 @@ func TestSBDAgent_WriteHeartbeatToSBD_SyncError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
-	defer agent.Stop()
+	defer func() { _ = agent.Stop() }()
 
 	agent.setSBDDevices(mockDevice, mockDevice)
 
@@ -813,7 +813,7 @@ func TestSBDAgent_SBDHealthStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
-	defer agent.Stop()
+	defer func() { _ = agent.Stop() }()
 
 	// Initially should be false
 	if agent.isSBDHealthy() {
@@ -850,7 +850,7 @@ func TestSBDAgent_HeartbeatSequence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
-	defer agent.Stop()
+	defer func() { _ = agent.Stop() }()
 
 	// Get initial sequence numbers
 	seq1 := agent.getNextHeartbeatSequence()
@@ -873,13 +873,13 @@ func TestEnvironmentVariables(t *testing.T) {
 	// Test getNodeNameFromEnv
 	t.Run("getNodeNameFromEnv", func(t *testing.T) {
 		// Clear environment
-		os.Unsetenv("NODE_NAME")
-		os.Unsetenv("HOSTNAME")
-		os.Unsetenv("NODENAME")
+		_ = os.Unsetenv("NODE_NAME")
+		_ = os.Unsetenv("HOSTNAME")
+		_ = os.Unsetenv("NODENAME")
 
 		// Set NODE_NAME
-		os.Setenv("NODE_NAME", "test-env-node")
-		defer os.Unsetenv("NODE_NAME")
+		_ = os.Setenv("NODE_NAME", "test-env-node")
+		defer func() { _ = os.Unsetenv("NODE_NAME") }()
 
 		nodeName := getNodeNameFromEnv()
 		if nodeName != "test-env-node" {
@@ -894,8 +894,8 @@ func TestEnvironmentVariables(t *testing.T) {
 		os.Unsetenv("NODE_ID")
 
 		// Set SBD_NODE_ID
-		os.Setenv("SBD_NODE_ID", "5")
-		defer os.Unsetenv("SBD_NODE_ID")
+		_ = os.Setenv("SBD_NODE_ID", "5")
+		defer func() { _ = os.Unsetenv("SBD_NODE_ID") }()
 
 		nodeID := getNodeIDFromEnv()
 		if nodeID != 5 {
@@ -906,12 +906,12 @@ func TestEnvironmentVariables(t *testing.T) {
 	// Test getSBDTimeoutFromEnv
 	t.Run("getSBDTimeoutFromEnv", func(t *testing.T) {
 		// Clear environment
-		os.Unsetenv("SBD_TIMEOUT_SECONDS")
-		os.Unsetenv("SBD_TIMEOUT")
+		_ = os.Unsetenv("SBD_TIMEOUT_SECONDS")
+		_ = os.Unsetenv("SBD_TIMEOUT")
 
 		// Set SBD_TIMEOUT_SECONDS
-		os.Setenv("SBD_TIMEOUT_SECONDS", "60")
-		defer os.Unsetenv("SBD_TIMEOUT_SECONDS")
+		_ = os.Setenv("SBD_TIMEOUT_SECONDS", "60")
+		defer func() { _ = os.Unsetenv("SBD_TIMEOUT_SECONDS") }()
 
 		timeout := getSBDTimeoutFromEnv()
 		if timeout != 60 {
@@ -936,7 +936,7 @@ func BenchmarkSBDAgent_WriteHeartbeat(b *testing.B) {
 	if err != nil {
 		b.Fatalf("Failed to create agent: %v", err)
 	}
-	defer agent.Stop()
+	defer func() { _ = agent.Stop() }()
 
 	agent.setSBDDevices(mockDevice, mockDevice)
 
@@ -964,7 +964,7 @@ func BenchmarkSBDAgent_ReadPeerHeartbeat(b *testing.B) {
 	if err != nil {
 		b.Fatalf("Failed to create agent: %v", err)
 	}
-	defer agent.Stop()
+	defer func() { _ = agent.Stop() }()
 
 	agent.setSBDDevices(mockDevice, mockDevice)
 
@@ -1011,7 +1011,7 @@ func TestSBDAgent_ReadOwnSlotForFenceMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
-	defer agent.Stop()
+	defer func() { _ = agent.Stop() }()
 
 	// Set the mock device
 	agent.setSBDDevices(mockDevice, mockDevice)
@@ -1067,7 +1067,7 @@ func TestSBDAgent_ReadOwnSlotForFenceMessage_WrongTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
-	defer agent.Stop()
+	defer func() { _ = agent.Stop() }()
 
 	// Set the mock device
 	agent.setSBDDevices(mockDevice, mockDevice)
@@ -1108,7 +1108,7 @@ func TestSBDAgent_SelfFenceStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
-	defer agent.Stop()
+	defer func() { _ = agent.Stop() }()
 
 	// Initially should not be self-fenced
 	if agent.isSelfFenceDetected() {
@@ -1193,7 +1193,7 @@ func TestPreflightChecks_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create mock watchdog file: %v", err)
 	}
-	watchdogFile.Close()
+	_ = watchdogFile.Close()
 
 	// Create mock SBD device file with sufficient size
 	sbdFile, err := os.Create(sbdPath)
@@ -1202,8 +1202,8 @@ func TestPreflightChecks_Success(t *testing.T) {
 	}
 	// Write enough data for SBD slots
 	data := make([]byte, 1024*1024) // 1MB
-	sbdFile.Write(data)
-	sbdFile.Close()
+	_ = sbdFile.Write(data)
+	_ = sbdFile.Close()
 
 	// Test successful pre-flight checks
 	err = runPreflightChecks(watchdogPath, sbdPath, "test-node", 1)
@@ -1250,7 +1250,7 @@ func TestPreflightChecks_SBDMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create mock watchdog file: %v", err)
 	}
-	watchdogFile.Close()
+	_ = watchdogFile.Close()
 
 	// Use non-existent SBD path
 	sbdPath := "/non/existent/sbd"
@@ -1277,7 +1277,7 @@ func TestPreflightChecks_RequireSBDDevice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create mock watchdog file: %v", err)
 	}
-	watchdogFile.Close()
+	_ = watchdogFile.Close()
 
 	// Empty SBD path should now fail (no more watchdog-only mode)
 	sbdPath := ""
@@ -1307,7 +1307,7 @@ func TestPreflightChecks_InvalidNodeName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create mock watchdog file: %v", err)
 	}
-	watchdogFile.Close()
+	_ = watchdogFile.Close()
 
 	testCases := []struct {
 		name     string
@@ -1376,7 +1376,7 @@ func TestCheckWatchdogDevice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create mock watchdog file: %v", err)
 	}
-	watchdogFile.Close()
+	_ = watchdogFile.Close()
 
 	err = checkWatchdogDevice(watchdogPath)
 	if err != nil {
@@ -1624,7 +1624,7 @@ func TestSBDAgent_FileLockingConfiguration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create SBD agent: %v", err)
 		}
-		defer agent.Stop()
+		defer func() { _ = agent.Stop() }()
 
 		// Verify file locking is enabled via NodeManager
 		if agent.nodeManager == nil {
@@ -1659,7 +1659,7 @@ func TestSBDAgent_FileLockingConfiguration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create SBD agent: %v", err)
 		}
-		defer agent.Stop()
+		defer func() { _ = agent.Stop() }()
 
 		// Verify file locking is disabled via NodeManager
 		if agent.nodeManager == nil {
@@ -1709,8 +1709,8 @@ func TestPreflightChecks_SBDOnlyMode(t *testing.T) {
 	}
 	// Write enough data for SBD slots
 	data := make([]byte, 1024*1024) // 1MB
-	sbdFile.Write(data)
-	sbdFile.Close()
+	_ = sbdFile.Write(data)
+	_ = sbdFile.Close()
 
 	// Use non-existent watchdog path (should fail)
 	watchdogPath := "/non/existent/watchdog"

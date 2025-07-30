@@ -751,7 +751,7 @@ func testFakeRemediation(cluster ClusterInfo) {
 			req := testNamespace.Clients.Clientset.CoreV1().Pods(testNamespace.Name).GetLogs(agentPod.Name, &corev1.PodLogOptions{})
 			podLogs, err := req.Stream(testNamespace.Clients.Context)
 			if err == nil {
-				defer podLogs.Close()
+				defer func() { _ = podLogs.Close() }()
 				buf := new(bytes.Buffer)
 				_, _ = io.Copy(buf, podLogs)
 

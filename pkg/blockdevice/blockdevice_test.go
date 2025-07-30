@@ -55,13 +55,13 @@ func setupTestDevice(t testingInterface, size int64) (string, func()) {
 		}
 	}
 
-	if err := file.Close(); err != nil {
+	if err := _ = file.Close(); err != nil {
 		t.Fatalf("Failed to close test device file: %v", err)
 	}
 
 	// Return path and cleanup function
 	return testPath, func() {
-		os.RemoveAll(tempDir)
+		_ = os.RemoveAll(tempDir)
 	}
 }
 
@@ -158,13 +158,13 @@ func TestReadAt(t *testing.T) {
 	if _, err := file.Write(testData); err != nil {
 		t.Fatalf("Failed to write test data: %v", err)
 	}
-	file.Close()
+	_ = file.Close()
 
 	device, err := Open(testPath)
 	if err != nil {
 		t.Fatalf("Failed to open device: %v", err)
 	}
-	defer device.Close()
+	defer func() { _ = device.Close() }()
 
 	tests := []struct {
 		name        string
@@ -260,7 +260,7 @@ func TestWriteAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open device: %v", err)
 	}
-	defer device.Close()
+	defer func() { _ = device.Close() }()
 
 	tests := []struct {
 		name        string
@@ -366,7 +366,7 @@ func TestSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open device: %v", err)
 	}
-	defer device.Close()
+	defer func() { _ = device.Close() }()
 
 	// Write some data
 	data := []byte("Test data for sync")
@@ -475,7 +475,7 @@ func TestDevicePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open device: %v", err)
 	}
-	defer device.Close()
+	defer func() { _ = device.Close() }()
 
 	if device.Path() != testPath {
 		t.Errorf("Expected device path %q, got %q", testPath, device.Path())
@@ -490,7 +490,7 @@ func TestReadWriteIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open device: %v", err)
 	}
-	defer device.Close()
+	defer func() { _ = device.Close() }()
 
 	// Test data with different patterns
 	testCases := []struct {
@@ -543,7 +543,7 @@ func TestConcurrentOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open device: %v", err)
 	}
-	defer device.Close()
+	defer func() { _ = device.Close() }()
 
 	// Test concurrent reads and writes
 	done := make(chan bool, 4)
@@ -596,7 +596,7 @@ func BenchmarkReadAt(b *testing.B) {
 	if err != nil {
 		b.Fatalf("Failed to open device: %v", err)
 	}
-	defer device.Close()
+	defer func() { _ = device.Close() }()
 
 	buf := make([]byte, 4096) // 4KB buffer
 
@@ -618,7 +618,7 @@ func BenchmarkWriteAt(b *testing.B) {
 	if err != nil {
 		b.Fatalf("Failed to open device: %v", err)
 	}
-	defer device.Close()
+	defer func() { _ = device.Close() }()
 
 	data := make([]byte, 4096) // 4KB buffer
 	for i := range data {

@@ -190,33 +190,33 @@ func SaveNodeMapToFile(nodeMapTable *sbdprotocol.NodeMapTable, filename string) 
 	if err != nil {
 		return fmt.Errorf("failed to create file %s: %w", filename, err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
-	fmt.Fprintf(file, "=== Node Mapping Summary ===\n")
-	fmt.Fprintf(file, "Generated at: %s\n", time.Now().Format("2006-01-02 15:04:05"))
-	fmt.Fprintf(file, "Cluster name: %s\n", nodeMapTable.ClusterName)
-	fmt.Fprintf(file, "Version: %d\n", nodeMapTable.Version)
-	fmt.Fprintf(file, "Last update: %s\n", nodeMapTable.LastUpdate)
-	fmt.Fprintf(file, "Checksum: %d\n", nodeMapTable.Checksum)
-	fmt.Fprintf(file, "Entries: %d\n", len(nodeMapTable.Entries))
-	fmt.Fprintf(file, "Node usage: %v\n", nodeMapTable.NodeUsage)
+	_, _ = fmt.Fprintf(file, "=== Node Mapping Summary ===\n")
+	_, _ = fmt.Fprintf(file, "Generated at: %s\n", time.Now().Format("2006-01-02 15:04:05"))
+	_, _ = fmt.Fprintf(file, "Cluster name: %s\n", nodeMapTable.ClusterName)
+	_, _ = fmt.Fprintf(file, "Version: %d\n", nodeMapTable.Version)
+	_, _ = fmt.Fprintf(file, "Last update: %s\n", nodeMapTable.LastUpdate)
+	_, _ = fmt.Fprintf(file, "Checksum: %d\n", nodeMapTable.Checksum)
+	_, _ = fmt.Fprintf(file, "Entries: %d\n", len(nodeMapTable.Entries))
+	_, _ = fmt.Fprintf(file, "Node usage: %v\n", nodeMapTable.NodeUsage)
 
 	if len(nodeMapTable.Entries) == 0 {
-		fmt.Fprintf(file, "No active node mappings found.\n")
+		_, _ = fmt.Fprintf(file, "No active node mappings found.\n")
 		return nil
 	}
 
-	fmt.Fprintf(file, "%-6s %-30s %-20s\n", "NodeID", "Node Name", "Last Seen")
-	fmt.Fprintf(file, "%-6s %-30s %-20s\n", "------", "---------", "---------")
+	_, _ = fmt.Fprintf(file, "%-6s %-30s %-20s\n", "NodeID", "Node Name", "Last Seen")
+	_, _ = fmt.Fprintf(file, "%-6s %-30s %-20s\n", "------", "---------", "---------")
 
 	for _, entry := range nodeMapTable.Entries {
 		lastSeenStr := "Never"
 		if !entry.LastSeen.IsZero() {
 			lastSeenStr = entry.LastSeen.Format("2006-01-02 15:04:05")
 		}
-		fmt.Fprintf(file, "%-6d %-30s %-20s\n", entry.NodeID, entry.NodeName, lastSeenStr)
+		_, _ = fmt.Fprintf(file, "%-6d %-30s %-20s\n", entry.NodeID, entry.NodeName, lastSeenStr)
 	}
-	fmt.Fprintf(file, "\n")
+	_, _ = fmt.Fprintf(file, "\n")
 
 	return nil
 }
@@ -227,19 +227,19 @@ func SaveSBDDeviceToFile(slots []SBDNodeSummary, filename string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create file %s: %w", filename, err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
-	fmt.Fprintf(file, "=== SBD Device Summary ===\n")
-	fmt.Fprintf(file, "Generated at: %s\n", time.Now().Format("2006-01-02 15:04:05"))
-	fmt.Fprintf(file, "Total slots with data: %d\n\n", len(slots))
+	_, _ = fmt.Fprintf(file, "=== SBD Device Summary ===\n")
+	_, _ = fmt.Fprintf(file, "Generated at: %s\n", time.Now().Format("2006-01-02 15:04:05"))
+	_, _ = fmt.Fprintf(file, "Total slots with data: %d\n\n", len(slots))
 
 	if len(slots) == 0 {
-		fmt.Fprintf(file, "No active SBD slots found.\n")
+		_, _ = fmt.Fprintf(file, "No active SBD slots found.\n")
 		return nil
 	}
 
-	fmt.Fprintf(file, "%-8s %-30s %-12s %-20s %-10s\n", "NodeID", "Node Name", "Type", "Timestamp", "Sequence")
-	fmt.Fprintf(file, "%-8s %-30s %-12s %-20s %-10s\n", "------", "---------", "----", "---------", "--------")
+	_, _ = fmt.Fprintf(file, "%-8s %-30s %-12s %-20s %-10s\n", "NodeID", "Node Name", "Type", "Timestamp", "Sequence")
+	_, _ = fmt.Fprintf(file, "%-8s %-30s %-12s %-20s %-10s\n", "------", "---------", "----", "---------", "--------")
 
 	for _, slot := range slots {
 		timestampStr := "N/A"
@@ -247,10 +247,10 @@ func SaveSBDDeviceToFile(slots []SBDNodeSummary, filename string) error {
 			timestampStr = slot.Timestamp.Format("15:04:05")
 		}
 		nodeNameStr := "Unknown" // We don't have node name in the SBD message
-		fmt.Fprintf(file, "%-8d %-30s %-12s %-20s %-10d\n",
+		_, _ = fmt.Fprintf(file, "%-8d %-30s %-12s %-20s %-10d\n",
 			slot.NodeID, nodeNameStr, slot.Type, timestampStr, slot.Sequence)
 	}
-	fmt.Fprintf(file, "\n")
+	_, _ = fmt.Fprintf(file, "\n")
 
 	return nil
 }
@@ -261,19 +261,19 @@ func SaveFenceDeviceToFile(slots []SBDNodeSummary, filename string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create file %s: %w", filename, err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
-	fmt.Fprintf(file, "=== Fence Device Summary ===\n")
-	fmt.Fprintf(file, "Generated at: %s\n", time.Now().Format("2006-01-02 15:04:05"))
-	fmt.Fprintf(file, "Total slots with data: %d\n\n", len(slots))
+	_, _ = fmt.Fprintf(file, "=== Fence Device Summary ===\n")
+	_, _ = fmt.Fprintf(file, "Generated at: %s\n", time.Now().Format("2006-01-02 15:04:05"))
+	_, _ = fmt.Fprintf(file, "Total slots with data: %d\n\n", len(slots))
 
 	if len(slots) == 0 {
-		fmt.Fprintf(file, "No active fence slots found.\n")
+		_, _ = fmt.Fprintf(file, "No active fence slots found.\n")
 		return nil
 	}
 
-	fmt.Fprintf(file, "%-8s %-30s %-12s %-20s %-10s\n", "NodeID", "Node Name", "Type", "Timestamp", "Sequence")
-	fmt.Fprintf(file, "%-8s %-30s %-12s %-20s %-10s\n", "------", "---------", "----", "---------", "--------")
+	_, _ = fmt.Fprintf(file, "%-8s %-30s %-12s %-20s %-10s\n", "NodeID", "Node Name", "Type", "Timestamp", "Sequence")
+	_, _ = fmt.Fprintf(file, "%-8s %-30s %-12s %-20s %-10s\n", "------", "---------", "----", "---------", "--------")
 
 	for _, slot := range slots {
 		timestampStr := "N/A"
@@ -281,10 +281,10 @@ func SaveFenceDeviceToFile(slots []SBDNodeSummary, filename string) error {
 			timestampStr = slot.Timestamp.Format("15:04:05")
 		}
 		nodeNameStr := "Unknown" // We don't have node name in the fence message
-		fmt.Fprintf(file, "%-8d %-30s %-12s %-20s %-10d\n",
+		_, _ = fmt.Fprintf(file, "%-8d %-30s %-12s %-20s %-10d\n",
 			slot.NodeID, nodeNameStr, slot.Type, timestampStr, slot.Sequence)
 	}
-	fmt.Fprintf(file, "\n")
+	_, _ = fmt.Fprintf(file, "\n")
 
 	return nil
 }

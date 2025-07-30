@@ -295,8 +295,10 @@ func (r *SBDRemediationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		"reason", sbdRemediation.Spec.Reason)
 
 	// Update status to indicate fencing is in progress
-	r.updateRemediationCondition(ctx, &sbdRemediation, medik8sv1alpha1.SBDRemediationConditionFencingInProgress,
-		metav1.ConditionTrue, ReasonInProgress, fmt.Sprintf("Fencing node %s", sbdRemediation.Spec.NodeName))
+	if err := r.updateRemediationCondition(ctx, &sbdRemediation, medik8sv1alpha1.SBDRemediationConditionFencingInProgress,
+		metav1.ConditionTrue, ReasonInProgress, fmt.Sprintf("Fencing node %s", sbdRemediation.Spec.NodeName)); err != nil {
+		logger.Error(err, "Failed to update remediation condition to in progress")
+	}
 
 	// Execute fencing
 	if err := r.executeFencing(ctx, &sbdRemediation, logger); err != nil {
@@ -515,12 +517,18 @@ func (r *SBDRemediationReconciler) handleFencingSuccess(ctx context.Context, rem
 		"targetNode", remediation.Spec.NodeName)
 
 	// Update multiple conditions for success state
-	r.updateRemediationCondition(ctx, remediation, medik8sv1alpha1.SBDRemediationConditionFencingInProgress,
-		metav1.ConditionFalse, ReasonCompleted, "Fencing completed")
-	r.updateRemediationCondition(ctx, remediation, medik8sv1alpha1.SBDRemediationConditionFencingSucceeded,
-		metav1.ConditionTrue, ReasonCompleted, fmt.Sprintf("Node %s fenced successfully", remediation.Spec.NodeName))
-	r.updateRemediationCondition(ctx, remediation, medik8sv1alpha1.SBDRemediationConditionReady,
-		metav1.ConditionTrue, ReasonCompleted, "Remediation completed successfully")
+	if err := r.updateRemediationCondition(ctx, remediation, medik8sv1alpha1.SBDRemediationConditionFencingInProgress,
+		metav1.ConditionFalse, ReasonCompleted, "Fencing completed"); err != nil {
+		logger.Error(err, "Failed to update fencing in progress condition")
+	}
+	if err := r.updateRemediationCondition(ctx, remediation, medik8sv1alpha1.SBDRemediationConditionFencingSucceeded,
+		metav1.ConditionTrue, ReasonCompleted, fmt.Sprintf("Node %s fenced successfully", remediation.Spec.NodeName)); err != nil {
+		logger.Error(err, "Failed to update fencing succeeded condition")
+	}
+	if err := r.updateRemediationCondition(ctx, remediation, medik8sv1alpha1.SBDRemediationConditionReady,
+		metav1.ConditionTrue, ReasonCompleted, "Remediation completed successfully"); err != nil {
+		logger.Error(err, "Failed to update ready condition")
+	}
 
 	// Emit success event
 	r.emitEventf(remediation, "Normal", ReasonNodeFenced,
