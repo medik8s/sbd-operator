@@ -218,7 +218,7 @@ var _ = Describe("SBDConfig Controller", func() {
 			args := controllerReconciler.buildSBDAgentArgs(resource)
 
 			By("verifying the sbd-device flag is set correctly")
-			expectedSBDDevice := fmt.Sprintf("--%s=/%s/%s", agent.FlagSBDDevice, agent.SharedStorageSBDDeviceDirectory, agent.SharedStorageSBDDeviceFile)
+			expectedSBDDevice := fmt.Sprintf("--%s=%s/%s", agent.FlagSBDDevice, agent.SharedStorageSBDDeviceDirectory, agent.SharedStorageSBDDeviceFile)
 			Expect(args).To(ContainElement(expectedSBDDevice))
 
 			By("verifying file locking is enabled for shared storage")

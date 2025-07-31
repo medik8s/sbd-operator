@@ -46,6 +46,8 @@ const (
 	ReasonInProgress = "RemediationInProgress"
 	// ReasonFailed indicates the remediation failed
 	ReasonFailed = "RemediationFailed"
+	// ReasonAgentDelegated indicates the remediation was delegated to agents
+	ReasonAgentDelegated = "RemediationAgentDelegated"
 
 	// Status update retry configuration
 	MaxStatusUpdateRetries    = 10
@@ -244,13 +246,20 @@ func (r *SBDRemediationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
-	// Validate that we have the necessary components for fencing
+	// Check if we're in agent-based mode (no SBD device configured)
 	if r.sbdDevice == nil || r.sbdDevice.IsClosed() {
-		err := fmt.Errorf("SBD device is not available for fencing operations")
-		logger.Error(err, "Cannot perform fencing")
-		r.emitEventOnly(&sbdRemediation, "Warning", ReasonFailed,
-			"SBD device is not available for fencing operations")
-		return ctrl.Result{}, err
+		logger.Info("Controller running in agent-based mode - delegating fencing to agents")
+		r.emitEventOnly(&sbdRemediation, "Normal", ReasonAgentDelegated,
+			"Fencing operation delegated to SBD agents")
+
+		// In agent-based mode, mark as in progress and let agents handle fencing
+		_ = r.updateRemediationCondition(ctx, &sbdRemediation,
+			medik8sv1alpha1.SBDRemediationConditionReady,
+			metav1.ConditionFalse,
+			"AgentDelegated",
+			"Fencing operation delegated to SBD agents")
+
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	if r.nodeManager == nil {

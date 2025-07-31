@@ -266,16 +266,22 @@ func (m *MockWatchdog) SetFailPet(fail bool) {
 	m.failPet = fail
 }
 
-// createTestSBDAgent creates a test SBD agent with mock devices and temporary SBD file
+// createTestSBDAgent creates a test SBD agent with mock devices and temporary SBD files
 func createTestSBDAgent(t *testing.T, nodeName string, metricsPort int) (*SBDAgent, *MockWatchdog, *MockBlockDevice, func()) {
 	mockWatchdog := NewMockWatchdog("/dev/watchdog")
 	mockDevice := NewMockBlockDevice("/dev/mock-sbd", 1024*1024) // 1MB
 
-	// Create temporary SBD device file
+	// Create temporary SBD device files (both heartbeat and fence)
 	tmpDir := t.TempDir()
 	sbdPath := tmpDir + "/test-sbd"
+	fencePath := sbdPath + "-fence" // Agent appends "-fence" suffix
+
+	// Create both heartbeat and fence device files
 	if err := os.WriteFile(sbdPath, make([]byte, 1024*1024), 0644); err != nil {
-		t.Fatalf("Failed to create test SBD device: %v", err)
+		t.Fatalf("Failed to create test SBD heartbeat device: %v", err)
+	}
+	if err := os.WriteFile(fencePath, make([]byte, 1024*1024), 0644); err != nil {
+		t.Fatalf("Failed to create test SBD fence device: %v", err)
 	}
 
 	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, nodeName, "test-cluster", 1,
@@ -284,6 +290,9 @@ func createTestSBDAgent(t *testing.T, nodeName string, metricsPort int) (*SBDAge
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
+
+	// Set mock devices to override the real file-based devices
+	agent.setSBDDevices(mockDevice, mockDevice)
 
 	cleanup := func() { _ = agent.Stop() }
 	return agent, mockWatchdog, mockDevice, cleanup

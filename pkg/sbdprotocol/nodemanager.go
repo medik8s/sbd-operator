@@ -127,10 +127,13 @@ func NewNodeManager(device SBDDevice, config NodeManagerConfig) (*NodeManager, e
 
 	// Determine the node mapping file path based on the SBD device path
 	devicePath := device.Path()
+	var nodeMapFilePath string
 	if devicePath == "" {
-		return nil, fmt.Errorf("SBD device path is not available")
+		// If no device path, use a temporary directory for node mapping file
+		nodeMapFilePath = fmt.Sprintf("/tmp/sbd-node-map-%s%s", config.ClusterName, SBD_NODE_MAP_FILE_SUFFIX)
+	} else {
+		nodeMapFilePath = fmt.Sprintf("%s%s", devicePath, SBD_NODE_MAP_FILE_SUFFIX)
 	}
-	nodeMapFilePath := fmt.Sprintf("%s%s", devicePath, SBD_NODE_MAP_FILE_SUFFIX)
 
 	manager := &NodeManager{
 		device:             device,

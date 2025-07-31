@@ -149,7 +149,7 @@ func NewFence(nodeID, targetNodeID uint16, sequence uint64, reason uint8) SBDFen
 			Magic:     magic,
 			Version:   1,
 			Type:      SBD_MSG_TYPE_FENCE,
-			NodeID:    targetNodeID,
+			NodeID:    nodeID,
 			Timestamp: uint64(time.Now().UnixNano()),
 			Sequence:  sequence,
 			Checksum:  0, // Will be calculated during marshaling
