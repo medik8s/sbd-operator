@@ -522,14 +522,15 @@ func (a *AWSManager) provisionVolumeForNode(ctx context.Context, nodeInfo NodeSt
 	}
 
 	// Add IOPS and throughput for appropriate volume types
-	if awsConfig.VolumeType == "gp3" {
+	switch awsConfig.VolumeType {
+	case "gp3":
 		if awsConfig.IOPS > 0 {
 			createVolumeInput.Iops = aws.Int32(awsConfig.IOPS)
 		}
 		if awsConfig.Throughput > 0 {
 			createVolumeInput.Throughput = aws.Int32(awsConfig.Throughput)
 		}
-	} else if awsConfig.VolumeType == "io1" || awsConfig.VolumeType == "io2" {
+	case "io1", "io2":
 		if awsConfig.IOPS > 0 {
 			createVolumeInput.Iops = aws.Int32(awsConfig.IOPS)
 		}

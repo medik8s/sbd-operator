@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"syscall"
 	"time"
@@ -267,7 +268,7 @@ func calculateDelay(config Config, attempt int) time.Duration {
 	if config.Jitter > 0 {
 		jitterAmount := delay * config.Jitter
 		// Simple jitter: +/- jitterAmount
-		delay += (jitterAmount * 2 * (0.5 - 0.5)) // Simplified random jitter
+		delay += (jitterAmount * 2 * (rand.Float64() - 0.5)) // Random jitter
 	}
 
 	return time.Duration(delay)

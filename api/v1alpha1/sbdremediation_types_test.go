@@ -221,7 +221,7 @@ func TestSBDRemediation_SetCondition(t *testing.T) {
 			}
 
 			// Store original transition time if condition exists
-			var tTime metav1.Time = metav1.Time{}
+			var tTime = metav1.Time{}
 			var originalTransitionTime *metav1.Time
 			if existingCondition := remediation.GetCondition(tt.conditionType); existingCondition != nil {
 				tTime = existingCondition.LastTransitionTime // Ensure we get a copy of the time

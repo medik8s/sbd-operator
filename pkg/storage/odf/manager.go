@@ -408,10 +408,11 @@ func (m *Manager) waitForODFOperator(ctx context.Context) error {
 							csvStatus = phase
 							log.Printf("📋 ODF CSV '%s' status: %s", name, phase)
 
-							if phase == "Succeeded" {
+							switch phase {
+							case "Succeeded":
 								log.Println("✅ ODF operator is ready")
 								return nil
-							} else if phase == "Failed" {
+							case "Failed":
 								// Get failure reason
 								reason, _, _ := unstructured.NestedString(csv.Object, "status", "reason")
 								message, _, _ := unstructured.NestedString(csv.Object, "status", "message")
@@ -634,8 +635,8 @@ func (m *Manager) testCephFSStorage(ctx context.Context, storageClassName string
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	var bound bool
-	for {
+	bound := false
+	for !bound {
 		select {
 		case <-timeout:
 			// Clean up test PVC
@@ -651,11 +652,7 @@ func (m *Manager) testCephFSStorage(ctx context.Context, storageClassName string
 			if testPVC.Status.Phase == corev1.ClaimBound {
 				bound = true
 				log.Printf("✅ Test PVC successfully bound")
-				break
 			}
-		}
-		if bound {
-			break
 		}
 	}
 
@@ -667,7 +664,7 @@ func (m *Manager) testCephFSStorage(ctx context.Context, storageClassName string
 		log.Printf("🧹 Cleaned up test PVC")
 	}
 
-	return bound, nil
+	return true, nil
 }
 
 // cleanupStorageClass removes the created StorageClass
@@ -835,8 +832,16 @@ func parseStorageSize(sizeStr string) int64 {
 		multiplier = 1
 		numStr = strings.TrimSuffix(strings.TrimSuffix(sizeStr, "GI"), "GB")
 	} else if strings.HasSuffix(sizeStr, "MI") || strings.HasSuffix(sizeStr, "MB") {
-		multiplier = 1 / 1024 // Convert MB to GB
+		// Handle MB separately to avoid integer division truncation
 		numStr = strings.TrimSuffix(strings.TrimSuffix(sizeStr, "MI"), "MB")
+
+		// Parse the numeric part
+		var sizeMB float64 = 1024 // Default to 1024MB if parsing fails
+		if f, err := strconv.ParseFloat(numStr, 64); err == nil {
+			sizeMB = f
+		}
+		// Convert MB to GB
+		return int64(sizeMB / 1024)
 	} else {
 		// Default to GB if no suffix
 		numStr = sizeStr

@@ -146,12 +146,13 @@ func testKeepAlive(fd uintptr) {
 		fmt.Printf("❌ WDIOC_KEEPALIVE failed: %v (errno %d)\n", errno, errno)
 
 		// Print more detailed error info
-		if errno == syscall.ENOTTY {
+		switch errno {
+		case syscall.ENOTTY:
 			fmt.Printf("  → Error type: ENOTTY (Inappropriate ioctl for device)\n")
 			fmt.Printf("  → This suggests the device doesn't support this ioctl\n")
-		} else if errno == syscall.EINVAL {
+		case syscall.EINVAL:
 			fmt.Printf("  → Error type: EINVAL (Invalid argument)\n")
-		} else if errno == syscall.ENODEV {
+		case syscall.ENODEV:
 			fmt.Printf("  → Error type: ENODEV (No such device)\n")
 		}
 		return

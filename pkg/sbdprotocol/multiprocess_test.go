@@ -20,7 +20,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -357,7 +356,7 @@ func spawnNodeProcess(t *testing.T, config MultiProcessTestConfig) (*MultiProces
 
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, fmt.Sprintf("config-%s.json", config.NodeName))
-	if err := ioutil.WriteFile(configFile, configData, 0644); err != nil {
+	if err := os.WriteFile(configFile, configData, 0644); err != nil {
 		return nil, fmt.Errorf("failed to write config file: %w", err)
 	}
 
@@ -397,7 +396,7 @@ func spawnNodeProcess(t *testing.T, config MultiProcessTestConfig) (*MultiProces
 	}
 
 	// Read result file
-	resultData, err := ioutil.ReadFile(resultFile)
+	resultData, err := os.ReadFile(resultFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read result file: %w", err)
 	}
@@ -418,7 +417,7 @@ func runNodeProcess(config MultiProcessTestConfig) (*MultiProcessTestResult, err
 
 	if configFile != "" {
 		// Read config from file
-		configData, err := ioutil.ReadFile(configFile)
+		configData, err := os.ReadFile(configFile)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read config file: %w", err)
 		}
@@ -484,7 +483,7 @@ func runNodeProcess(config MultiProcessTestConfig) (*MultiProcessTestResult, err
 				if err != nil {
 					return nil, fmt.Errorf("failed to marshal result: %w", err)
 				}
-				if err := ioutil.WriteFile(resultFile, resultData, 0644); err != nil {
+				if err := os.WriteFile(resultFile, resultData, 0644); err != nil {
 					return nil, fmt.Errorf("failed to write result file: %w", err)
 				}
 			}

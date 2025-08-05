@@ -54,7 +54,7 @@ func (m *Manager) CheckStandardNFSCSIDriver(ctx context.Context) error {
 	_, err := m.clientset.AppsV1().DaemonSets("kube-system").Get(ctx, "csi-nfs-node", metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
-			return fmt.Errorf("Standard NFS CSI driver not found")
+			return fmt.Errorf("standard NFS CSI driver not found")
 		}
 		return fmt.Errorf("failed to check Standard NFS CSI driver: %w", err)
 	}
@@ -63,7 +63,7 @@ func (m *Manager) CheckStandardNFSCSIDriver(ctx context.Context) error {
 	_, err = m.clientset.AppsV1().Deployments("kube-system").Get(ctx, "csi-nfs-controller", metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
-			return fmt.Errorf("Standard NFS CSI controller not found")
+			return fmt.Errorf("standard NFS CSI controller not found")
 		}
 		return fmt.Errorf("failed to check Standard NFS CSI controller: %w", err)
 	}
@@ -94,7 +94,7 @@ func (m *Manager) InstallStandardNFSCSIDriver(ctx context.Context) error {
 	// Wait for driver to be ready
 	log.Println("⏳ Waiting for Standard NFS CSI driver to be ready...")
 	if err := m.waitForStandardNFSCSIDriver(ctx); err != nil {
-		return fmt.Errorf("Standard NFS CSI driver failed to become ready: %w", err)
+		return fmt.Errorf("standard NFS CSI driver failed to become ready: %w", err)
 	}
 
 	log.Println("✅ Standard NFS CSI driver installed successfully")
@@ -223,8 +223,8 @@ func (m *Manager) TestCredentials(ctx context.Context, storageClassName string) 
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
-	var bound bool
-	for {
+	bound := false
+	for !bound {
 		select {
 		case <-timeout:
 			// Clean up test PVC
@@ -240,11 +240,7 @@ func (m *Manager) TestCredentials(ctx context.Context, storageClassName string) 
 			if testPVC.Status.Phase == corev1.ClaimBound {
 				bound = true
 				log.Printf("✅ Test PVC successfully bound")
-				break
 			}
-		}
-		if bound {
-			break
 		}
 	}
 
@@ -256,7 +252,7 @@ func (m *Manager) TestCredentials(ctx context.Context, storageClassName string) 
 		log.Printf("🧹 Cleaned up test PVC")
 	}
 
-	return bound, nil
+	return true, nil
 }
 
 // Cleanup removes the StorageClass created by this tool

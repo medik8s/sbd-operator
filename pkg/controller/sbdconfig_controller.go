@@ -152,10 +152,13 @@ func (r *SBDConfigReconciler) isTransientKubernetesError(err error) bool {
 }
 
 // performKubernetesAPIOperationWithRetry performs a Kubernetes API operation with retry logic
-func (r *SBDConfigReconciler) performKubernetesAPIOperationWithRetry(ctx context.Context, operation string, fn func() error, logger logr.Logger) error {
+func (r *SBDConfigReconciler) performKubernetesAPIOperationWithRetry(
+	ctx context.Context, operation string, fn func() error, logger logr.Logger) error {
 	return retry.Do(ctx, r.retryConfig, operation, func() error {
 		err := fn()
 		if err != nil {
+			// Log retry attempt
+			logger.V(1).Info("Retrying Kubernetes API operation", "operation", operation, "error", err)
 			// Wrap error with retry information
 			return retry.NewRetryableError(err, r.isTransientKubernetesError(err), operation)
 		}
@@ -171,7 +174,8 @@ func (r *SBDConfigReconciler) emitEvent(object client.Object, eventType, reason,
 }
 
 // emitEventf is a helper function to emit formatted Kubernetes events for the SBDConfig controller
-func (r *SBDConfigReconciler) emitEventf(object client.Object, eventType, reason, messageFmt string, args ...interface{}) {
+func (r *SBDConfigReconciler) emitEventf(
+	object client.Object, eventType, reason, messageFmt string, args ...interface{}) {
 	if r.Recorder != nil {
 		r.Recorder.Eventf(object, eventType, reason, messageFmt, args...)
 	}
@@ -226,7 +230,7 @@ func (r *SBDConfigReconciler) isRunningOnOpenShift(logger logr.Logger) bool {
 	}
 
 	// Check for OpenShift-specific API groups
-	discoveryClient := r.Client.RESTMapper()
+	discoveryClient := r.RESTMapper()
 
 	// Try to find security.openshift.io API group
 	_, err := discoveryClient.RESTMapping(schema.GroupKind{
@@ -248,7 +252,8 @@ func (r *SBDConfigReconciler) isRunningOnOpenShift(logger logr.Logger) bool {
 
 // ensureSCCPermissions ensures that the service account has the required SCC permissions
 // This function updates the existing SCC to include the service account from the target namespace
-func (r *SBDConfigReconciler) ensureSCCPermissions(ctx context.Context, sbdConfig *medik8sv1alpha1.SBDConfig, namespaceName string, logger logr.Logger) error {
+func (r *SBDConfigReconciler) ensureSCCPermissions(
+	ctx context.Context, sbdConfig *medik8sv1alpha1.SBDConfig, namespaceName string, logger logr.Logger) error {
 	if !r.isRunningOnOpenShift(logger) {
 		logger.V(1).Info("Not running on OpenShift, skipping SCC management")
 		return nil
@@ -268,7 +273,9 @@ func (r *SBDConfigReconciler) ensureSCCPermissions(ctx context.Context, sbdConfi
 			sccLogger.Error(err, "Required SCC not found - ensure OpenShift installer was used",
 				"scc", SBDOperatorSCCName,
 				"requiredServiceAccount", serviceAccountUser)
-			return fmt.Errorf("required SCC '%s' not found - ensure the operator was installed using the OpenShift installer: %w", SBDOperatorSCCName, err)
+			return fmt.Errorf(
+				"required SCC '%s' not found - ensure the operator was installed using the OpenShift installer: %w",
+				SBDOperatorSCCName, err)
 		}
 		sccLogger.Error(err, "Failed to get SCC")
 		return fmt.Errorf("failed to get SCC '%s': %w", SBDOperatorSCCName, err)
@@ -311,7 +318,8 @@ func (r *SBDConfigReconciler) ensureSCCPermissions(ctx context.Context, sbdConfi
 	if err != nil {
 		sccLogger.Error(err, "Failed to update SCC after retries", "serviceAccount", serviceAccountUser)
 		r.emitEventf(sbdConfig, EventTypeWarning, ReasonSCCError,
-			"Failed to update SCC '%s' to grant permissions to service account '%s': %v", SBDOperatorSCCName, serviceAccountUser, err)
+			"Failed to update SCC '%s' to grant permissions to service account '%s': %v",
+			SBDOperatorSCCName, serviceAccountUser, err)
 		return fmt.Errorf("failed to update SCC '%s': %w", SBDOperatorSCCName, err)
 	}
 
@@ -326,7 +334,8 @@ func (r *SBDConfigReconciler) ensureSCCPermissions(ctx context.Context, sbdConfi
 }
 
 // validateStorageClass validates that the specified storage class supports ReadWriteMany access mode
-func (r *SBDConfigReconciler) validateStorageClass(ctx context.Context, sbdConfig *medik8sv1alpha1.SBDConfig, logger logr.Logger) error {
+func (r *SBDConfigReconciler) validateStorageClass(
+	ctx context.Context, sbdConfig *medik8sv1alpha1.SBDConfig, logger logr.Logger) error {
 	if !sbdConfig.Spec.HasSharedStorage() {
 		// No shared storage configured, nothing to validate
 		return nil
@@ -354,7 +363,8 @@ func (r *SBDConfigReconciler) validateStorageClass(ctx context.Context, sbdConfi
 		if r.isNFSBasedProvisioner(provisioner) {
 			if err := r.validateNFSMountOptions(storageClass, logger); err != nil {
 				logger.Info("StorageClass mount options validation failed", "error", err)
-				return fmt.Errorf("StorageClass '%s' mount options are not configured for SBD cache coherency: %w", storageClassName, err)
+				return fmt.Errorf("StorageClass '%s' mount options are not configured for SBD cache coherency: %w",
+					storageClassName, err)
 			}
 			logger.Info("StorageClass mount options validation passed")
 		}
@@ -364,13 +374,17 @@ func (r *SBDConfigReconciler) validateStorageClass(ctx context.Context, sbdConfi
 
 	// Check if the provisioner is known to be incompatible
 	if r.isRWXIncompatibleProvisioner(provisioner) {
-		return fmt.Errorf("StorageClass '%s' uses provisioner '%s' that does not support ReadWriteMany access mode required for SBD shared storage", storageClassName, provisioner)
+		return fmt.Errorf(
+			"StorageClass '%s' uses provisioner '%s' that does not support "+
+				"ReadWriteMany access mode required for SBD shared storage",
+			storageClassName, provisioner)
 	}
 
 	// For unknown provisioners, test with a temporary PVC
 	logger.Info("StorageClass uses unknown provisioner, testing ReadWriteMany support", "provisioner", provisioner)
 	if err := r.testRWXSupport(ctx, sbdConfig, storageClassName, logger); err != nil {
-		return fmt.Errorf("StorageClass '%s' does not support ReadWriteMany access mode required for SBD shared storage: %w", storageClassName, err)
+		return fmt.Errorf("StorageClass '%s' does not support ReadWriteMany access mode required for SBD shared storage: %w",
+			storageClassName, err)
 	}
 
 	logger.Info("StorageClass validation passed", "provisioner", provisioner)
@@ -486,7 +500,10 @@ func (r *SBDConfigReconciler) validateNFSMountOptions(storageClass *storagev1.St
 	}
 
 	if len(missingRequired) > 0 {
-		return fmt.Errorf("missing required NFS mount options for SBD cache coherency: %v. These options are required to prevent NFS client-side caching issues that can cause SBD heartbeat coordination failures", missingRequired)
+		return fmt.Errorf("missing required NFS mount options for SBD cache coherency: %v. "+
+			"These options are required to prevent NFS client-side caching issues "+
+			"that can cause SBD heartbeat coordination failures",
+			missingRequired)
 	}
 
 	// Check for recommended options (warning only)
@@ -505,7 +522,8 @@ func (r *SBDConfigReconciler) validateNFSMountOptions(storageClass *storagev1.St
 	}
 
 	if len(missingRecommended) > 0 {
-		logger.Info("StorageClass is missing recommended NFS mount options for optimal SBD operation", "missingOptions", missingRecommended)
+		logger.Info("StorageClass is missing recommended NFS mount options for optimal SBD operation",
+			"missingOptions", missingRecommended)
 	}
 
 	logger.Info("NFS mount options validation passed", "checkedOptions", requiredOptions)
@@ -513,7 +531,8 @@ func (r *SBDConfigReconciler) validateNFSMountOptions(storageClass *storagev1.St
 }
 
 // testRWXSupport tests if a storage class actually supports ReadWriteMany by creating a temporary PVC
-func (r *SBDConfigReconciler) testRWXSupport(ctx context.Context, sbdConfig *medik8sv1alpha1.SBDConfig, storageClassName string, logger logr.Logger) error {
+func (r *SBDConfigReconciler) testRWXSupport(
+	ctx context.Context, sbdConfig *medik8sv1alpha1.SBDConfig, storageClassName string, logger logr.Logger) error {
 	// Create a temporary PVC with ReadWriteMany to test compatibility
 	testPVCName := fmt.Sprintf("%s-rwx-test", sbdConfig.Name)
 
@@ -576,14 +595,16 @@ func (r *SBDConfigReconciler) testRWXSupport(ctx context.Context, sbdConfig *med
 
 	// Check for events that indicate RWX incompatibility
 	events := &corev1.EventList{}
-	err = r.List(ctx, events, client.InNamespace(sbdConfig.Namespace), client.MatchingFields{"involvedObject.name": testPVCName})
+	err = r.List(ctx, events, client.InNamespace(sbdConfig.Namespace),
+		client.MatchingFields{"involvedObject.name": testPVCName})
 	if err != nil {
 		logger.Error(err, "Failed to list events for test PVC")
 	} else {
 		for _, event := range events.Items {
 			message := strings.ToLower(event.Message)
 			if strings.Contains(message, "readwritemany") &&
-				(strings.Contains(message, "not supported") || strings.Contains(message, "unsupported") || strings.Contains(message, "invalid")) {
+				(strings.Contains(message, "not supported") || strings.Contains(message, "unsupported") ||
+					strings.Contains(message, "invalid")) {
 				return fmt.Errorf("storage class does not support ReadWriteMany access mode: %s", event.Message)
 			}
 			if strings.Contains(message, "access mode") && strings.Contains(message, "not supported") {
@@ -597,7 +618,8 @@ func (r *SBDConfigReconciler) testRWXSupport(ctx context.Context, sbdConfig *med
 }
 
 // ensurePVC ensures that a PVC exists for shared storage when SharedStorageClass is specified
-func (r *SBDConfigReconciler) ensurePVC(ctx context.Context, sbdConfig *medik8sv1alpha1.SBDConfig, logger logr.Logger) error {
+func (r *SBDConfigReconciler) ensurePVC(
+	ctx context.Context, sbdConfig *medik8sv1alpha1.SBDConfig, logger logr.Logger) error {
 	if !sbdConfig.Spec.HasSharedStorage() {
 		// No shared storage configured, nothing to do
 		return nil
@@ -676,15 +698,16 @@ func (r *SBDConfigReconciler) ensurePVC(ctx context.Context, sbdConfig *medik8sv
 		"pvc.status.phase", actualPVC.Status.Phase)
 
 	// Emit event for PVC management
-	if result == controllerutil.OperationResultCreated {
+	switch result {
+	case controllerutil.OperationResultCreated:
 		r.emitEventf(sbdConfig, EventTypeNormal, ReasonPVCManaged,
 			"PVC '%s' for shared storage created successfully using StorageClass '%s'", pvcName, storageClassName)
 		logger.Info("PVC created successfully")
-	} else if result == controllerutil.OperationResultUpdated {
+	case controllerutil.OperationResultUpdated:
 		r.emitEventf(sbdConfig, EventTypeNormal, ReasonPVCManaged,
 			"PVC '%s' for shared storage updated successfully", pvcName)
 		logger.Info("PVC updated successfully")
-	} else {
+	default:
 		logger.V(1).Info("PVC unchanged")
 	}
 
@@ -692,7 +715,8 @@ func (r *SBDConfigReconciler) ensurePVC(ctx context.Context, sbdConfig *medik8sv
 }
 
 // ensureSBDDevice ensures that the SBD device file exists in shared storage when SharedStorageClass is specified
-func (r *SBDConfigReconciler) ensureSBDDevice(ctx context.Context, sbdConfig *medik8sv1alpha1.SBDConfig, logger logr.Logger) error {
+func (r *SBDConfigReconciler) ensureSBDDevice(
+	ctx context.Context, sbdConfig *medik8sv1alpha1.SBDConfig, logger logr.Logger) error {
 	if !sbdConfig.Spec.HasSharedStorage() {
 		// No shared storage configured, nothing to do
 		return nil
@@ -934,7 +958,9 @@ echo "SBD devices initialization completed successfully"
 			"job.name", jobName,
 			"job.active", existingJob.Status.Active,
 			"job.conditions", len(existingJob.Status.Conditions))
-		return fmt.Errorf("SBD device initialization job '%s' is still running, DaemonSet creation will be delayed until job completes", jobName)
+		return fmt.Errorf(
+			"SBD device initialization job '%s' is still running, DaemonSet creation will be delayed until job completes",
+			jobName)
 	} else if !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to get SBD device init job: %w", err)
 	}
@@ -953,7 +979,9 @@ echo "SBD devices initialization completed successfully"
 		"SBD device initialization job '%s' created successfully", jobName)
 
 	// Return error to trigger requeue and wait for job completion
-	return fmt.Errorf("SBD device initialization job '%s' was just created, DaemonSet creation will be delayed until job completes", jobName)
+	return fmt.Errorf(
+		"SBD device initialization job '%s' was just created, DaemonSet creation will be delayed until job completes",
+		jobName)
 }
 
 // +kubebuilder:rbac:groups=medik8s.medik8s.io,resources=sbdconfigs,verbs=get;list;watch;create;update;patch;delete
@@ -1205,15 +1233,16 @@ func (r *SBDConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		"daemonset.resourceVersion", actualDaemonSet.ResourceVersion)
 
 	// Emit event for DaemonSet management
-	if result == controllerutil.OperationResultCreated {
+	switch result {
+	case controllerutil.OperationResultCreated:
 		r.emitEventf(&sbdConfig, EventTypeNormal, ReasonDaemonSetManaged,
 			"DaemonSet '%s' for SBD Agent created successfully", actualDaemonSet.Name)
 		daemonSetLogger.Info("DaemonSet created successfully")
-	} else if result == controllerutil.OperationResultUpdated {
+	case controllerutil.OperationResultUpdated:
 		r.emitEventf(&sbdConfig, EventTypeNormal, ReasonDaemonSetManaged,
 			"DaemonSet '%s' for SBD Agent updated successfully", actualDaemonSet.Name)
 		daemonSetLogger.Info("DaemonSet updated successfully")
-	} else {
+	default:
 		r.emitEventf(&sbdConfig, EventTypeNormal, ReasonDaemonSetManaged,
 			"DaemonSet '%s' for SBD Agent managed", actualDaemonSet.Name)
 		daemonSetLogger.V(1).Info("DaemonSet unchanged")
