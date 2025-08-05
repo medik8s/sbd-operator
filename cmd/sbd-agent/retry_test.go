@@ -17,7 +17,6 @@ limitations under the License.
 package main
 
 import (
-	"os"
 	"testing"
 	"time"
 
@@ -25,28 +24,8 @@ import (
 )
 
 func TestSBDAgent_FailureTracking(t *testing.T) {
-	// Create mock devices
-	mockWatchdog := NewMockWatchdog("/dev/mock-watchdog")
-	mockDevice := NewMockBlockDevice("/dev/mock-sbd", 1024*1024)
-
-	// Create agent with short intervals for testing
-	// Create temporary SBD device file
-	tmpDir := t.TempDir()
-	sbdPath := tmpDir + "/test-sbd"
-	if err := os.WriteFile(sbdPath, make([]byte, 1024*1024), 0644); err != nil {
-		t.Fatalf("Failed to create test SBD device: %v", err)
-	}
-
-	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
-		10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond,
-		30, "panic", 8097, 10*time.Minute, true, 2*time.Second, k8sClient, k8sClientset, testNamespace, false)
-	if err != nil {
-		t.Fatalf("Failed to create SBD agent: %v", err)
-	}
-	defer func() { _ = agent.Stop() }()
-
-	// Set the mock device
-	agent.setSBDDevices(mockDevice, mockDevice)
+	agent, _, _, cleanup := createTestSBDAgent(t, "test-node", 8081)
+	defer cleanup()
 
 	// Test initial failure counts
 	if agent.watchdogFailureCount != 0 {
@@ -93,24 +72,8 @@ func TestSBDAgent_FailureTracking(t *testing.T) {
 }
 
 func TestSBDAgent_SelfFenceThreshold(t *testing.T) {
-	// Create mock devices
-	mockWatchdog := NewMockWatchdog("/dev/mock-watchdog")
-
-	// Create agent with short intervals for testing
-	// Create temporary SBD device file
-	tmpDir := t.TempDir()
-	sbdPath := tmpDir + "/test-sbd"
-	if err := os.WriteFile(sbdPath, make([]byte, 1024*1024), 0644); err != nil {
-		t.Fatalf("Failed to create test SBD device: %v", err)
-	}
-
-	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
-		10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond,
-		30, "panic", 8098, 10*time.Minute, true, 2*time.Second, k8sClient, k8sClientset, testNamespace, false)
-	if err != nil {
-		t.Fatalf("Failed to create SBD agent: %v", err)
-	}
-	defer func() { _ = agent.Stop() }()
+	agent, _, _, cleanup := createTestSBDAgent(t, "test-node", 8081)
+	defer cleanup()
 
 	// Test that self-fence is not triggered initially
 	shouldFence, reason := agent.shouldTriggerSelfFence()
@@ -156,24 +119,8 @@ func TestSBDAgent_SelfFenceThreshold(t *testing.T) {
 }
 
 func TestSBDAgent_FailureCountReset(t *testing.T) {
-	// Create mock devices
-	mockWatchdog := NewMockWatchdog("/dev/mock-watchdog")
-
-	// Create agent with short intervals for testing
-	// Create temporary SBD device file
-	tmpDir := t.TempDir()
-	sbdPath := tmpDir + "/test-sbd"
-	if err := os.WriteFile(sbdPath, make([]byte, 1024*1024), 0644); err != nil {
-		t.Fatalf("Failed to create test SBD device: %v", err)
-	}
-
-	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
-		10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond,
-		30, "panic", 8099, 10*time.Minute, true, 2*time.Second, k8sClient, k8sClientset, testNamespace, false)
-	if err != nil {
-		t.Fatalf("Failed to create SBD agent: %v", err)
-	}
-	defer func() { _ = agent.Stop() }()
+	agent, _, _, cleanup := createTestSBDAgent(t, "test-node", 8081)
+	defer cleanup()
 
 	// Increment some failure counts
 	agent.incrementFailureCount("watchdog")
@@ -204,24 +151,8 @@ func TestSBDAgent_FailureCountReset(t *testing.T) {
 }
 
 func TestSBDAgent_RetryConfiguration(t *testing.T) {
-	// Create mock devices
-	mockWatchdog := NewMockWatchdog("/dev/mock-watchdog")
-
-	// Create agent
-	// Create temporary SBD device file
-	tmpDir := t.TempDir()
-	sbdPath := tmpDir + "/test-sbd"
-	if err := os.WriteFile(sbdPath, make([]byte, 1024*1024), 0644); err != nil {
-		t.Fatalf("Failed to create test SBD device: %v", err)
-	}
-
-	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
-		1*time.Second, 1*time.Second, 1*time.Second, 1*time.Second,
-		30, "panic", 8100, 10*time.Minute, true, 2*time.Second, k8sClient, k8sClientset, testNamespace, false)
-	if err != nil {
-		t.Fatalf("Failed to create SBD agent: %v", err)
-	}
-	defer func() { _ = agent.Stop() }()
+	agent, _, _, cleanup := createTestSBDAgent(t, "test-node", 8081)
+	defer cleanup()
 
 	// Verify retry configuration is properly initialized
 	if agent.retryConfig.MaxRetries != MaxCriticalRetries {
@@ -243,29 +174,12 @@ func TestSBDAgent_RetryConfiguration(t *testing.T) {
 }
 
 func TestSBDAgent_WatchdogRetryMechanism(t *testing.T) {
-	// Create mock watchdog that fails initially
-	mockWatchdog := NewMockWatchdog("/dev/mock-watchdog")
-	mockWatchdog.SetFailPet(true)
-
-	// Create agent with very short intervals for testing
-	// Create temporary SBD device file
-	tmpDir := t.TempDir()
-	sbdPath := tmpDir + "/test-sbd"
-	if err := os.WriteFile(sbdPath, make([]byte, 1024*1024), 0644); err != nil {
-		t.Fatalf("Failed to create test SBD device: %v", err)
-	}
-
-	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
-		10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond,
-		30, "panic", 8101, 10*time.Minute, true, 2*time.Second, k8sClient, k8sClientset, testNamespace, false)
-	if err != nil {
-		t.Fatalf("Failed to create SBD agent: %v", err)
-	}
-	defer func() { _ = agent.Stop() }()
+	agent, mockWatchdog, _, cleanup := createTestSBDAgent(t, "test-node", 8081)
+	defer cleanup()
 
 	// Test that failures are tracked when watchdog pet fails
 	// We don't start the watchdog loop here, just test the failure tracking mechanism
-	err = agent.watchdog.Pet()
+	err := agent.watchdog.Pet()
 	if err == nil {
 		t.Error("Expected watchdog pet to fail")
 	}
@@ -279,32 +193,13 @@ func TestSBDAgent_WatchdogRetryMechanism(t *testing.T) {
 }
 
 func TestSBDAgent_HeartbeatRetryMechanism(t *testing.T) {
-	// Create mock devices
-	mockWatchdog := NewMockWatchdog("/dev/mock-watchdog")
-	mockDevice := NewMockBlockDevice("/dev/mock-sbd", 1024*1024)
+	agent, _, mockDevice, cleanup := createTestSBDAgent(t, "test-node", 8081)
+	defer cleanup()
 
-	// Create agent with very short intervals for testing
-	// Create temporary SBD device file
-	tmpDir := t.TempDir()
-	sbdPath := tmpDir + "/test-sbd"
-	if err := os.WriteFile(sbdPath, make([]byte, 1024*1024), 0644); err != nil {
-		t.Fatalf("Failed to create test SBD device: %v", err)
-	}
-
-	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
-		10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond,
-		30, "panic", 8102, 10*time.Minute, true, 2*time.Second, k8sClient, k8sClientset, testNamespace, false)
-	if err != nil {
-		t.Fatalf("Failed to create SBD agent: %v", err)
-	}
-	defer func() { _ = agent.Stop() }()
-
-	// Set the mock device and make it fail initially
-	agent.setSBDDevices(mockDevice, mockDevice)
 	mockDevice.SetFailWrite(true)
 
 	// Test heartbeat write failure
-	err = agent.writeHeartbeatToSBD()
+	err := agent.writeHeartbeatToSBD()
 	if err == nil {
 		t.Error("Expected heartbeat write to fail")
 	}
