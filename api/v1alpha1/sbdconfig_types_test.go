@@ -63,6 +63,130 @@ func runIntervalTests(t *testing.T, testName string, tests []testCaseInterval, v
 	}
 }
 
+// createTimeoutValidationTests creates standard test cases for timeout validation
+func createTimeoutValidationTests(
+	fieldSetter func(*SBDConfigSpec, *metav1.Duration),
+	validValue time.Duration,
+	tooSmallValue time.Duration,
+	tooLargeValue time.Duration,
+	minValue time.Duration,
+	maxValue time.Duration,
+) []testCase {
+	return []testCase{
+		{
+			name:      "default timeout is valid",
+			spec:      SBDConfigSpec{},
+			wantError: false,
+		},
+		{
+			name: "valid custom timeout",
+			spec: func() SBDConfigSpec {
+				spec := SBDConfigSpec{}
+				fieldSetter(&spec, &metav1.Duration{Duration: validValue})
+				return spec
+			}(),
+			wantError: false,
+		},
+		{
+			name: "timeout too small",
+			spec: func() SBDConfigSpec {
+				spec := SBDConfigSpec{}
+				fieldSetter(&spec, &metav1.Duration{Duration: tooSmallValue})
+				return spec
+			}(),
+			wantError: true,
+		},
+		{
+			name: "timeout too large",
+			spec: func() SBDConfigSpec {
+				spec := SBDConfigSpec{}
+				fieldSetter(&spec, &metav1.Duration{Duration: tooLargeValue})
+				return spec
+			}(),
+			wantError: true,
+		},
+		{
+			name: "minimum timeout is valid",
+			spec: func() SBDConfigSpec {
+				spec := SBDConfigSpec{}
+				fieldSetter(&spec, &metav1.Duration{Duration: minValue})
+				return spec
+			}(),
+			wantError: false,
+		},
+		{
+			name: "maximum timeout is valid",
+			spec: func() SBDConfigSpec {
+				spec := SBDConfigSpec{}
+				fieldSetter(&spec, &metav1.Duration{Duration: maxValue})
+				return spec
+			}(),
+			wantError: false,
+		},
+	}
+}
+
+// createIntervalValidationTests creates standard test cases for interval validation
+func createIntervalValidationTests(
+	fieldSetter func(*SBDConfigSpec, *metav1.Duration),
+	validValue time.Duration,
+	tooSmallValue time.Duration,
+	tooLargeValue time.Duration,
+) []testCaseInterval {
+	return []testCaseInterval{
+		{
+			name:    "nil interval uses default (valid)",
+			spec:    SBDConfigSpec{},
+			wantErr: false,
+		},
+		{
+			name: "valid interval",
+			spec: func() SBDConfigSpec {
+				spec := SBDConfigSpec{}
+				fieldSetter(&spec, &metav1.Duration{Duration: validValue})
+				return spec
+			}(),
+			wantErr: false,
+		},
+		{
+			name: "minimum interval",
+			spec: func() SBDConfigSpec {
+				spec := SBDConfigSpec{}
+				fieldSetter(&spec, &metav1.Duration{Duration: 1 * time.Second})
+				return spec
+			}(),
+			wantErr: false,
+		},
+		{
+			name: "maximum interval",
+			spec: func() SBDConfigSpec {
+				spec := SBDConfigSpec{}
+				fieldSetter(&spec, &metav1.Duration{Duration: 60 * time.Second})
+				return spec
+			}(),
+			wantErr: false,
+		},
+		{
+			name: "too small interval",
+			spec: func() SBDConfigSpec {
+				spec := SBDConfigSpec{}
+				fieldSetter(&spec, &metav1.Duration{Duration: tooSmallValue})
+				return spec
+			}(),
+			wantErr: true,
+		},
+		{
+			name: "too large interval",
+			spec: func() SBDConfigSpec {
+				spec := SBDConfigSpec{}
+				fieldSetter(&spec, &metav1.Duration{Duration: tooLargeValue})
+				return spec
+			}(),
+			wantErr: true,
+		},
+	}
+}
+
 func TestSBDConfigSpec_GetStaleNodeTimeout(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -103,48 +227,14 @@ func TestSBDConfigSpec_GetStaleNodeTimeout(t *testing.T) {
 }
 
 func TestSBDConfigSpec_ValidateStaleNodeTimeout(t *testing.T) {
-	tests := []testCase{
-		{
-			name:      "default timeout is valid",
-			spec:      SBDConfigSpec{},
-			wantError: false,
-		},
-		{
-			name: "valid custom timeout",
-			spec: SBDConfigSpec{
-				StaleNodeTimeout: &metav1.Duration{Duration: 5 * time.Minute},
-			},
-			wantError: false,
-		},
-		{
-			name: "timeout too small",
-			spec: SBDConfigSpec{
-				StaleNodeTimeout: &metav1.Duration{Duration: 30 * time.Second},
-			},
-			wantError: true,
-		},
-		{
-			name: "timeout too large",
-			spec: SBDConfigSpec{
-				StaleNodeTimeout: &metav1.Duration{Duration: 25 * time.Hour},
-			},
-			wantError: true,
-		},
-		{
-			name: "minimum timeout is valid",
-			spec: SBDConfigSpec{
-				StaleNodeTimeout: &metav1.Duration{Duration: MinStaleNodeTimeout},
-			},
-			wantError: false,
-		},
-		{
-			name: "maximum timeout is valid",
-			spec: SBDConfigSpec{
-				StaleNodeTimeout: &metav1.Duration{Duration: MaxStaleNodeTimeout},
-			},
-			wantError: false,
-		},
-	}
+	tests := createTimeoutValidationTests(
+		func(spec *SBDConfigSpec, d *metav1.Duration) { spec.StaleNodeTimeout = d },
+		5*time.Minute,
+		30*time.Second,
+		25*time.Hour,
+		MinStaleNodeTimeout,
+		MaxStaleNodeTimeout,
+	)
 
 	runValidationTests(t, "ValidateStaleNodeTimeout()", tests, func(spec SBDConfigSpec) error {
 		return spec.ValidateStaleNodeTimeout()
@@ -355,48 +445,14 @@ func TestSBDConfigSpec_GetPetInterval(t *testing.T) {
 }
 
 func TestSBDConfigSpec_ValidateWatchdogTimeout(t *testing.T) {
-	tests := []testCase{
-		{
-			name:      "default timeout is valid",
-			spec:      SBDConfigSpec{},
-			wantError: false,
-		},
-		{
-			name: "valid custom timeout",
-			spec: SBDConfigSpec{
-				WatchdogTimeout: &metav1.Duration{Duration: 30 * time.Second},
-			},
-			wantError: false,
-		},
-		{
-			name: "timeout too small",
-			spec: SBDConfigSpec{
-				WatchdogTimeout: &metav1.Duration{Duration: 5 * time.Second},
-			},
-			wantError: true,
-		},
-		{
-			name: "timeout too large",
-			spec: SBDConfigSpec{
-				WatchdogTimeout: &metav1.Duration{Duration: 400 * time.Second},
-			},
-			wantError: true,
-		},
-		{
-			name: "minimum timeout is valid",
-			spec: SBDConfigSpec{
-				WatchdogTimeout: &metav1.Duration{Duration: MinWatchdogTimeout},
-			},
-			wantError: false,
-		},
-		{
-			name: "maximum timeout is valid",
-			spec: SBDConfigSpec{
-				WatchdogTimeout: &metav1.Duration{Duration: MaxWatchdogTimeout},
-			},
-			wantError: false,
-		},
-	}
+	tests := createTimeoutValidationTests(
+		func(spec *SBDConfigSpec, d *metav1.Duration) { spec.WatchdogTimeout = d },
+		30*time.Second,
+		5*time.Second,
+		400*time.Second,
+		MinWatchdogTimeout,
+		MaxWatchdogTimeout,
+	)
 
 	runValidationTests(t, "ValidateWatchdogTimeout()", tests, func(spec SBDConfigSpec) error {
 		return spec.ValidateWatchdogTimeout()
@@ -786,50 +842,12 @@ func TestSBDConfigSpec_ValidateSBDTimeoutSeconds(t *testing.T) {
 }
 
 func TestSBDConfigSpec_ValidateSBDUpdateInterval(t *testing.T) {
-	tests := []testCaseInterval{
-		{
-			name: "nil interval uses default (valid)",
-			spec: SBDConfigSpec{
-				SBDUpdateInterval: nil,
-			},
-			wantErr: false,
-		},
-		{
-			name: "valid interval",
-			spec: SBDConfigSpec{
-				SBDUpdateInterval: &metav1.Duration{Duration: 10 * time.Second},
-			},
-			wantErr: false,
-		},
-		{
-			name: "minimum interval",
-			spec: SBDConfigSpec{
-				SBDUpdateInterval: &metav1.Duration{Duration: 1 * time.Second},
-			},
-			wantErr: false,
-		},
-		{
-			name: "maximum interval",
-			spec: SBDConfigSpec{
-				SBDUpdateInterval: &metav1.Duration{Duration: 60 * time.Second},
-			},
-			wantErr: false,
-		},
-		{
-			name: "too small interval",
-			spec: SBDConfigSpec{
-				SBDUpdateInterval: &metav1.Duration{Duration: 500 * time.Millisecond},
-			},
-			wantErr: true,
-		},
-		{
-			name: "too large interval",
-			spec: SBDConfigSpec{
-				SBDUpdateInterval: &metav1.Duration{Duration: 120 * time.Second},
-			},
-			wantErr: true,
-		},
-	}
+	tests := createIntervalValidationTests(
+		func(spec *SBDConfigSpec, d *metav1.Duration) { spec.SBDUpdateInterval = d },
+		10*time.Second,
+		500*time.Millisecond,
+		120*time.Second,
+	)
 
 	runIntervalTests(t, "ValidateSBDUpdateInterval()", tests, func(spec SBDConfigSpec) error {
 		return spec.ValidateSBDUpdateInterval()
@@ -837,50 +855,12 @@ func TestSBDConfigSpec_ValidateSBDUpdateInterval(t *testing.T) {
 }
 
 func TestSBDConfigSpec_ValidatePeerCheckInterval(t *testing.T) {
-	tests := []testCaseInterval{
-		{
-			name: "nil interval uses default (valid)",
-			spec: SBDConfigSpec{
-				PeerCheckInterval: nil,
-			},
-			wantErr: false,
-		},
-		{
-			name: "valid interval",
-			spec: SBDConfigSpec{
-				PeerCheckInterval: &metav1.Duration{Duration: 5 * time.Second},
-			},
-			wantErr: false,
-		},
-		{
-			name: "minimum interval",
-			spec: SBDConfigSpec{
-				PeerCheckInterval: &metav1.Duration{Duration: 1 * time.Second},
-			},
-			wantErr: false,
-		},
-		{
-			name: "maximum interval",
-			spec: SBDConfigSpec{
-				PeerCheckInterval: &metav1.Duration{Duration: 60 * time.Second},
-			},
-			wantErr: false,
-		},
-		{
-			name: "too small interval",
-			spec: SBDConfigSpec{
-				PeerCheckInterval: &metav1.Duration{Duration: 500 * time.Millisecond},
-			},
-			wantErr: true,
-		},
-		{
-			name: "too large interval",
-			spec: SBDConfigSpec{
-				PeerCheckInterval: &metav1.Duration{Duration: 90 * time.Second},
-			},
-			wantErr: true,
-		},
-	}
+	tests := createIntervalValidationTests(
+		func(spec *SBDConfigSpec, d *metav1.Duration) { spec.PeerCheckInterval = d },
+		5*time.Second,
+		500*time.Millisecond,
+		90*time.Second,
+	)
 
 	runIntervalTests(t, "ValidatePeerCheckInterval()", tests, func(spec SBDConfigSpec) error {
 		return spec.ValidatePeerCheckInterval()

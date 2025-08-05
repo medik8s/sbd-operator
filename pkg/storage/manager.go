@@ -67,7 +67,7 @@ func (m *Manager) SetupSharedStorage(ctx context.Context) (*SetupResult, error) 
 	result := &SetupResult{}
 
 	if m.config.DryRun {
-		return m.dryRunSetup(ctx)
+		return m.dryRunSetup()
 	}
 
 	log.Printf("🚀 Starting Standard NFS CSI shared storage setup...")
@@ -132,7 +132,7 @@ func (m *Manager) Cleanup(ctx context.Context) error {
 }
 
 // dryRunSetup shows what would be done without executing
-func (m *Manager) dryRunSetup(ctx context.Context) (*SetupResult, error) {
+func (m *Manager) dryRunSetup() (*SetupResult, error) {
 	result := &SetupResult{}
 
 	log.Println("[DRY-RUN] 🔧 Would check Standard NFS CSI driver installation")

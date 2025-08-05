@@ -744,26 +744,13 @@ func NewSBDAgentWithWatchdog(wd WatchdogInterface, heartbeatDevicePath, nodeName
 	sbdAgent.peerMonitor = NewPeerMonitor(sbdTimeoutSeconds, nodeID, sbdAgent.nodeManager, logger)
 
 	// Initialize metrics
-	if err := sbdAgent.initMetrics(); err != nil {
-		sbdAgent.cancel()
-		if sbdAgent.heartbeatDevice != nil {
-			if closeErr := sbdAgent.heartbeatDevice.Close(); closeErr != nil {
-				logger.Error(closeErr, "Failed to close heartbeat device during cleanup")
-			}
-		}
-		if sbdAgent.fenceDevice != nil {
-			if closeErr := sbdAgent.fenceDevice.Close(); closeErr != nil {
-				logger.Error(closeErr, "Failed to close fence device during cleanup")
-			}
-		}
-		return nil, fmt.Errorf("failed to initialize metrics: %w", err)
-	}
+	sbdAgent.initMetrics()
 
 	return sbdAgent, nil
 }
 
 // initMetrics initializes Prometheus metrics and starts the metrics server
-func (s *SBDAgent) initMetrics() error {
+func (s *SBDAgent) initMetrics() {
 	// Register all metrics with the default registry only once
 	metricsOnce.Do(func() {
 		prometheus.MustRegister(agentHealthyGauge)
@@ -792,8 +779,6 @@ func (s *SBDAgent) initMetrics() error {
 			logger.Error(err, "Metrics server failed", "port", s.metricsPort)
 		}
 	}()
-
-	return nil
 }
 
 // initializeSBDDevices opens and initializes the SBD block devices

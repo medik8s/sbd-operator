@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -31,6 +32,12 @@ import (
 
 	"github.com/go-logr/logr"
 )
+
+// isTrueEnv returns true if the environment variable is set to a true value (case-insensitive)
+// isTrueEnv returns true if the environment variable is set to a true value (case-insensitive)
+func isMultiProcessTestSubprocess() bool {
+	return strings.EqualFold(os.Getenv("SBD_MULTIPROCESS_TEST"), "true")
+}
 
 // MultiProcessTestConfig holds configuration for multi-process tests
 type MultiProcessTestConfig struct {
@@ -62,14 +69,17 @@ type MultiProcessTestResult struct {
 // TestMultiProcessHeartbeatCoordination tests heartbeat coordination across multiple processes
 func TestMultiProcessHeartbeatCoordination(t *testing.T) {
 	// Check if we're running as a subprocess
-	if os.Getenv("SBD_MULTIPROCESS_TEST") == "true" {
+	if isMultiProcessTestSubprocess() {
 		// We're running as a subprocess - run the node process
 		config := MultiProcessTestConfig{}
 		result, err := runNodeProcess(config)
 		if err != nil {
 			t.Fatalf("Node process failed: %v", err)
 		}
-		t.Logf("Node process completed: %+v", result)
+		t.Logf("Node process completed")
+		// Write result to stdout
+		resultJSON, _ := json.Marshal(result)
+		fmt.Print(string(resultJSON))
 		return
 	}
 
@@ -114,8 +124,7 @@ func TestMultiProcessHeartbeatCoordination(t *testing.T) {
 			sharedDevice := filepath.Join(tmpDir, "shared_sbd_device")
 
 			// Initialize shared device with appropriate size
-			deviceSize := int64(SBD_SLOT_SIZE * (SBD_MAX_NODES + 1))
-			if err := createSharedDevice(sharedDevice, deviceSize); err != nil {
+			if err := createSharedDevice(sharedDevice); err != nil {
 				t.Fatalf("Failed to create shared device: %v", err)
 			}
 
@@ -142,7 +151,7 @@ func TestMultiProcessHeartbeatCoordination(t *testing.T) {
 // TestMultiProcessFileLockingContention tests file locking under contention
 func TestMultiProcessFileLockingContention(t *testing.T) {
 	// Check if we're running as a subprocess
-	if os.Getenv("SBD_MULTIPROCESS_TEST") == "true" {
+	if isMultiProcessTestSubprocess() {
 		// We're running as a subprocess - run the node process
 		config := MultiProcessTestConfig{}
 		result, err := runNodeProcess(config)
@@ -160,8 +169,7 @@ func TestMultiProcessFileLockingContention(t *testing.T) {
 	// Create temporary shared device file
 	tmpDir := t.TempDir()
 	sharedDevice := filepath.Join(tmpDir, "shared_sbd_device")
-	deviceSize := int64(SBD_SLOT_SIZE * (SBD_MAX_NODES + 1))
-	if err := createSharedDevice(sharedDevice, deviceSize); err != nil {
+	if err := createSharedDevice(sharedDevice); err != nil {
 		t.Fatalf("Failed to create shared device: %v", err)
 	}
 
@@ -186,7 +194,7 @@ func TestMultiProcessFileLockingContention(t *testing.T) {
 // TestMultiProcessMessageProtocol tests SBD message protocol across processes
 func TestMultiProcessMessageProtocol(t *testing.T) {
 	// Check if we're running as a subprocess
-	if os.Getenv("SBD_MULTIPROCESS_TEST") == "true" {
+	if isMultiProcessTestSubprocess() {
 		// We're running as a subprocess - run the node process
 		config := MultiProcessTestConfig{}
 		result, err := runNodeProcess(config)
@@ -204,8 +212,7 @@ func TestMultiProcessMessageProtocol(t *testing.T) {
 	// Create temporary shared device file
 	tmpDir := t.TempDir()
 	sharedDevice := filepath.Join(tmpDir, "shared_sbd_device")
-	deviceSize := int64(SBD_SLOT_SIZE * (SBD_MAX_NODES + 1))
-	if err := createSharedDevice(sharedDevice, deviceSize); err != nil {
+	if err := createSharedDevice(sharedDevice); err != nil {
 		t.Fatalf("Failed to create shared device: %v", err)
 	}
 
@@ -230,7 +237,7 @@ func TestMultiProcessMessageProtocol(t *testing.T) {
 // TestMultiProcessNodeSlotAssignment tests hash-based node slot assignment
 func TestMultiProcessNodeSlotAssignment(t *testing.T) {
 	// Check if we're running as a subprocess
-	if os.Getenv("SBD_MULTIPROCESS_TEST") == "true" {
+	if isMultiProcessTestSubprocess() {
 		// We're running as a subprocess - run the node process
 		config := MultiProcessTestConfig{}
 		result, err := runNodeProcess(config)
@@ -248,8 +255,7 @@ func TestMultiProcessNodeSlotAssignment(t *testing.T) {
 	// Create temporary shared device file
 	tmpDir := t.TempDir()
 	sharedDevice := filepath.Join(tmpDir, "shared_sbd_device")
-	deviceSize := int64(SBD_SLOT_SIZE * (SBD_MAX_NODES + 1))
-	if err := createSharedDevice(sharedDevice, deviceSize); err != nil {
+	if err := createSharedDevice(sharedDevice); err != nil {
 		t.Fatalf("Failed to create shared device: %v", err)
 	}
 
@@ -280,7 +286,7 @@ func TestMultiProcessNodeSlotAssignment(t *testing.T) {
 }
 
 // createSharedDevice creates a shared device file for testing
-func createSharedDevice(path string, size int64) error {
+func createSharedDevice(path string) error {
 	file, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("failed to create device file: %w", err)
@@ -288,7 +294,8 @@ func createSharedDevice(path string, size int64) error {
 	defer func() { _ = file.Close() }()
 
 	// Write zeros to initialize the device
-	zeros := make([]byte, size)
+	deviceSize := int64(SBD_SLOT_SIZE * (SBD_MAX_NODES + 1))
+	zeros := make([]byte, deviceSize)
 	if _, err := file.Write(zeros); err != nil {
 		return fmt.Errorf("failed to initialize device: %w", err)
 	}
@@ -332,7 +339,7 @@ func runMultiProcessTest(t *testing.T, config MultiProcessTestConfig) ([]*MultiP
 // runSingleNodeTest runs a single node test process
 func runSingleNodeTest(t *testing.T, config MultiProcessTestConfig) (*MultiProcessTestResult, error) {
 	// Check if we're running as a subprocess
-	if os.Getenv("SBD_MULTIPROCESS_TEST") == "true" {
+	if isMultiProcessTestSubprocess() {
 		return runNodeProcess(config)
 	}
 

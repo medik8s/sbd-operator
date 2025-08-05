@@ -94,7 +94,7 @@ func (m *Manager) SetupODFStorage(ctx context.Context) (*SetupResult, error) {
 	}
 
 	if m.config.DryRun {
-		return m.dryRunSetup(ctx)
+		return m.dryRunSetup()
 	}
 
 	log.Printf("🚀 Starting OpenShift Data Foundation setup...")
@@ -707,7 +707,7 @@ func (m *Manager) cleanupStorageCluster(ctx context.Context) error {
 }
 
 // dryRunSetup shows what would be done without executing
-func (m *Manager) dryRunSetup(ctx context.Context) (*SetupResult, error) {
+func (m *Manager) dryRunSetup() (*SetupResult, error) {
 	result := &SetupResult{
 		StorageClassName: m.config.StorageClassName,
 		ClusterName:      m.config.ClusterName,

@@ -86,7 +86,7 @@ func (m *Manager) InstallStandardNFSCSIDriver(ctx context.Context) error {
 	// Apply each manifest
 	for _, url := range manifestURLs {
 		log.Printf("🔗 Applying manifest: %s", url)
-		if err := m.applyManifestFromURL(ctx, url); err != nil {
+		if err := m.applyManifestFromURL(url); err != nil {
 			return fmt.Errorf("failed to apply manifest %s: %w", url, err)
 		}
 	}
@@ -310,7 +310,7 @@ func buildKubernetesClient() (*kubernetes.Clientset, error) {
 }
 
 // applyManifestFromURL downloads and applies a Kubernetes manifest from URL
-func (m *Manager) applyManifestFromURL(ctx context.Context, url string) error {
+func (m *Manager) applyManifestFromURL(url string) error {
 	// Download manifest
 	resp, err := http.Get(url)
 	if err != nil {

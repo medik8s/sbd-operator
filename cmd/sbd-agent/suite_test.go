@@ -46,7 +46,6 @@ var (
 	testEnv       *envtest.Environment
 	cfg           *rest.Config
 	k8sClient     client.Client
-	k8sClientset  kubernetes.Interface
 	testNamespace string
 )
 

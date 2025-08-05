@@ -180,14 +180,14 @@ func (r *SBDConfigReconciler) emitEventf(object client.Object, eventType, reason
 // getOperatorImage discovers the operator's own image by querying the current pod
 // It uses environment variables (POD_NAME, POD_NAMESPACE) to find the current pod
 // and extracts the image from the pod spec
-func (r *SBDConfigReconciler) getOperatorImage(ctx context.Context, logger logr.Logger) (string, error) {
+func (r *SBDConfigReconciler) getOperatorImage(ctx context.Context, logger logr.Logger) string {
 	// Try to get pod information from environment variables (set by Downward API)
 	podName := os.Getenv("POD_NAME")
 	podNamespace := os.Getenv("POD_NAMESPACE")
 
 	if podName == "" || podNamespace == "" {
 		logger.Error(nil, "POD_NAME or POD_NAMESPACE environment variables not set, using fallback")
-		return DefaultSBDAgentImage, nil
+		return DefaultSBDAgentImage
 	}
 
 	// Get the current pod
@@ -195,14 +195,14 @@ func (r *SBDConfigReconciler) getOperatorImage(ctx context.Context, logger logr.
 	err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: podNamespace}, &pod)
 	if err != nil {
 		logger.Error(err, "Failed to get operator pod", "podName", podName, "podNamespace", podNamespace)
-		return DefaultSBDAgentImage, nil // Fallback to default
+		return DefaultSBDAgentImage // Fallback to default
 	}
 
 	// Find the manager container (operator container)
 	for _, container := range pod.Spec.Containers {
 		if container.Name == "manager" {
 			logger.Info("Found operator image", "image", container.Image)
-			return container.Image, nil
+			return container.Image
 		}
 	}
 
@@ -210,16 +210,16 @@ func (r *SBDConfigReconciler) getOperatorImage(ctx context.Context, logger logr.
 	if len(pod.Spec.Containers) > 0 {
 		image := pod.Spec.Containers[0].Image
 		logger.Error(nil, "Using first container image as operator image", "image", image)
-		return image, nil
+		return image
 	}
 
 	logger.Error(nil, "No containers found in operator pod, using fallback")
-	return DefaultSBDAgentImage, nil
+	return DefaultSBDAgentImage
 }
 
 // isRunningOnOpenShift detects if the operator is running on OpenShift
 // by checking for the presence of OpenShift-specific API resources
-func (r *SBDConfigReconciler) isRunningOnOpenShift(ctx context.Context, logger logr.Logger) bool {
+func (r *SBDConfigReconciler) isRunningOnOpenShift(logger logr.Logger) bool {
 	// Use cached result if available
 	if r.isOpenShift != nil {
 		return *r.isOpenShift
@@ -249,7 +249,7 @@ func (r *SBDConfigReconciler) isRunningOnOpenShift(ctx context.Context, logger l
 // ensureSCCPermissions ensures that the service account has the required SCC permissions
 // This function updates the existing SCC to include the service account from the target namespace
 func (r *SBDConfigReconciler) ensureSCCPermissions(ctx context.Context, sbdConfig *medik8sv1alpha1.SBDConfig, namespaceName string, logger logr.Logger) error {
-	if !r.isRunningOnOpenShift(ctx, logger) {
+	if !r.isRunningOnOpenShift(logger) {
 		logger.V(1).Info("Not running on OpenShift, skipping SCC management")
 		return nil
 	}
@@ -1036,11 +1036,7 @@ func (r *SBDConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Get the operator image first for logging and DaemonSet creation
-	operatorImage, err := r.getOperatorImage(ctx, logger)
-	if err != nil {
-		logger.Error(err, "Failed to get operator image")
-		return ctrl.Result{}, err
-	}
+	operatorImage := r.getOperatorImage(ctx, logger)
 
 	logger.V(1).Info("Starting SBDConfig reconciliation",
 		"spec.image", sbdConfig.Spec.GetImageWithOperatorImage(operatorImage),

@@ -27,6 +27,11 @@ import (
 	"github.com/medik8s/sbd-operator/pkg/retry"
 )
 
+// isTrueEnv returns true if the environment variable is set to a true value (case-insensitive)
+func isTrueEnv(envVar string) bool {
+	return strings.EqualFold(os.Getenv(envVar), "true")
+}
+
 // TestNew tests the New function with various scenarios
 func TestNew(t *testing.T) {
 	tests := []struct {
@@ -474,7 +479,7 @@ func TestIsModuleLoaded(t *testing.T) {
 
 func TestNewWithSoftdogFallback_ValidPath(t *testing.T) {
 	// Skip if running in CI/container where modprobe might not be available
-	if os.Getenv("CI") == "true" || os.Getenv("CONTAINER") == "true" {
+	if isTrueEnv("CI") || isTrueEnv("CONTAINER") {
 		t.Skip("Skipping softdog test in CI/container environment")
 	}
 
@@ -549,7 +554,7 @@ func TestLoadSoftdogModule_Integration(t *testing.T) {
 		t.Skip("Skipping softdog module loading test (requires root privileges)")
 	}
 
-	if os.Getenv("CI") == "true" || os.Getenv("CONTAINER") == "true" {
+	if isTrueEnv("CI") || isTrueEnv("CONTAINER") {
 		t.Skip("Skipping softdog test in CI/container environment")
 	}
 
@@ -577,7 +582,7 @@ func TestLoadSoftdogModule_TestMode(t *testing.T) {
 		t.Skip("Skipping softdog module loading test (requires root privileges)")
 	}
 
-	if os.Getenv("CI") == "true" || os.Getenv("CONTAINER") == "true" {
+	if isTrueEnv("CI") || isTrueEnv("CONTAINER") {
 		t.Skip("Skipping softdog test in CI/container environment")
 	}
 
@@ -601,7 +606,7 @@ func TestLoadSoftdogModule_TestMode(t *testing.T) {
 // TestNewWithSoftdogFallbackAndTestMode tests the test mode functionality
 func TestNewWithSoftdogFallbackAndTestMode(t *testing.T) {
 	// Skip if running in CI/container where modprobe might not be available
-	if os.Getenv("CI") == "true" || os.Getenv("CONTAINER") == "true" {
+	if isTrueEnv("CI") || isTrueEnv("CONTAINER") {
 		t.Skip("Skipping softdog test in CI/container environment")
 	}
 
