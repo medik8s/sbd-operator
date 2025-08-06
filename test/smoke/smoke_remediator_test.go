@@ -79,7 +79,8 @@ var _ = Describe("SBD Remediation Smoke Tests", Label("Smoke", "Remediation"), f
 			// Clean up SBDRemediation
 			By("cleaning up SBDRemediation resource")
 			sbdRemediation := &medik8sv1alpha1.SBDRemediation{}
-			err := testClients.Client.Get(testClients.Context, client.ObjectKey{Name: sbdRemediationName, Namespace: testNamespace.Name}, sbdRemediation)
+			err := testClients.Client.Get(testClients.Context,
+				client.ObjectKey{Name: sbdRemediationName, Namespace: testNamespace.Name}, sbdRemediation)
 			if err == nil {
 				_ = testClients.Client.Delete(testClients.Context, sbdRemediation)
 			}
@@ -88,7 +89,8 @@ var _ = Describe("SBD Remediation Smoke Tests", Label("Smoke", "Remediation"), f
 			By("waiting for SBDRemediation deletion to complete")
 			Eventually(func() bool {
 				sbdRemediation := &medik8sv1alpha1.SBDRemediation{}
-				err := testClients.Client.Get(testClients.Context, client.ObjectKey{Name: sbdRemediationName, Namespace: testNamespace.Name}, sbdRemediation)
+				err := testClients.Client.Get(testClients.Context,
+					client.ObjectKey{Name: sbdRemediationName, Namespace: testNamespace.Name}, sbdRemediation)
 				return errors.IsNotFound(err) // Error means resource not found (deleted)
 			}, 30*time.Second, 2*time.Second).Should(BeTrue())
 		})
@@ -142,7 +144,8 @@ var _ = Describe("SBD Remediation Smoke Tests", Label("Smoke", "Remediation"), f
 					Namespace: testNamespace.Name,
 				}, foundSBDRemediation)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(foundSBDRemediation.Status.OperatorInstance).ToNot(BeEmpty(), "SBDRemediation should have operatorInstance set")
+				g.Expect(foundSBDRemediation.Status.OperatorInstance).ToNot(BeEmpty(),
+					"SBDRemediation should have operatorInstance set")
 				g.Expect(foundSBDRemediation.Status.LastUpdateTime).ToNot(BeNil(), "SBDRemediation should have lastUpdateTime set")
 			}
 			Eventually(verifySBDRemediationStatus, 60*time.Second).Should(Succeed())
@@ -351,7 +354,8 @@ var _ = Describe("SBD Remediation Smoke Tests", Label("Smoke", "Remediation"), f
 			By("cleaning up all test SBDRemediations")
 			for _, name := range remediationNames {
 				sbdRemediation := &medik8sv1alpha1.SBDRemediation{}
-				err := testClients.Client.Get(testClients.Context, client.ObjectKey{Name: name, Namespace: testNamespace.Name}, sbdRemediation)
+				err := testClients.Client.Get(testClients.Context,
+					client.ObjectKey{Name: name, Namespace: testNamespace.Name}, sbdRemediation)
 				if err == nil {
 					_ = testClients.Client.Delete(testClients.Context, sbdRemediation)
 				}

@@ -241,11 +241,13 @@ func (nm *NodeManager) atomicAssignSlot(nodeName string) (uint16, error) {
 		}
 
 		// Success!
-		nm.logger.Info("Assigned new slot to node atomically", "nodeName", nodeName, "nodeID", slot, "entries", len(nm.table.Entries))
+		nm.logger.Info("Assigned new slot to node atomically",
+			"nodeName", nodeName, "nodeID", slot, "entries", len(nm.table.Entries))
 		return slot, nil
 	}
 
-	return 0, fmt.Errorf("%w: failed to assign slot for node %s after %d attempts", ErrMaxRetriesExceeded, nodeName, MaxAtomicRetries)
+	return 0, fmt.Errorf("%w: failed to assign slot for node %s after %d attempts",
+		ErrMaxRetriesExceeded, nodeName, MaxAtomicRetries)
 }
 
 // atomicUpdateLastSeen updates the last seen timestamp using atomic operations
@@ -712,16 +714,19 @@ func (nm *NodeManager) ValidateIntegrity() error {
 		if entry, exists := nm.table.Entries[nodeName]; !exists {
 			return fmt.Errorf("orphaned slot usage: slot %d points to non-existent node %s", nodeID, nodeName)
 		} else if entry.NodeID != nodeID {
-			return fmt.Errorf("slot usage mismatch: slot %d points to node %s, but node has slot %d", nodeID, nodeName, entry.NodeID)
+			return fmt.Errorf("slot usage mismatch: slot %d points to node %s, but node has slot %d",
+				nodeID, nodeName, entry.NodeID)
 		}
 	}
 
 	// Check for orphaned entries
 	for nodeName, entry := range nm.table.Entries {
 		if usedNode, exists := nm.table.NodeUsage[entry.NodeID]; !exists {
-			return fmt.Errorf("orphaned entry: node %s has slot %d, but slot is not in usage map", nodeName, entry.NodeID)
+			return fmt.Errorf("orphaned entry: node %s has slot %d, but slot is not in usage map",
+				nodeName, entry.NodeID)
 		} else if usedNode != nodeName {
-			return fmt.Errorf("entry mismatch: node %s has slot %d, but slot is assigned to %s", nodeName, entry.NodeID, usedNode)
+			return fmt.Errorf("entry mismatch: node %s has slot %d, but slot is assigned to %s",
+				nodeName, entry.NodeID, usedNode)
 		}
 	}
 

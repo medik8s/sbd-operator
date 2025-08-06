@@ -228,7 +228,8 @@ func (m *Manager) TestCredentials(ctx context.Context, storageClassName string) 
 		select {
 		case <-timeout:
 			// Clean up test PVC
-			if err := m.clientset.CoreV1().PersistentVolumeClaims(testNamespace).Delete(ctx, testPVCName, metav1.DeleteOptions{}); err != nil {
+			if err := m.clientset.CoreV1().PersistentVolumeClaims(testNamespace).Delete(ctx,
+				testPVCName, metav1.DeleteOptions{}); err != nil {
 				log.Printf("Failed to clean up test PVC: %v", err)
 			}
 			return false, fmt.Errorf("test PVC failed to bind within 2 minutes")

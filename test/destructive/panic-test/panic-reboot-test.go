@@ -19,7 +19,8 @@ func executeSystemReboot() error {
 	log.Printf("Attempting system reboot via nsenter and systemctl...")
 
 	// Try nsenter to access the host PID namespace and execute reboot
-	cmd := exec.Command("nsenter", "--target", "1", "--mount", "--uts", "--ipc", "--net", "--pid", "--", "systemctl", "reboot", "--force", "--force")
+	cmd := exec.Command("nsenter", "--target", "1", "--mount", "--uts", "--ipc", "--net", "--pid",
+		"--", "systemctl", "reboot", "--force", "--force")
 	err := cmd.Run()
 	if err != nil {
 		log.Printf("nsenter systemctl reboot failed: %v", err)

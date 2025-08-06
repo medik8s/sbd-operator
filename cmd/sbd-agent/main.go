@@ -496,7 +496,8 @@ func NewRemediationLeaderElector(remediationKey, nodeName string,
 				rle.logger.Info("Stopped leading remediation", "remediation", remediationKey, "leaseName", leaseName)
 			},
 			OnNewLeader: func(identity string) {
-				rle.logger.V(1).Info("New leader elected for remediation", "remediation", remediationKey, "leader", identity, "leaseName", leaseName)
+				rle.logger.V(1).Info("New leader elected for remediation",
+					"remediation", remediationKey, "leader", identity, "leaseName", leaseName)
 			},
 		},
 	}
@@ -647,8 +648,11 @@ func NewSBDAgentWithWatchdog(wd WatchdogInterface, heartbeatDevicePath, nodeName
 	if petInterval <= 0 {
 		return nil, fmt.Errorf("pet interval must be positive, got %v", petInterval)
 	}
-	if rebootMethod != RebootMethodPanic && rebootMethod != RebootMethodSystemctlReboot && rebootMethod != RebootMethodNone {
-		return nil, fmt.Errorf("invalid reboot method '%s', must be '%s', '%s', or '%s'", rebootMethod, RebootMethodPanic, RebootMethodSystemctlReboot, RebootMethodNone)
+	if rebootMethod != RebootMethodPanic &&
+		rebootMethod != RebootMethodSystemctlReboot &&
+		rebootMethod != RebootMethodNone {
+		return nil, fmt.Errorf("invalid reboot method '%s', must be '%s', '%s', or '%s'",
+			rebootMethod, RebootMethodPanic, RebootMethodSystemctlReboot, RebootMethodNone)
 	}
 	if metricsPort <= 0 || metricsPort > 65535 {
 		return nil, fmt.Errorf("metrics port must be between 1 and 65535, got %d", metricsPort)
@@ -783,9 +787,11 @@ func (s *SBDAgent) initMetrics() {
 
 // initializeSBDDevices opens and initializes the SBD block devices
 func (s *SBDAgent) initializeSBDDevices() error {
-	heartbeatDevice, err := blockdevice.OpenWithTimeout(s.heartbeatDevicePath, s.ioTimeout, logger.WithName("heartbeat-device"))
+	heartbeatDevice, err := blockdevice.OpenWithTimeout(s.heartbeatDevicePath, s.ioTimeout,
+		logger.WithName("heartbeat-device"))
 	if err != nil {
-		return fmt.Errorf("failed to open heartbeat device %s with timeout %v: %w", s.heartbeatDevicePath, s.ioTimeout, err)
+		return fmt.Errorf("failed to open heartbeat device %s with timeout %v: %w",
+			s.heartbeatDevicePath, s.ioTimeout, err)
 	}
 
 	fenceDevice, err := blockdevice.OpenWithTimeout(s.fenceDevicePath, s.ioTimeout, logger.WithName("fence-device"))
@@ -795,7 +801,10 @@ func (s *SBDAgent) initializeSBDDevices() error {
 
 	s.heartbeatDevice = heartbeatDevice
 	s.fenceDevice = fenceDevice
-	logger.Info("Successfully opened SBD devices", "heartbeatDevicePath", s.heartbeatDevicePath, "fenceDevicePath", s.fenceDevicePath, "ioTimeout", s.ioTimeout)
+	logger.Info("Successfully opened SBD devices",
+		"heartbeatDevicePath", s.heartbeatDevicePath,
+		"fenceDevicePath", s.fenceDevicePath,
+		"ioTimeout", s.ioTimeout)
 	return nil
 }
 
@@ -1046,7 +1055,8 @@ func (s *SBDAgent) readPeerHeartbeat(peerNodeID uint16) error {
 	}
 
 	if n != sbdprotocol.SBD_SLOT_SIZE {
-		return fmt.Errorf("partial read from peer %d slot: read %d bytes, expected %d", peerNodeID, n, sbdprotocol.SBD_SLOT_SIZE)
+		return fmt.Errorf("partial read from peer %d slot: read %d bytes, expected %d",
+			peerNodeID, n, sbdprotocol.SBD_SLOT_SIZE)
 	}
 
 	if sbdprotocol.IsEmptySlot(slotData[:sbdprotocol.SBD_HEADER_SIZE]) {
@@ -1638,7 +1648,9 @@ func runPreflightChecks(watchdogPath, sbdDevicePath, nodeName string, nodeID uin
 	} else if sbdErr == nil {
 		return fmt.Errorf("pre-flight checks failed: watchdog device is not available")
 	} else {
-		return fmt.Errorf("pre-flight checks failed: both watchdog device and SBD device are inaccessible. Watchdog error: %v, SBD error: %v", watchdogErr, sbdErr)
+		return fmt.Errorf(
+			"pre-flight checks failed: both watchdog device and SBD device are inaccessible. Watchdog error: %v, SBD error: %v",
+			watchdogErr, sbdErr)
 	}
 }
 
@@ -2029,7 +2041,8 @@ func main() {
 	}
 
 	// Validate reboot method
-	if rebootMethodValue != RebootMethodPanic && rebootMethodValue != RebootMethodSystemctlReboot && rebootMethodValue != RebootMethodNone {
+	if rebootMethodValue != RebootMethodPanic && rebootMethodValue != RebootMethodSystemctlReboot &&
+		rebootMethodValue != RebootMethodNone {
 		logger.Error(nil, "Invalid reboot method",
 			"rebootMethod", rebootMethodValue,
 			"validMethods", []string{RebootMethodPanic, RebootMethodSystemctlReboot, RebootMethodNone})
@@ -2083,7 +2096,10 @@ func main() {
 	}
 
 	// Create SBD agent (hash mapping is always enabled)
-	sbdAgent, err := NewSBDAgent(*watchdogPath, *sbdDevice, nodeNameValue, *clusterName, nodeIDValue, *petInterval, *sbdUpdateInterval, heartbeatInterval, *peerCheckInterval, sbdTimeoutValue, rebootMethodValue, *metricsPort, *staleNodeTimeout, *sbdFileLocking, *ioTimeout, k8sClient, k8sClientset, *namespace, *enableFencing)
+	sbdAgent, err := NewSBDAgent(*watchdogPath, *sbdDevice, nodeNameValue, *clusterName, nodeIDValue,
+		*petInterval, *sbdUpdateInterval, heartbeatInterval, *peerCheckInterval, sbdTimeoutValue,
+		rebootMethodValue, *metricsPort, *staleNodeTimeout, *sbdFileLocking, *ioTimeout,
+		k8sClient, k8sClientset, *namespace, *enableFencing)
 	if err != nil {
 		logger.Error(err, "Failed to create SBD agent",
 			"watchdogPath", *watchdogPath,

@@ -138,7 +138,8 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 		AfterEach(func() {
 			By("cleaning up test SBDConfig")
 			if sbdConfigName != "" {
-				cmd := exec.Command("kubectl", "delete", "-n", testNamespace.Name, "sbdconfig", sbdConfigName, "--ignore-not-found=true")
+				cmd := exec.Command("kubectl", "delete", "-n", testNamespace.Name, "sbdconfig",
+					sbdConfigName, "--ignore-not-found=true")
 				_, _ = utils.Run(cmd)
 
 				// Wait for SBDConfig deletion to complete (finalizer cleanup)
@@ -382,7 +383,8 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 			err = validator.ValidateAgentDeployment(opts)
 			Expect(err).NotTo(HaveOccurred(), "SBD agent deployment failed")
 
-			GinkgoWriter.Printf("SharedStorageClass functionality test completed successfully with StorageClass: %s\n", rwxStorageClass.Name)
+			GinkgoWriter.Printf("SharedStorageClass functionality test completed successfully with StorageClass: %s\n",
+				rwxStorageClass.Name)
 		})
 	})
 })

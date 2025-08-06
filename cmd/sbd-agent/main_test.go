@@ -267,12 +267,14 @@ func (m *MockWatchdog) SetFailPet(fail bool) {
 }
 
 // createTestSBDAgent creates a test SBD agent with mock devices and temporary SBD files
-func createTestSBDAgent(t *testing.T, nodeName string, metricsPort int) (*SBDAgent, *MockWatchdog, *MockBlockDevice, func()) {
+func createTestSBDAgent(t *testing.T, nodeName string, metricsPort int) (
+	*SBDAgent, *MockWatchdog, *MockBlockDevice, func()) {
 	return createTestSBDAgentWithFileLocking(t, nodeName, metricsPort, true)
 }
 
 // createTestSBDAgentWithFileLocking creates a test SBD agent with configurable file locking
-func createTestSBDAgentWithFileLocking(t *testing.T, nodeName string, metricsPort int, fileLockingEnabled bool) (*SBDAgent, *MockWatchdog, *MockBlockDevice, func()) {
+func createTestSBDAgentWithFileLocking(t *testing.T, nodeName string, metricsPort int, fileLockingEnabled bool) (
+	*SBDAgent, *MockWatchdog, *MockBlockDevice, func()) {
 
 	// Create temporary SBD device files (both heartbeat and fence)
 	tmpDir := t.TempDir()
@@ -292,8 +294,8 @@ func createTestSBDAgentWithFileLocking(t *testing.T, nodeName string, metricsPor
 	}
 
 	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, nodeName, "test-cluster", 1,
-		1*time.Second, 1*time.Second, 1*time.Second, 1*time.Second, 30, "panic", metricsPort, 10*time.Minute, fileLockingEnabled,
-		2*time.Second, nil, nil, "", false)
+		1*time.Second, 1*time.Second, 1*time.Second, 1*time.Second, 30, "panic", metricsPort,
+		10*time.Minute, fileLockingEnabled, 2*time.Second, nil, nil, "", false)
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
@@ -611,7 +613,8 @@ func TestSBDAgent_NewSBDAgent(t *testing.T) {
 
 	// Test invalid configurations
 	invalidWatchdog := NewMockWatchdog("")
-	_, err := NewSBDAgentWithWatchdog(invalidWatchdog, "/dev/invalid-sbd", "", "test-cluster", 0, 0, 0, 0, 0, 0, "invalid", 8087, 10*time.Minute, true, 2*time.Second, nil, nil, "", false)
+	_, err := NewSBDAgentWithWatchdog(invalidWatchdog, "/dev/invalid-sbd", "", "test-cluster", 0, 0, 0, 0, 0, 0,
+		"invalid", 8087, 10*time.Minute, true, 2*time.Second, nil, nil, "", false)
 	if err == nil {
 		t.Error("Expected error for invalid configuration")
 	}
@@ -789,7 +792,9 @@ func BenchmarkSBDAgent_WriteHeartbeat(b *testing.B) {
 		b.Fatalf("Failed to create test SBD device: %v", err)
 	}
 
-	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1, 30*time.Second, 5*time.Second, 15*time.Second, 5*time.Second, 30, "panic", 8080, 10*time.Minute, true, 2*time.Second, nil, nil, "", false)
+	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
+		30*time.Second, 5*time.Second, 15*time.Second, 5*time.Second, 30, "panic", 8080,
+		10*time.Minute, true, 2*time.Second, nil, nil, "", false)
 	if err != nil {
 		b.Fatalf("Failed to create agent: %v", err)
 	}
@@ -816,8 +821,9 @@ func BenchmarkSBDAgent_ReadPeerHeartbeat(b *testing.B) {
 		b.Fatalf("Failed to create test SBD device: %v", err)
 	}
 
-	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1, 30*time.Second, 5*time.Second, 15*time.Second, 5*time.Second, 30, "panic", 8080, 10*time.Minute, true,
-		2*time.Second, nil, nil, "", false)
+	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
+		30*time.Second, 5*time.Second, 15*time.Second, 5*time.Second, 30, "panic", 8080,
+		10*time.Minute, true, 2*time.Second, nil, nil, "", false)
 	if err != nil {
 		b.Fatalf("Failed to create agent: %v", err)
 	}
@@ -962,7 +968,8 @@ func TestSBDAgent_WatchdogLoop_WithSelfFence(t *testing.T) {
 
 	// Verify watchdog was not pet when self-fence is detected
 	if mockWatchdog.GetPetCount() > 0 {
-		t.Errorf("Expected watchdog not to be pet when self-fence detected, but it was pet %d times", mockWatchdog.GetPetCount())
+		t.Errorf("Expected watchdog not to be pet when self-fence detected, but it was pet %d times",
+			mockWatchdog.GetPetCount())
 	}
 }
 

@@ -340,7 +340,8 @@ func UnmarshalHeartbeat(data []byte) (*SBDHeartbeatMessage, error) {
 //   - error: Error if unmarshaling fails
 func UnmarshalFence(data []byte) (*SBDFenceMessage, error) {
 	if len(data) < SBD_HEADER_SIZE+3 { // Header + TargetNodeID (2) + Reason (1)
-		return nil, fmt.Errorf("data too short for fence message: expected at least %d bytes, got %d", SBD_HEADER_SIZE+3, len(data))
+		return nil, fmt.Errorf("data too short for fence message: expected at least %d bytes, got %d",
+			SBD_HEADER_SIZE+3, len(data))
 	}
 
 	// First unmarshal the header

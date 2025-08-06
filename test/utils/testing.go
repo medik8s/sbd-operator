@@ -181,7 +181,8 @@ func (tn *TestNamespace) Cleanup() error {
 }
 
 // CreateSBDConfig creates a test SBDConfig with common defaults
-func (tn *TestNamespace) CreateSBDConfig(name string, options ...func(*medik8sv1alpha1.SBDConfig)) (*medik8sv1alpha1.SBDConfig, error) {
+func (tn *TestNamespace) CreateSBDConfig(name string,
+	options ...func(*medik8sv1alpha1.SBDConfig)) (*medik8sv1alpha1.SBDConfig, error) {
 	sbdConfig := &medik8sv1alpha1.SBDConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -794,7 +795,8 @@ func (tn *TestNamespace) NewDaemonSetChecker() *DaemonSetChecker {
 }
 
 // WaitForDaemonSet waits for a DaemonSet to be created and returns it
-func (dsc *DaemonSetChecker) WaitForDaemonSet(labels map[string]string, timeout time.Duration) (*appsv1.DaemonSet, error) {
+func (dsc *DaemonSetChecker) WaitForDaemonSet(labels map[string]string,
+	timeout time.Duration) (*appsv1.DaemonSet, error) {
 	var daemonSet *appsv1.DaemonSet
 
 	Eventually(func() bool {
@@ -1118,7 +1120,8 @@ func SuiteSetup(namespace string) (*TestNamespace, error) {
 		}
 	}
 	Expect(foundSBDConfig).To(BeTrue(), "Expected SBDConfig CRD to be installed (should be done by Makefile setup)")
-	Expect(foundSBDRemediation).To(BeTrue(), "Expected SBDRemediation CRD to be installed (should be done by Makefile setup)")
+	Expect(foundSBDRemediation).To(BeTrue(),
+		"Expected SBDRemediation CRD to be installed (should be done by Makefile setup)")
 
 	By("verifying the controller-manager is deployed")
 	deployment := &appsv1.Deployment{}
@@ -1126,14 +1129,16 @@ func SuiteSetup(namespace string) (*TestNamespace, error) {
 		Name:      "sbd-operator-controller-manager",
 		Namespace: "sbd-operator-system",
 	}, deployment)
-	Expect(err).NotTo(HaveOccurred(), "Expected controller-manager to be deployed (should be done by Makefile setup)")
+	Expect(err).NotTo(HaveOccurred(),
+		"Expected controller-manager to be deployed (should be done by Makefile setup)")
 
 	// Confirm the operator is running
 	By("confirming the operator is running")
 	Eventually(func() bool {
-		podList, err := testClients.Clientset.CoreV1().Pods("sbd-operator-system").List(testClients.Context, metav1.ListOptions{
-			LabelSelector: "control-plane=controller-manager",
-		})
+		podList, err := testClients.Clientset.CoreV1().Pods("sbd-operator-system").List(testClients.Context,
+			metav1.ListOptions{
+				LabelSelector: "control-plane=controller-manager",
+			})
 		if err != nil || len(podList.Items) == 0 {
 			return false
 		}
@@ -1176,7 +1181,8 @@ func DescribeEnvironment(testClients *TestClients, testNamespace *TestNamespace)
 
 	// Log the determination
 	if isControllerNamespace && isAgentNamespace {
-		GinkgoWriter.Printf("Namespace %q contains both controller and agent pods (hybrid or test namespace)\n", testNamespace.Name)
+		GinkgoWriter.Printf("Namespace %q contains both controller and agent pods (hybrid or test namespace)\n",
+			testNamespace.Name)
 	} else if isControllerNamespace {
 		GinkgoWriter.Printf("Namespace %q is identified as the controller namespace\n", testNamespace.Name)
 	} else if isAgentNamespace {
@@ -1283,19 +1289,22 @@ func DescribeEnvironment(testClients *TestClients, testNamespace *TestNamespace)
 			agentPodName := activePods[0].Name
 
 			By("Extracting the fence device file contents from the agent pod")
-			err = testClients.FenceDeviceSummary(agentPodName, testNamespace.Name, fmt.Sprintf("%s/fence-device.txt", testNamespace.ArtifactsDir))
+			err = testClients.FenceDeviceSummary(agentPodName, testNamespace.Name,
+				fmt.Sprintf("%s/fence-device.txt", testNamespace.ArtifactsDir))
 			if err != nil {
 				GinkgoWriter.Printf("Failed to get fence device summary: %s\n", err)
 			}
 
 			By("Extracting the heartbeat device file contents from the agent pod")
-			err = testClients.SBDDeviceSummary(agentPodName, testNamespace.Name, fmt.Sprintf("%s/heartbeat-device.txt", testNamespace.ArtifactsDir))
+			err = testClients.SBDDeviceSummary(agentPodName, testNamespace.Name,
+				fmt.Sprintf("%s/heartbeat-device.txt", testNamespace.ArtifactsDir))
 			if err != nil {
 				GinkgoWriter.Printf("Failed to get SBD device summary: %s\n", err)
 			}
 
 			By("Extracting the node mapping file contents from the agent pod")
-			err = testClients.NodeMapSummary(agentPodName, testNamespace.Name, fmt.Sprintf("%s/node-mapping.txt", testNamespace.ArtifactsDir))
+			err = testClients.NodeMapSummary(agentPodName, testNamespace.Name,
+				fmt.Sprintf("%s/node-mapping.txt", testNamespace.ArtifactsDir))
 			if err != nil {
 				GinkgoWriter.Printf("Failed to get node mapping summary: %s\n", err)
 			}

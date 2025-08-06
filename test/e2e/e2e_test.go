@@ -474,7 +474,8 @@ func checkNodeReboot(nodeName, reason, originalBootTime string, timeout time.Dur
 	result := Eventually(func() bool {
 		currentBootID := getNodeBootID(nodeName)
 		if originalBootTime != "" && currentBootID != originalBootTime {
-			GinkgoWriter.Printf("Node %s boot ID changed - node has rebooted: %v -> %v\n", nodeName, originalBootTime, currentBootID)
+			GinkgoWriter.Printf("Node %s boot ID changed - node has rebooted: %v -> %v\n",
+				nodeName, originalBootTime, currentBootID)
 			return true
 		}
 		return false
@@ -584,11 +585,13 @@ func testStorageAccessInterruption(cluster ClusterInfo) {
 	time.Sleep(30 * time.Second)
 
 	// Monitor for node becoming NotReady due to loss of shared storage access
-	checkNodeNotReady(targetNode.Metadata.Name, "becomes NotReady due to loss of shared storage access", time.Minute*8, nil)
+	checkNodeNotReady(targetNode.Metadata.Name, "becomes NotReady due to loss of shared storage access",
+		time.Minute*8, nil)
 	// BeTrue()
 
 	// Monitor for node disappearing (panic/reboot) or boot ID change
-	checkNodeReboot(targetNode.Metadata.Name, "during storage disruption", originalBootTimes[targetNode.Metadata.Name], time.Minute*2, true)
+	checkNodeReboot(targetNode.Metadata.Name, "during storage disruption",
+		originalBootTimes[targetNode.Metadata.Name], time.Minute*2, true)
 
 	// Verify node recovery (instead of the old immediate recovery test)
 	By("Verifying node has fully recovered after fencing and shared storage restoration")
@@ -600,7 +603,8 @@ func testStorageAccessInterruption(cluster ClusterInfo) {
 		if node.Metadata.Name == targetNode.Metadata.Name {
 			continue // Skip the target node
 		}
-		checkNodeReboot(node.Metadata.Name, "during storage disruption", originalBootTimes[node.Metadata.Name], time.Second, false)
+		checkNodeReboot(node.Metadata.Name, "during storage disruption",
+			originalBootTimes[node.Metadata.Name], time.Second, false)
 	}
 
 	GinkgoWriter.Printf("Network-level storage access interruption test completed\n")
@@ -643,9 +647,11 @@ func testKubeletCommunicationFailure(cluster ClusterInfo) {
 
 	// Wait for kubelet to be stopped and node to become NotReady
 	By("Waiting for node to become NotReady due to kubelet termination...")
-	checkNodeNotReady(targetNode.Metadata.Name, "becomes NotReady due to kubelet termination", time.Minute*8, BeTrue)
+	checkNodeNotReady(targetNode.Metadata.Name, "becomes NotReady due to kubelet termination",
+		time.Minute*8, BeTrue)
 
-	checkNodeReboot(targetNode.Metadata.Name, "due to kubelet termination", originalBootTimes[targetNode.Metadata.Name], time.Minute*2, false)
+	checkNodeReboot(targetNode.Metadata.Name, "due to kubelet termination",
+		originalBootTimes[targetNode.Metadata.Name], time.Minute*2, false)
 
 	// Create SBDRemediation CR to simulate external operator (e.g., Node Healthcheck Operator)
 	By("Creating SBDRemediation CR to simulate external operator behavior")
@@ -683,7 +689,8 @@ func testKubeletCommunicationFailure(cluster ClusterInfo) {
 	}, time.Minute*5, time.Second*30).Should(BeTrue())
 
 	// Wait for node to actually panic/reboot (the actual SBD fencing)
-	checkNodeReboot(targetNode.Metadata.Name, "due to remediation CR", originalBootTimes[targetNode.Metadata.Name], time.Minute*10, true)
+	checkNodeReboot(targetNode.Metadata.Name, "due to remediation CR",
+		originalBootTimes[targetNode.Metadata.Name], time.Minute*10, true)
 
 	// Verify node recovery (instead of the old immediate recovery test)
 	GinkgoWriter.Printf("Waiting for the cluster to stabilize after remediation\n")
@@ -695,7 +702,8 @@ func testKubeletCommunicationFailure(cluster ClusterInfo) {
 		if node.Metadata.Name == targetNode.Metadata.Name {
 			continue // Skip the target node
 		}
-		checkNodeReboot(node.Metadata.Name, "due to remediation CR", originalBootTimes[node.Metadata.Name], time.Second, false)
+		checkNodeReboot(node.Metadata.Name, "due to remediation CR",
+			originalBootTimes[node.Metadata.Name], time.Second, false)
 	}
 
 	GinkgoWriter.Printf("kubelet-based communication failure test completed successfully\n")
@@ -745,10 +753,12 @@ func testFakeRemediation() {
 		}
 
 		agentPods := &corev1.PodList{}
-		err = k8sClient.List(ctx, agentPods, client.InNamespace(testNamespace.Name), client.MatchingLabels{"app": "sbd-agent"})
+		err = k8sClient.List(ctx, agentPods, client.InNamespace(testNamespace.Name),
+			client.MatchingLabels{"app": "sbd-agent"})
 		Expect(err).NotTo(HaveOccurred())
 		for _, agentPod := range agentPods.Items {
-			req := testNamespace.Clients.Clientset.CoreV1().Pods(testNamespace.Name).GetLogs(agentPod.Name, &corev1.PodLogOptions{})
+			req := testNamespace.Clients.Clientset.CoreV1().Pods(testNamespace.Name).GetLogs(agentPod.Name,
+				&corev1.PodLogOptions{})
 			podLogs, err := req.Stream(testNamespace.Clients.Context)
 			if err == nil {
 				defer func() { _ = podLogs.Close() }()
@@ -819,7 +829,8 @@ func testNodeRemediation(cluster ClusterInfo) {
 	}, time.Minute*5, time.Second*30).Should(BeTrue())
 
 	// Wait for node to actually panic/reboot (the actual SBD fencing)
-	checkNodeReboot(targetNode.Metadata.Name, "due to remediation CR", originalBootTimes[targetNode.Metadata.Name], time.Minute*10, true)
+	checkNodeReboot(targetNode.Metadata.Name, "due to remediation CR",
+		originalBootTimes[targetNode.Metadata.Name], time.Minute*10, true)
 
 	// Verify node recovery (instead of the old immediate recovery test)
 	GinkgoWriter.Printf("Waiting for the cluster to stabilize after remediation\n")
@@ -831,7 +842,8 @@ func testNodeRemediation(cluster ClusterInfo) {
 		if node.Metadata.Name == targetNode.Metadata.Name {
 			continue // Skip the target node
 		}
-		checkNodeReboot(node.Metadata.Name, "due to remediation CR", originalBootTimes[node.Metadata.Name], time.Second, false)
+		checkNodeReboot(node.Metadata.Name, "due to remediation CR",
+			originalBootTimes[node.Metadata.Name], time.Second, false)
 	}
 
 	GinkgoWriter.Printf("node remediation test completed successfully\n")
@@ -907,7 +919,8 @@ func testSBDInspection() {
 		slots, err := testNamespace.Clients.GetSBDDeviceInfoFromPod(pod.Name, testNamespace.Name)
 		GinkgoWriter.Printf("Pod %s SBD device slots:\n", pod.Name)
 		for _, slot := range slots {
-			GinkgoWriter.Printf("  - NodeID: %v, Type: %v, Sequence: %v, Timestamp: %v\n", slot.NodeID, slot.Type, slot.Sequence, slot.Timestamp)
+			GinkgoWriter.Printf("  - NodeID: %v, Type: %v, Sequence: %v, Timestamp: %v\n",
+				slot.NodeID, slot.Type, slot.Sequence, slot.Timestamp)
 		}
 		Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to get SBD device info from pod %s", pod.Name))
 		summaries = append(summaries, podDeviceSummary{
@@ -1168,7 +1181,8 @@ func cleanupTestArtifacts() {
 
 	// Clean up storage disruptor pods (they have timestamped names)
 	storageDisruptorPods := &corev1.PodList{}
-	err := k8sClient.List(ctx, storageDisruptorPods, client.InNamespace("default"), client.MatchingLabels{"app": "sbd-e2e-storage-disruptor"})
+	err := k8sClient.List(ctx, storageDisruptorPods, client.InNamespace("default"),
+		client.MatchingLabels{"app": "sbd-e2e-storage-disruptor"})
 	if err == nil {
 		for _, pod := range storageDisruptorPods.Items {
 			_ = k8sClient.Delete(ctx, &pod)
@@ -1177,7 +1191,8 @@ func cleanupTestArtifacts() {
 
 	// Clean up storage cleanup pods (they have timestamped names)
 	storageCleanupPods := &corev1.PodList{}
-	err = k8sClient.List(ctx, storageCleanupPods, client.InNamespace("default"), client.MatchingLabels{"app": "sbd-e2e-storage-cleanup"})
+	err = k8sClient.List(ctx, storageCleanupPods, client.InNamespace("default"),
+		client.MatchingLabels{"app": "sbd-e2e-storage-cleanup"})
 	if err == nil {
 		for _, pod := range storageCleanupPods.Items {
 			_ = k8sClient.Delete(ctx, &pod)
@@ -1186,7 +1201,8 @@ func cleanupTestArtifacts() {
 
 	// Clean up storage validation pods (they have timestamped names)
 	storageValidationPods := &corev1.PodList{}
-	err = k8sClient.List(ctx, storageValidationPods, client.InNamespace("default"), client.MatchingLabels{"app": "sbd-e2e-storage-validator"})
+	err = k8sClient.List(ctx, storageValidationPods, client.InNamespace("default"),
+		client.MatchingLabels{"app": "sbd-e2e-storage-validator"})
 	if err == nil {
 		for _, pod := range storageValidationPods.Items {
 			_ = k8sClient.Delete(ctx, &pod)
@@ -1571,7 +1587,8 @@ func removeNetworkDisruption(disruptorIdentifier *string, instanceID string) err
 				return nil
 
 			} else if condition.Type == corev1.NodeReady {
-				GinkgoWriter.Printf("Node %s current status: %s (%s) - reboot required", nodeName, condition.Status, condition.Reason)
+				GinkgoWriter.Printf("Node %s current status: %s (%s) - reboot required",
+					nodeName, condition.Status, condition.Reason)
 				break
 			}
 		}
@@ -1898,7 +1915,8 @@ spec:
 		if err != nil {
 			By(fmt.Sprintf("Warning: Could not delete disruptor pod %s: %v", disruptorPodName, err))
 		}
-		return nil, fmt.Errorf("storage disruption validation failed - iptables rules were not successfully applied or are not effective")
+		return nil, fmt.Errorf(
+			"storage disruption validation failed - iptables rules were not successfully applied or are not effective")
 	}
 
 	GinkgoWriter.Printf("Storage disruption validation successful - node %s should lose shared storage access\n", nodeName)

@@ -562,7 +562,8 @@ func readTestHeartbeat(device SBDDevice, nodeID uint16) bool {
 }
 
 // validateMultiProcessResults validates the results from multi-process tests
-func validateMultiProcessResults(t *testing.T, results []*MultiProcessTestResult, expectedStrategy string, numNodes int) {
+func validateMultiProcessResults(t *testing.T, results []*MultiProcessTestResult, expectedStrategy string,
+	numNodes int) {
 	if len(results) != numNodes {
 		t.Errorf("Expected %d results, got %d", numNodes, len(results))
 		return

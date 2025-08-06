@@ -71,7 +71,8 @@ func (m *MockEventRecorder) Eventf(object runtime.Object, eventtype, reason, mes
 }
 
 // AnnotatedEventf records an annotated formatted event for testing
-func (m *MockEventRecorder) AnnotatedEventf(object runtime.Object, annotations map[string]string, eventtype, reason, messageFmt string, args ...interface{}) {
+func (m *MockEventRecorder) AnnotatedEventf(object runtime.Object, annotations map[string]string,
+	eventtype, reason, messageFmt string, args ...interface{}) {
 	m.Eventf(object, eventtype, reason, messageFmt, args...)
 }
 
@@ -218,7 +219,8 @@ var _ = Describe("SBDConfig Controller", func() {
 			args := controllerReconciler.buildSBDAgentArgs(resource)
 
 			By("verifying the sbd-device flag is set correctly")
-			expectedSBDDevice := fmt.Sprintf("--%s=%s/%s", agent.FlagSBDDevice, agent.SharedStorageSBDDeviceDirectory, agent.SharedStorageSBDDeviceFile)
+			expectedSBDDevice := fmt.Sprintf("--%s=%s/%s",
+				agent.FlagSBDDevice, agent.SharedStorageSBDDeviceDirectory, agent.SharedStorageSBDDeviceFile)
 			Expect(args).To(ContainElement(expectedSBDDevice))
 
 			By("verifying file locking is enabled for shared storage")
@@ -864,13 +866,17 @@ var _ = Describe("SBDConfig Controller", func() {
 			// Check first ClusterRoleBinding (SBDConfig-specific)
 			clusterRoleBinding1 := &rbacv1.ClusterRoleBinding{}
 			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{Name: fmt.Sprintf("sbd-agent-%s-%s", namespace, sbdConfig1.Name)}, clusterRoleBinding1)
+				return k8sClient.Get(ctx,
+					types.NamespacedName{Name: fmt.Sprintf("sbd-agent-%s-%s", namespace, sbdConfig1.Name)},
+					clusterRoleBinding1)
 			}, timeout, interval).Should(Succeed())
 
 			// Check first DaemonSet (SBDConfig-specific)
 			daemonSet1 := &appsv1.DaemonSet{}
 			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{Name: fmt.Sprintf("sbd-agent-%s", sbdConfig1.Name), Namespace: namespace}, daemonSet1)
+				return k8sClient.Get(ctx,
+					types.NamespacedName{Name: fmt.Sprintf("sbd-agent-%s", sbdConfig1.Name), Namespace: namespace},
+					daemonSet1)
 			}, timeout, interval).Should(Succeed())
 
 			By("creating the second SBDConfig in the same namespace")
@@ -919,13 +925,17 @@ var _ = Describe("SBDConfig Controller", func() {
 			// Second ClusterRoleBinding (SBDConfig-specific)
 			clusterRoleBinding2 := &rbacv1.ClusterRoleBinding{}
 			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{Name: fmt.Sprintf("sbd-agent-%s-%s", namespace, sbdConfig2.Name)}, clusterRoleBinding2)
+				return k8sClient.Get(ctx,
+					types.NamespacedName{Name: fmt.Sprintf("sbd-agent-%s-%s", namespace, sbdConfig2.Name)},
+					clusterRoleBinding2)
 			}, timeout, interval).Should(Succeed())
 
 			// Second DaemonSet (SBDConfig-specific)
 			daemonSet2 := &appsv1.DaemonSet{}
 			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{Name: fmt.Sprintf("sbd-agent-%s", sbdConfig2.Name), Namespace: namespace}, daemonSet2)
+				return k8sClient.Get(ctx,
+					types.NamespacedName{Name: fmt.Sprintf("sbd-agent-%s", sbdConfig2.Name), Namespace: namespace},
+					daemonSet2)
 			}, timeout, interval).Should(Succeed())
 
 			By("verifying the DaemonSets have different configurations")
@@ -1017,13 +1027,16 @@ var _ = Describe("SBDConfig Controller", func() {
 			By("verifying the service account is created in the custom namespace")
 			serviceAccount := &corev1.ServiceAccount{}
 			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{Name: "sbd-agent", Namespace: customNamespace}, serviceAccount)
+				return k8sClient.Get(ctx,
+					types.NamespacedName{Name: "sbd-agent", Namespace: customNamespace}, serviceAccount)
 			}, time.Second*10, time.Millisecond*250).Should(Succeed())
 
 			By("verifying the DaemonSet is created in the custom namespace")
 			daemonSet := &appsv1.DaemonSet{}
 			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{Name: "sbd-agent-test-scc-sbdconfig", Namespace: customNamespace}, daemonSet)
+				return k8sClient.Get(ctx,
+					types.NamespacedName{Name: "sbd-agent-test-scc-sbdconfig", Namespace: customNamespace},
+					daemonSet)
 			}, time.Second*10, time.Millisecond*250).Should(Succeed())
 
 			By("verifying the SBDConfig status is updated")

@@ -74,7 +74,8 @@ func parseFlags() *Config {
 	flag.StringVar(&config.StorageClassName, "storage-class-name", "sbd-nfs-coherent", "StorageClass name")
 
 	// Cache Coherency Configuration
-	flag.BoolVar(&config.AggressiveCoherency, "aggressive-coherency", false, "Enable aggressive cache coherency (cache=none, sync, local_lock=none)")
+	flag.BoolVar(&config.AggressiveCoherency, "aggressive-coherency", false,
+		"Enable aggressive cache coherency (cache=none, sync, local_lock=none)")
 
 	// Behavior flags
 	flag.BoolVar(&config.DryRun, "dry-run", false, "Show what would be done without executing")

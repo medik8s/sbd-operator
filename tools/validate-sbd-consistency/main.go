@@ -107,7 +107,8 @@ func main() {
 	fmt.Printf("📊 Phase 1: Initial Device File Analysis\n")
 	fmt.Printf("========================================\n")
 
-	checksums := make(map[string]map[string]string) // podName -> {sbd-device: checksum, fence-device: checksum, node-mapping: checksum}
+	// podName -> {sbd-device: checksum, fence-device: checksum, node-mapping: checksum}
+	checksums := make(map[string]map[string]string)
 
 	for _, podName := range pods {
 		fmt.Printf("Analyzing pod: %s\n", podName)

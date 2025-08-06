@@ -178,7 +178,8 @@ func (table *NodeMapTable) AssignSlot(nodeName string, hasher *NodeHasher) (uint
 		// Node ID is occupied by another node, try next attempt
 	}
 
-	return 0, fmt.Errorf("failed to assign node ID for node %s after %d attempts: all preferred node IDs are occupied", nodeName, SBD_MAX_RETRIES)
+	return 0, fmt.Errorf("failed to assign node ID for node %s after %d attempts: all preferred node IDs are occupied",
+		nodeName, SBD_MAX_RETRIES)
 }
 
 // GetNodeIDForNode returns the node ID for a given node name
@@ -348,7 +349,8 @@ func UnmarshalNodeMapTable(data []byte) (*NodeMapTable, error) {
 	actualChecksum := crc32.ChecksumIEEE(jsonData)
 
 	if expectedChecksum != actualChecksum {
-		return nil, fmt.Errorf("node mapping data corruption detected: checksum mismatch. expected %v got %v", expectedChecksum, actualChecksum)
+		return nil, fmt.Errorf("node mapping data corruption detected: checksum mismatch. expected %v got %v",
+			expectedChecksum, actualChecksum)
 	}
 
 	// Unmarshal JSON data

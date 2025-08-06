@@ -141,7 +141,8 @@ var _ = Describe("SBD Operator Smoke Tests", Ordered, Label("Smoke", "Operator")
 
 			By("validating that the metrics service is available")
 			service := &corev1.Service{}
-			err = testClients.Client.Get(testClients.Context, client.ObjectKey{Name: metricsServiceName, Namespace: namespace}, service)
+			err = testClients.Client.Get(testClients.Context,
+				client.ObjectKey{Name: metricsServiceName, Namespace: namespace}, service)
 			Expect(err).NotTo(HaveOccurred(), "Metrics service should exist")
 
 			By("getting the service account token")
@@ -153,7 +154,8 @@ var _ = Describe("SBD Operator Smoke Tests", Ordered, Label("Smoke", "Operator")
 			By("waiting for the metrics endpoint to be ready")
 			verifyMetricsEndpointReady := func(g Gomega) {
 				endpoints := &corev1.Endpoints{}
-				err := testClients.Client.Get(testClients.Context, client.ObjectKey{Name: metricsServiceName, Namespace: namespace}, endpoints)
+				err := testClients.Client.Get(testClients.Context,
+					client.ObjectKey{Name: metricsServiceName, Namespace: namespace}, endpoints)
 				g.Expect(err).NotTo(HaveOccurred())
 
 				hasPort8443 := false
@@ -223,7 +225,8 @@ var _ = Describe("SBD Operator Smoke Tests", Ordered, Label("Smoke", "Operator")
 			By("waiting for the curl-metrics pod to complete.")
 			verifyCurlUp := func(g Gomega) {
 				pod := &corev1.Pod{}
-				err := testClients.Client.Get(testClients.Context, client.ObjectKey{Name: "curl-metrics", Namespace: namespace}, pod)
+				err := testClients.Client.Get(testClients.Context,
+					client.ObjectKey{Name: "curl-metrics", Namespace: namespace}, pod)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(pod.Status.Phase).To(Equal(corev1.PodSucceeded), "curl pod in wrong status")
 			}

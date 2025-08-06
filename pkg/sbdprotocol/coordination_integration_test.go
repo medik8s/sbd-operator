@@ -119,7 +119,8 @@ type NodeTestResult struct {
 }
 
 // runConcurrentNodeTest runs multiple NodeManagers concurrently
-func runConcurrentNodeTest(t *testing.T, devicePath string, numNodes int, fileLockingEnabled bool, duration time.Duration) []*NodeTestResult {
+func runConcurrentNodeTest(t *testing.T, devicePath string, numNodes int, fileLockingEnabled bool,
+	duration time.Duration) []*NodeTestResult {
 	var wg sync.WaitGroup
 	results := make([]*NodeTestResult, numNodes)
 
@@ -139,7 +140,8 @@ func runConcurrentNodeTest(t *testing.T, devicePath string, numNodes int, fileLo
 }
 
 // runSingleConcurrentNode runs a single node for the concurrent test
-func runSingleConcurrentNode(t *testing.T, devicePath, nodeName string, fileLockingEnabled bool, duration time.Duration) *NodeTestResult {
+func runSingleConcurrentNode(t *testing.T, devicePath, nodeName string, fileLockingEnabled bool,
+	duration time.Duration) *NodeTestResult {
 	// Use shared mock device so all nodes can see each other's heartbeats
 	deviceSize := int(SBD_SLOT_SIZE * (SBD_MAX_NODES + 1))
 	device := getSharedMockDevice(devicePath, deviceSize)

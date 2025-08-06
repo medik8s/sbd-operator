@@ -196,7 +196,8 @@ func (m *Manager) checkODFOperator(ctx context.Context) error {
 		Resource: "subscriptions",
 	}
 
-	subscriptions, err := m.dynamicClient.Resource(subscriptionGVR).Namespace(m.config.Namespace).List(ctx, metav1.ListOptions{})
+	subscriptions, err := m.dynamicClient.Resource(subscriptionGVR).Namespace(m.config.Namespace).List(ctx,
+		metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to list subscriptions: %w", err)
 	}
@@ -277,7 +278,8 @@ func (m *Manager) createOperatorGroup(ctx context.Context) error {
 		},
 	}
 
-	_, err := m.dynamicClient.Resource(operatorGroupGVR).Namespace(m.config.Namespace).Create(ctx, operatorGroup, metav1.CreateOptions{})
+	_, err := m.dynamicClient.Resource(operatorGroupGVR).Namespace(m.config.Namespace).Create(ctx,
+		operatorGroup, metav1.CreateOptions{})
 	if err != nil && !errors.IsAlreadyExists(err) {
 		return fmt.Errorf("failed to create OperatorGroup: %w", err)
 	}
@@ -312,7 +314,8 @@ func (m *Manager) createSubscription(ctx context.Context) error {
 		},
 	}
 
-	_, err := m.dynamicClient.Resource(subscriptionGVR).Namespace(m.config.Namespace).Create(ctx, subscription, metav1.CreateOptions{})
+	_, err := m.dynamicClient.Resource(subscriptionGVR).Namespace(m.config.Namespace).Create(ctx,
+		subscription, metav1.CreateOptions{})
 	if err != nil && !errors.IsAlreadyExists(err) {
 		// If odf-operator fails, try legacy ocs-operator
 		if strings.Contains(err.Error(), "odf-operator") {
@@ -323,7 +326,8 @@ func (m *Manager) createSubscription(ctx context.Context) error {
 			subscription.Object["spec"].(map[string]interface{})["name"] = "ocs-operator"
 			subscription.Object["spec"].(map[string]interface{})["channel"] = "stable-4.15"
 
-			_, err = m.dynamicClient.Resource(subscriptionGVR).Namespace(m.config.Namespace).Create(ctx, subscription, metav1.CreateOptions{})
+			_, err = m.dynamicClient.Resource(subscriptionGVR).Namespace(m.config.Namespace).Create(ctx,
+				subscription, metav1.CreateOptions{})
 			if err != nil && !errors.IsAlreadyExists(err) {
 				return fmt.Errorf("failed to create Subscription for both odf-operator and ocs-operator: %w", err)
 			}
@@ -485,7 +489,8 @@ func (m *Manager) createStorageCluster(ctx context.Context) error {
 		}
 	}
 
-	_, err := m.dynamicClient.Resource(storageClusterGVR).Namespace(m.config.Namespace).Create(ctx, storageCluster, metav1.CreateOptions{})
+	_, err := m.dynamicClient.Resource(storageClusterGVR).Namespace(m.config.Namespace).Create(ctx,
+		storageCluster, metav1.CreateOptions{})
 	if err != nil && !errors.IsAlreadyExists(err) {
 		return fmt.Errorf("failed to create StorageCluster: %w", err)
 	}
@@ -511,7 +516,8 @@ func (m *Manager) waitForStorageCluster(ctx context.Context) error {
 		case <-timeout:
 			return fmt.Errorf("timeout waiting for StorageCluster to be ready")
 		case <-ticker.C:
-			cluster, err := m.dynamicClient.Resource(storageClusterGVR).Namespace(m.config.Namespace).Get(ctx, m.config.ClusterName, metav1.GetOptions{})
+			cluster, err := m.dynamicClient.Resource(storageClusterGVR).Namespace(m.config.Namespace).Get(ctx,
+				m.config.ClusterName, metav1.GetOptions{})
 			if err != nil {
 				log.Printf("⏳ Waiting for StorageCluster...")
 				continue
@@ -640,7 +646,8 @@ func (m *Manager) testCephFSStorage(ctx context.Context, storageClassName string
 		select {
 		case <-timeout:
 			// Clean up test PVC
-			if err := m.clientset.CoreV1().PersistentVolumeClaims(testNamespace).Delete(ctx, testPVCName, metav1.DeleteOptions{}); err != nil {
+			if err := m.clientset.CoreV1().PersistentVolumeClaims(testNamespace).Delete(ctx,
+				testPVCName, metav1.DeleteOptions{}); err != nil {
 				log.Printf("Failed to clean up test PVC: %v", err)
 			}
 			return false, fmt.Errorf("test PVC failed to bind within 5 minutes")
@@ -690,7 +697,8 @@ func (m *Manager) cleanupStorageCluster(ctx context.Context) error {
 		Resource: "storageclusters",
 	}
 
-	err := m.dynamicClient.Resource(storageClusterGVR).Namespace(m.config.Namespace).Delete(ctx, m.config.ClusterName, metav1.DeleteOptions{})
+	err := m.dynamicClient.Resource(storageClusterGVR).Namespace(m.config.Namespace).Delete(ctx,
+		m.config.ClusterName, metav1.DeleteOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
 			log.Printf("🗑️ StorageCluster '%s' not found (already deleted)", m.config.ClusterName)
@@ -922,8 +930,10 @@ func printConfig(config *Config) {
 }
 
 // checkSubscriptionStatus checks the status of the ODF subscription
-func (m *Manager) checkSubscriptionStatus(ctx context.Context, subscriptionGVR schema.GroupVersionResource) (*string, error) {
-	subscriptions, err := m.dynamicClient.Resource(subscriptionGVR).Namespace(m.config.Namespace).List(ctx, metav1.ListOptions{})
+func (m *Manager) checkSubscriptionStatus(ctx context.Context,
+	subscriptionGVR schema.GroupVersionResource) (*string, error) {
+	subscriptions, err := m.dynamicClient.Resource(subscriptionGVR).Namespace(m.config.Namespace).List(ctx,
+		metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -966,7 +976,8 @@ func (m *Manager) checkSubscriptionStatus(ctx context.Context, subscriptionGVR s
 func (m *Manager) debugSubscriptionStatus(ctx context.Context, subscriptionGVR schema.GroupVersionResource) error {
 	log.Printf("🔍 Debugging subscription status in namespace %s...", m.config.Namespace)
 
-	subscriptions, err := m.dynamicClient.Resource(subscriptionGVR).Namespace(m.config.Namespace).List(ctx, metav1.ListOptions{})
+	subscriptions, err := m.dynamicClient.Resource(subscriptionGVR).Namespace(m.config.Namespace).List(ctx,
+		metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to list subscriptions: %w", err)
 	}

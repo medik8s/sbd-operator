@@ -56,7 +56,8 @@ type SBDNodeSummary struct {
 // GetNodeMapFromPod extracts the current node mapping from an SBD agent pod
 func (tc *TestClients) GetNodeMapFromPod(podName, namespace string) (*sbdprotocol.NodeMapTable, error) {
 	// Execute command to read node mapping file
-	sbdNodeMappingPath := fmt.Sprintf("%s/%s%s", agent.SharedStorageSBDDeviceDirectory, agent.SharedStorageSBDDeviceFile, agent.SharedStorageNodeMappingSuffix)
+	sbdNodeMappingPath := fmt.Sprintf("%s/%s%s",
+		agent.SharedStorageSBDDeviceDirectory, agent.SharedStorageSBDDeviceFile, agent.SharedStorageNodeMappingSuffix)
 
 	cmd := []string{"cat", sbdNodeMappingPath}
 	stdout, stderr, err := tc.execInPod(podName, namespace, cmd)
@@ -93,7 +94,8 @@ func (tc *TestClients) GetFenceDeviceInfoFromPod(podName, namespace string) ([]S
 	// Execute command to read fence device content
 	// Read first 255 slots (255 * 512 bytes = 130560 bytes)
 
-	fenceDevicePath := fmt.Sprintf("%s/%s%s", agent.SharedStorageSBDDeviceDirectory, agent.SharedStorageSBDDeviceFile, agent.SharedStorageFenceDeviceSuffix)
+	fenceDevicePath := fmt.Sprintf("%s/%s%s",
+		agent.SharedStorageSBDDeviceDirectory, agent.SharedStorageSBDDeviceFile, agent.SharedStorageFenceDeviceSuffix)
 
 	cmd := []string{"dd", "if=" + fenceDevicePath, "bs=512", "count=255", "status=none"}
 	stdout, stderr, err := tc.execInPod(podName, namespace, cmd)

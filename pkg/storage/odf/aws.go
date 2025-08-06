@@ -118,7 +118,8 @@ func (a *AWSManager) CheckRequiredPermissions(ctx context.Context) error {
 }
 
 // AnalyzeNodeStorage analyzes storage requirements for all worker nodes
-func (a *AWSManager) AnalyzeNodeStorage(ctx context.Context, clientset kubernetes.Interface, requiredStoragePerNode int64) ([]NodeStorageInfo, error) {
+func (a *AWSManager) AnalyzeNodeStorage(ctx context.Context, clientset kubernetes.Interface,
+	requiredStoragePerNode int64) ([]NodeStorageInfo, error) {
 	log.Println("🔍 Analyzing node storage requirements...")
 
 	// Get worker nodes
@@ -155,7 +156,8 @@ func (a *AWSManager) AnalyzeNodeStorage(ctx context.Context, clientset kubernete
 }
 
 // ProvisionStorageForNodes provisions additional EBS volumes for nodes that need them
-func (a *AWSManager) ProvisionStorageForNodes(ctx context.Context, nodes []NodeStorageInfo, awsConfig *AWSConfig, dryRun bool) error {
+func (a *AWSManager) ProvisionStorageForNodes(ctx context.Context, nodes []NodeStorageInfo,
+	awsConfig *AWSConfig, dryRun bool) error {
 	var nodesToProvision []NodeStorageInfo
 	for _, node := range nodes {
 		if !node.HasSufficientStorage {
@@ -410,7 +412,8 @@ func (a *AWSManager) checkIAMPermissions(ctx context.Context) error {
 }
 
 // analyzeNodeStorage analyzes storage for a specific node
-func (a *AWSManager) analyzeNodeStorage(ctx context.Context, node *corev1.Node, requiredStorageGB int64) (*NodeStorageInfo, error) {
+func (a *AWSManager) analyzeNodeStorage(ctx context.Context, node *corev1.Node,
+	requiredStorageGB int64) (*NodeStorageInfo, error) {
 	// Get instance ID from node
 	instanceID := getInstanceIDFromNode(node)
 	if instanceID == "" {
@@ -473,7 +476,8 @@ func (a *AWSManager) analyzeNodeStorage(ctx context.Context, node *corev1.Node, 
 }
 
 // provisionVolumeForNode provisions an EBS volume for a specific node
-func (a *AWSManager) provisionVolumeForNode(ctx context.Context, nodeInfo NodeStorageInfo, awsConfig *AWSConfig, dryRun bool) error {
+func (a *AWSManager) provisionVolumeForNode(ctx context.Context, nodeInfo NodeStorageInfo,
+	awsConfig *AWSConfig, dryRun bool) error {
 	volumeSizeGB := nodeInfo.RequiredStorage
 
 	if dryRun {
