@@ -58,6 +58,8 @@ type Config struct {
 	Jitter float64
 	// Logger for logging retry attempts
 	Logger logr.Logger
+	// TestDelay is the delay to add to the retry loop to simulate a test environment
+	TestDelay time.Duration
 }
 
 // DefaultConfig returns a default retry configuration

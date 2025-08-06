@@ -134,25 +134,33 @@ func TestTimeoutPreventsHanging(t *testing.T) {
 	defer func() { _ = os.Remove(tmpFile.Name()) }()
 	defer func() { _ = tmpFile.Close() }()
 
-	device, err := OpenWithLogger(tmpFile.Name(), logr.Discard())
+	device, err := OpenWithLogger(tmpFile.Name(), logr.New(nil))
 	if err != nil {
 		t.Fatalf("Failed to open device: %v", err)
 	}
 	defer func() { _ = device.Close() }()
 
-	// Set a very short timeout (1ms)
 	device.ioTimeout = 1 * time.Millisecond
+	device.retryConfig.TestDelay = 1 * time.Minute
+	t.Logf("Device: %+v", device.retryConfig)
 
 	// Test that operations complete quickly even with timeout errors
 	startTime := time.Now()
 	testData := []byte("test data")
 
 	// This should complete quickly (either success or timeout error)
-	_, _ = device.WriteAt(testData, 0)
+	_, err = device.WriteAt(testData, 0)
+	if err == nil {
+		t.Errorf("Expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Errorf("Expected timeout error, got: %v", err)
+	}
+
 	elapsed := time.Since(startTime)
 
-	// Operation should complete within a reasonable time (much less than the original DefaultIOTimeout)
-	maxExpectedTime := 100 * time.Millisecond
+	// Operation should complete within a reasonable time (much less than device.retryConfig.TestDelay)
+	maxExpectedTime := device.retryConfig.TestDelay - 10*time.Millisecond
 	if elapsed > maxExpectedTime {
 		t.Errorf("Operation took too long: %v (expected < %v)", elapsed, maxExpectedTime)
 	}

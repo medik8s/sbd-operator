@@ -174,6 +174,10 @@ func (d *Device) timeoutWriteAt(p []byte, off int64) (int, error) {
 
 	go func() {
 		// Perform the actual I/O operation in a goroutine
+		if d.retryConfig.TestDelay > 0 {
+			d.logger.Info("Delaying WriteAt operation", "delay", d.retryConfig.TestDelay)
+			time.Sleep(d.retryConfig.TestDelay)
+		}
 		n, err := d.file.WriteAt(p, off)
 		// Always try to send result, but don't block if timeout already occurred
 		select {
