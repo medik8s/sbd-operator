@@ -127,6 +127,12 @@ func (m *Manager) SetupODFStorage(ctx context.Context) (*SetupResult, error) {
 		return nil, fmt.Errorf("ODF operator failed to become ready: %w", err)
 	}
 
+	// Step 2.5: Label worker nodes for ODF storage
+	log.Println("🏷️ Labeling worker nodes for ODF storage...")
+	if err := m.labelWorkerNodesForStorage(ctx); err != nil {
+		return nil, fmt.Errorf("failed to label worker nodes for storage: %w", err)
+	}
+
 	// Step 3: Create StorageCluster
 	log.Println("🏗️ Creating ODF StorageCluster...")
 	if err := m.createStorageCluster(ctx); err != nil {
@@ -187,6 +193,10 @@ func (m *Manager) Cleanup(ctx context.Context) error {
 
 	if err := m.cleanupStorageCluster(ctx); err != nil {
 		log.Printf("⚠️ StorageCluster cleanup failed: %v", err)
+	}
+
+	if err := m.cleanupNodeLabels(ctx); err != nil {
+		log.Printf("⚠️ Node labels cleanup failed: %v", err)
 	}
 
 	log.Println("✅ ODF cleanup completed")
@@ -442,6 +452,53 @@ func (m *Manager) waitForODFOperator(ctx context.Context) error {
 	}
 }
 
+// labelWorkerNodesForStorage labels worker nodes for ODF storage
+func (m *Manager) labelWorkerNodesForStorage(ctx context.Context) error {
+	// Get worker nodes
+	nodes, err := m.clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{
+		LabelSelector: "node-role.kubernetes.io/worker",
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list worker nodes: %w", err)
+	}
+
+	if len(nodes.Items) < m.config.ReplicaCount {
+		log.Printf("⚠️ Warning: Found %d worker nodes, but replica count is %d", len(nodes.Items), m.config.ReplicaCount)
+	}
+
+	labeledCount := 0
+	for _, node := range nodes.Items {
+		// Check if node already has the storage label
+		if _, exists := node.Labels["cluster.ocs.openshift.io/openshift-storage"]; exists {
+			log.Printf("✓ Node %s already labeled for storage", node.Name)
+			labeledCount++
+			continue
+		}
+
+		// Add the storage label
+		if node.Labels == nil {
+			node.Labels = make(map[string]string)
+		}
+		node.Labels["cluster.ocs.openshift.io/openshift-storage"] = ""
+
+		_, err := m.clientset.CoreV1().Nodes().Update(ctx, &node, metav1.UpdateOptions{})
+		if err != nil {
+			log.Printf("⚠️ Failed to label node %s: %v", node.Name, err)
+			continue
+		}
+
+		log.Printf("✅ Labeled node %s for ODF storage", node.Name)
+		labeledCount++
+	}
+
+	if labeledCount < m.config.ReplicaCount {
+		return fmt.Errorf("insufficient storage nodes: labeled %d nodes, but need %d replicas", labeledCount, m.config.ReplicaCount)
+	}
+
+	log.Printf("✅ Successfully labeled %d worker nodes for ODF storage", labeledCount)
+	return nil
+}
+
 // createStorageCluster creates the StorageCluster resource
 func (m *Manager) createStorageCluster(ctx context.Context) error {
 	storageClusterGVR := schema.GroupVersionResource{
@@ -517,6 +574,9 @@ func (m *Manager) waitForStorageCluster(ctx context.Context) error {
 		Resource: "storageclusters",
 	}
 
+	var lastPhase string
+	nodeLabelsChecked := false
+
 	for {
 		select {
 		case <-timeout:
@@ -535,7 +595,41 @@ func (m *Manager) waitForStorageCluster(ctx context.Context) error {
 				return nil
 			}
 
-			log.Printf("⏳ StorageCluster phase: %s", phase)
+			// Check for Error phase and try to diagnose/fix issues
+			if found && phase == "Error" && !nodeLabelsChecked {
+				// Get error details from conditions
+				conditions, found, _ := unstructured.NestedSlice(cluster.Object, "status", "conditions")
+				if found {
+					for _, condition := range conditions {
+						condMap, ok := condition.(map[string]interface{})
+						if !ok {
+							continue
+						}
+						
+						condType, _ := condMap["type"].(string)
+						message, _ := condMap["message"].(string)
+						reason, _ := condMap["reason"].(string)
+						
+						if condType == "ReconcileComplete" && strings.Contains(message, "Not enough nodes found") {
+							log.Printf("⚠️ StorageCluster Error: %s (Reason: %s)", message, reason)
+							log.Println("🔄 Attempting to fix node labeling issue...")
+							
+							if err := m.labelWorkerNodesForStorage(ctx); err != nil {
+								log.Printf("⚠️ Failed to re-label nodes: %v", err)
+							} else {
+								log.Println("✅ Re-labeled nodes, waiting for StorageCluster to recover...")
+								nodeLabelsChecked = true
+							}
+						}
+					}
+				}
+			}
+
+			// Only log phase changes to reduce noise
+			if phase != lastPhase {
+				log.Printf("⏳ StorageCluster phase: %s", phase)
+				lastPhase = phase
+			}
 		}
 	}
 }
@@ -714,6 +808,42 @@ func (m *Manager) cleanupStorageCluster(ctx context.Context) error {
 	}
 
 	log.Printf("🗑️ Deleted StorageCluster: %s", m.config.ClusterName)
+	return nil
+}
+
+// cleanupNodeLabels removes ODF storage labels from worker nodes
+func (m *Manager) cleanupNodeLabels(ctx context.Context) error {
+	// Get worker nodes that have the storage label
+	nodes, err := m.clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{
+		LabelSelector: "node-role.kubernetes.io/worker,cluster.ocs.openshift.io/openshift-storage",
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list worker nodes with storage labels: %w", err)
+	}
+
+	if len(nodes.Items) == 0 {
+		log.Println("🗑️ No worker nodes with ODF storage labels found")
+		return nil
+	}
+
+	cleanedCount := 0
+	for _, node := range nodes.Items {
+		// Remove the storage label
+		if node.Labels != nil {
+			delete(node.Labels, "cluster.ocs.openshift.io/openshift-storage")
+		}
+
+		_, err := m.clientset.CoreV1().Nodes().Update(ctx, &node, metav1.UpdateOptions{})
+		if err != nil {
+			log.Printf("⚠️ Failed to remove storage label from node %s: %v", node.Name, err)
+			continue
+		}
+
+		log.Printf("🗑️ Removed storage label from node: %s", node.Name)
+		cleanedCount++
+	}
+
+	log.Printf("🗑️ Cleaned up storage labels from %d worker nodes", cleanedCount)
 	return nil
 }
 
