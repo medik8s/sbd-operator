@@ -61,7 +61,7 @@ The SBD Agent operates with minimal Kubernetes permissions because its primary f
 | `nodes` | `get`, `list`, `watch` | Read-only access for node name to ID mapping |
 | `pods` | `get`, `list`, `watch` | Monitor agent pods and leader election |
 | `leases` | `create`, `get`, `list`, `patch`, `update`, `watch` | Coordinate leader election for HA |
-| `events` | `create`, `patch` | Emit operational events for observability |
+| `events` | `create`, `patch`, `list`, `watch` | Emit operational events and monitor cluster events for observability |
 | `sbdconfigs` | `create`, `delete`, `get`, `list`, `patch`, `update`, `watch` | Manage SBD configuration resources |
 | `sbdconfigs/finalizers` | `update` | Handle proper cleanup during deletion |
 | `sbdconfigs/status` | `get`, `patch`, `update` | Update configuration status |

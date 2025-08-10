@@ -10,11 +10,14 @@ rules:
   - events
   verbs:
   - create
+  - list
   - patch
+  - watch
 - apiGroups:
   - ""
   resources:
   - nodes
+  - pods
   verbs:
   - get
   - list
@@ -32,13 +35,6 @@ rules:
   - patch
   - update
   - watch
-- apiGroups:
-  - ""
-  resources:
-  - pods
-  verbs:
-  - get
-  - list
 - apiGroups:
   - apps
   resources:
