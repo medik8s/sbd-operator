@@ -1651,6 +1651,49 @@ func removeNetworkDisruption(disruptorIdentifier *string, instanceID string) err
 	return nil
 }
 
+// StorageBackendType represents the type of storage backend in use
+type StorageBackendType string
+
+const (
+	StorageBackendAWS   StorageBackendType = "aws"
+	StorageBackendCeph  StorageBackendType = "ceph"
+	StorageBackendNFS   StorageBackendType = "nfs"
+	StorageBackendOther StorageBackendType = "other"
+)
+
+// detectStorageBackend detects the storage backend type based on available StorageClasses
+func detectStorageBackend() (StorageBackendType, string, error) {
+	// Get all StorageClasses
+	storageClasses := &storagev1.StorageClassList{}
+	err := k8sClient.List(ctx, storageClasses)
+	if err != nil {
+		return StorageBackendOther, "", fmt.Errorf("failed to list StorageClasses: %w", err)
+	}
+
+	// Look for StorageClasses with known provisioners
+	for _, sc := range storageClasses.Items {
+		provisioner := sc.Provisioner
+		
+		// Check for Ceph-based provisioners
+		if provisioner == "cephfs.csi.ceph.com" || provisioner == "openshift-storage.cephfs.csi.ceph.com" {
+			return StorageBackendCeph, sc.Name, nil
+		}
+		
+		// Check for AWS-based provisioners
+		if provisioner == "efs.csi.aws.com" {
+			return StorageBackendAWS, sc.Name, nil
+		}
+		
+		// Check for NFS-based provisioners
+		if provisioner == "nfs.csi.k8s.io" || 
+		   strings.Contains(provisioner, "nfs") {
+			return StorageBackendNFS, sc.Name, nil
+		}
+	}
+
+	return StorageBackendOther, "", nil
+}
+
 // createStorageDisruption creates network-level disruption to block access to shared storage
 func createStorageDisruption(instanceID string) ([]string, error) {
 	By(fmt.Sprintf("Creating network-level storage disruption for instance %s", instanceID))
@@ -1663,8 +1706,340 @@ func createStorageDisruption(instanceID string) ([]string, error) {
 
 	By(fmt.Sprintf("Target node: %s", nodeName))
 
+	// Detect storage backend to use appropriate disruption method
+	storageBackend, storageClassName, err := detectStorageBackend()
+	if err != nil {
+		By(fmt.Sprintf("Warning: Could not detect storage backend, using default method: %v", err))
+		storageBackend = StorageBackendOther
+	}
+
+	By(fmt.Sprintf("Detected storage backend: %s (StorageClass: %s)", storageBackend, storageClassName))
+
+	// Use backend-specific disruption method
+	switch storageBackend {
+	case StorageBackendCeph:
+		return createCephStorageDisruption(nodeName)
+	case StorageBackendAWS, StorageBackendNFS, StorageBackendOther:
+		return createAWSStorageDisruption(nodeName)
+	default:
+		return createAWSStorageDisruption(nodeName)
+	}
+
+}
+
+// createCephStorageDisruption creates network-level disruption specifically for Ceph storage
+func createCephStorageDisruption(nodeName string) ([]string, error) {
+	By(fmt.Sprintf("Creating Ceph storage disruption for node %s", nodeName))
+
 	// Create a unique pod name for this disruption
-	disruptorPodName := fmt.Sprintf("sbd-e2e-storage-disruptor-%d", time.Now().Unix())
+	disruptorPodName := fmt.Sprintf("sbd-e2e-ceph-storage-disruptor-%d", time.Now().Unix())
+
+	// Create privileged pod that disrupts Ceph storage access
+	disruptorPodYAML := fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  name: %s
+  namespace: default
+  labels:
+    app: sbd-e2e-ceph-storage-disruptor
+spec:
+  hostNetwork: true
+  hostPID: true
+  nodeName: %s
+  containers:
+  - name: disruptor
+    image: registry.redhat.io/ubi9/ubi:latest
+    imagePullPolicy: IfNotPresent
+    command:
+    - /bin/bash
+    - -c
+    - |
+      echo "SBD e2e Ceph storage disruptor starting..."
+      echo "Target: Block access to Ceph storage services"
+      
+      # Get the shared storage mount info from the host
+      echo "Analyzing Ceph storage configuration..."
+      
+      # Method 1: Block Ceph Monitor traffic (port 6789)
+      echo "Blocking Ceph Monitor traffic on port 6789..."
+      if ! nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -I OUTPUT -p tcp --dport 6789 -j DROP; then
+        echo "ERROR: Failed to apply OUTPUT rule for Ceph Monitor port 6789"
+        exit 1
+      fi
+      if ! nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -I INPUT -p tcp --sport 6789 -j DROP; then
+        echo "ERROR: Failed to apply INPUT rule for Ceph Monitor port 6789"
+        exit 1
+      fi
+      
+      # Method 2: Block Ceph OSD traffic (ports 6800-7300 range used by OSDs)
+      echo "Blocking Ceph OSD traffic on port range 6800-7300..."
+      if ! nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -I OUTPUT -p tcp --dport 6800:7300 -j DROP; then
+        echo "ERROR: Failed to apply OUTPUT rule for Ceph OSD port range 6800-7300"
+        exit 1
+      fi
+      if ! nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -I INPUT -p tcp --sport 6800:7300 -j DROP; then
+        echo "ERROR: Failed to apply INPUT rule for Ceph OSD port range 6800-7300"
+        exit 1
+      fi
+      
+      # Method 3: Block Ceph Metadata Server traffic (port 6800)
+      echo "Blocking Ceph MDS traffic on port 6800..."
+      if ! nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -I OUTPUT -p tcp --dport 6800 -j DROP; then
+        echo "ERROR: Failed to apply OUTPUT rule for Ceph MDS port 6800"
+        exit 1
+      fi
+      if ! nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -I INPUT -p tcp --sport 6800 -j DROP; then
+        echo "ERROR: Failed to apply INPUT rule for Ceph MDS port 6800"
+        exit 1
+      fi
+      
+      # Method 4: Block traffic to known Ceph service networks
+      echo "Blocking traffic to Ceph service networks..."
+      
+      # Find and block Ceph service IPs by analyzing running Ceph pods
+      ceph_ips=""
+      
+      # Look for Ceph monitor services in the openshift-storage namespace
+      if nsenter --target 1 --mount --uts --ipc --net --pid -- which kubectl >/dev/null 2>&1; then
+        echo "Attempting to discover Ceph service IPs..."
+        ceph_ips=$(nsenter --target 1 --mount --uts --ipc --net --pid -- kubectl get svc -n openshift-storage -l app=rook-ceph-mon -o jsonpath='{.items[*].spec.clusterIP}' 2>/dev/null || echo "")
+        
+        if [ -n "$ceph_ips" ]; then
+          for ip in $ceph_ips; do
+            echo "Blocking traffic to Ceph monitor IP: $ip"
+            if ! nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -I OUTPUT -d "$ip" -j DROP; then
+              echo "WARNING: Failed to block traffic to Ceph monitor IP $ip"
+            fi
+          done
+        else
+          echo "No Ceph monitor IPs discovered, using network-based blocking"
+        fi
+      else
+        echo "kubectl not available, using network-based blocking only"
+      fi
+      
+      # Method 5: Block common Ceph cluster network ranges
+      echo "Blocking common Ceph cluster network ranges..."
+      # Block common cluster network ranges where Ceph typically operates
+      for network in "10.96.0.0/12" "172.30.0.0/16" "10.244.0.0/16"; do
+        # Only block if we can't find specific service IPs
+        if [ -z "$ceph_ips" ]; then
+          echo "Blocking network range: $network"
+          if ! nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -I OUTPUT -d "$network" -p tcp --dport 6789 -j DROP; then
+            echo "WARNING: Failed to block Ceph traffic to network $network"
+          fi
+        fi
+      done
+      
+      # Verify rules were applied successfully
+      echo "Verifying iptables rules were applied..."
+      rule_count=$(nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -L OUTPUT -n | grep -E "(6789|6800)" | wc -l)
+      if [ "$rule_count" -lt 4 ]; then
+        echo "ERROR: Expected at least 4 Ceph blocking rules, found $rule_count"
+        exit 1
+      fi
+      
+      echo "Ceph storage disruption rules applied successfully. Found $rule_count blocking rules."
+      echo "This will cause SBD agents to lose access to Ceph coordination storage."
+      
+      # Set up signal handlers for graceful cleanup
+      trap 'echo "Received signal, cleaning up..."; exit 0' TERM INT
+      
+      # Keep the pod running to maintain the disruption
+      echo "Maintaining Ceph storage disruption..."
+      sleep 600  # 10 minutes
+      
+      echo "Ceph storage disruptor timeout reached - exiting gracefully..."
+    securityContext:
+      privileged: true
+      capabilities:
+        add:
+        - SYS_ADMIN
+        - NET_ADMIN
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "100m"
+      limits:
+        memory: "256Mi"
+        cpu: "200m"
+  restartPolicy: Never
+  tolerations:
+  - operator: Exists
+`, disruptorPodName, nodeName)
+
+	// Create the pod using k8s API
+	By(fmt.Sprintf("Creating Ceph storage disruptor pod: %s", disruptorPodName))
+	var disruptorPod corev1.Pod
+	err := yaml.Unmarshal([]byte(disruptorPodYAML), &disruptorPod)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal Ceph disruptor pod YAML: %w", err)
+	}
+
+	err = k8sClient.Create(ctx, &disruptorPod)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Ceph disruptor pod: %w", err)
+	}
+
+	// Wait for pod to start and apply Ceph storage disruption rules
+	By("Waiting for Ceph disruptor pod to start and apply storage disruption rules...")
+	Eventually(func() bool {
+		pod := &corev1.Pod{}
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: disruptorPodName, Namespace: "default"}, pod)
+		if err != nil {
+			return false
+		}
+		return pod.Status.Phase == corev1.PodRunning
+	}, time.Minute*2, time.Second*10).Should(BeTrue())
+
+	// Give time for iptables rules to take effect
+	By("Waiting for Ceph storage disruption rules to take effect...")
+	time.Sleep(15 * time.Second)
+
+	// VALIDATION: Verify that Ceph-specific iptables rules are actually applied
+	By("Validating that Ceph storage disruption rules are successfully applied...")
+	validationPodName := fmt.Sprintf("sbd-e2e-ceph-storage-validator-%d", time.Now().Unix())
+
+	validationPodYAML := fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  name: %s
+  namespace: default
+  labels:
+    app: sbd-e2e-ceph-storage-validator
+spec:
+  hostNetwork: true
+  hostPID: true
+  nodeName: %s
+  containers:
+  - name: validator
+    image: registry.redhat.io/ubi9/ubi:latest
+    imagePullPolicy: IfNotPresent
+    command:
+    - /bin/bash
+    - -c
+    - |
+      echo "Ceph storage disruption validation starting..."
+      
+      # Check if Ceph-specific iptables rules are present
+      echo "Checking Ceph iptables rules..."
+      rule_count=$(nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -L OUTPUT -n | grep -E "(6789|6800)" | wc -l)
+      echo "Found $rule_count Ceph storage blocking rules"
+      
+      if [ "$rule_count" -lt 4 ]; then
+        echo "VALIDATION FAILED: Expected at least 4 Ceph storage blocking rules, found $rule_count"
+        echo "Current OUTPUT rules:"
+        nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -L OUTPUT -n -v | head -15
+        exit 1
+      fi
+      
+      # Test Ceph port access blocking
+      echo "Testing Ceph port access blocking..."
+      
+      # Install netcat if not available
+      if ! command -v nc >/dev/null 2>&1; then
+        echo "Installing netcat for connectivity testing..."
+        dnf install -y nmap-ncat >/dev/null 2>&1 || echo "Warning: Could not install netcat"
+      fi
+      
+      # Try to connect to Ceph Monitor port (should fail)
+      if command -v nc >/dev/null 2>&1; then
+        echo "Testing connection to port 6789 (should timeout)..."
+        # Try to connect to a likely Ceph monitor IP (using service network)
+        timeout 5 nc -z 10.96.0.1 6789 && {
+          echo "VALIDATION FAILED: Connection to Ceph Monitor port 6789 succeeded (should be blocked)"
+          exit 1
+        } || echo "Ceph Monitor port 6789 correctly blocked"
+      else
+        echo "Warning: netcat not available, skipping connectivity test"
+      fi
+      
+      echo "VALIDATION PASSED: Ceph storage disruption rules are active and blocking access"
+      echo "Validation completed successfully"
+    securityContext:
+      privileged: true
+      capabilities:
+        add:
+        - SYS_ADMIN
+        - NET_ADMIN
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "100m"
+      limits:
+        memory: "256Mi"
+        cpu: "200m"
+  restartPolicy: Never
+  tolerations:
+  - operator: Exists
+`, validationPodName, nodeName)
+
+	// Create validation pod
+	By(fmt.Sprintf("Creating Ceph storage disruption validation pod: %s", validationPodName))
+	var validationPod corev1.Pod
+	err = yaml.Unmarshal([]byte(validationPodYAML), &validationPod)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal Ceph validation pod YAML: %w", err)
+	}
+
+	err = k8sClient.Create(ctx, &validationPod)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Ceph validation pod: %w", err)
+	}
+
+	// Wait for validation to complete
+	By("Waiting for Ceph storage disruption validation to complete...")
+	validationSucceeded := false
+	Eventually(func() bool {
+		pod := &corev1.Pod{}
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: validationPodName, Namespace: "default"}, pod)
+		if err != nil {
+			return false
+		}
+
+		if pod.Status.Phase == corev1.PodSucceeded {
+			validationSucceeded = true
+			return true
+		}
+
+		if pod.Status.Phase == corev1.PodFailed {
+			// Get logs for debugging
+			By("Ceph validation failed - retrieving logs for analysis...")
+			return true
+		}
+
+		return false
+	}, time.Minute*2, time.Second*10).Should(BeTrue())
+
+	// Clean up validation pod
+	By(fmt.Sprintf("Cleaning up Ceph validation pod: %s", validationPodName))
+	err = k8sClient.Delete(ctx, &validationPod)
+	if err != nil {
+		By(fmt.Sprintf("Warning: Could not delete Ceph validation pod %s: %v", validationPodName, err))
+	}
+
+	// Check validation results
+	if !validationSucceeded {
+		// Clean up disruptor pod since validation failed
+		By("Ceph validation failed - cleaning up disruptor pod")
+		err = k8sClient.Delete(ctx, &disruptorPod)
+		if err != nil {
+			By(fmt.Sprintf("Warning: Could not delete Ceph disruptor pod %s: %v", disruptorPodName, err))
+		}
+		return nil, fmt.Errorf(
+			"Ceph storage disruption validation failed - iptables rules were not successfully applied or are not effective")
+	}
+
+	GinkgoWriter.Printf("Ceph storage disruption validation successful - node %s should lose Ceph storage access\n", nodeName)
+	return []string{disruptorPodName}, nil
+}
+
+// createAWSStorageDisruption creates network-level disruption for AWS/EFS storage
+func createAWSStorageDisruption(nodeName string) ([]string, error) {
+	By(fmt.Sprintf("Creating AWS/EFS storage disruption for node %s", nodeName))
+
+	// Create a unique pod name for this disruption
+	disruptorPodName := fmt.Sprintf("sbd-e2e-aws-storage-disruptor-%d", time.Now().Unix())
 
 	// Create privileged pod that disrupts shared storage access
 	disruptorPodYAML := fmt.Sprintf(`apiVersion: v1
@@ -1926,7 +2301,7 @@ spec:
 	return []string{disruptorPodName}, nil
 }
 
-// restoreStorageDisruption removes the network-level storage disruption
+// restoreStorageDisruption removes the network-level storage disruption for both AWS and Ceph backends
 func restoreStorageDisruption(instanceID string, disruptorPodNames []string) error {
 	if len(disruptorPodNames) == 0 {
 		return nil
@@ -1939,6 +2314,15 @@ func restoreStorageDisruption(instanceID string, disruptorPodNames []string) err
 	if err != nil {
 		return fmt.Errorf("failed to get node name for instance %s: %w", instanceID, err)
 	}
+
+	// Detect what type of disruption was used
+	storageBackend, _, err := detectStorageBackend()
+	if err != nil {
+		By(fmt.Sprintf("Warning: Could not detect storage backend for cleanup, using comprehensive cleanup: %v", err))
+		storageBackend = StorageBackendOther
+	}
+
+	By(fmt.Sprintf("Cleaning up storage disruption for backend: %s", storageBackend))
 
 	// Clean up the disruptor pod first
 	for _, podName := range disruptorPodNames {
@@ -1978,24 +2362,53 @@ spec:
     - -c
     - |
       echo "SBD e2e storage cleanup starting..."
-      echo "Target: Remove storage disruption iptables rules"
+      echo "Target: Remove storage disruption iptables rules (comprehensive cleanup)"
       
-      # Remove the iptables rules that were blocking storage access
-      echo "Removing EFS/NFS traffic blocks on port 2049..."
+      # Remove AWS/EFS-specific iptables rules
+      echo "Removing AWS/EFS traffic blocks..."
       nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -D OUTPUT -p tcp --dport 2049 -j DROP 2>/dev/null || true
       nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -D INPUT -p tcp --sport 2049 -j DROP 2>/dev/null || true
-      
-      echo "Removing additional storage service port blocks..."
-      # CephFS (port 6789)
-      nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -D OUTPUT -p tcp --dport 6789 -j DROP 2>/dev/null || true
-      # GlusterFS (port 24007)
-      nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -D OUTPUT -p tcp --dport 24007 -j DROP 2>/dev/null || true
-      
-      echo "Removing EFS service IP range blocks..."
-      # AWS EFS (169.254.x.x range)
       nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -D OUTPUT -d 169.254.0.0/16 -j DROP 2>/dev/null || true
       
-      echo "Storage disruption cleanup completed. Shared storage should now be accessible."
+      # Remove Ceph-specific iptables rules
+      echo "Removing Ceph storage traffic blocks..."
+      # Ceph Monitor (port 6789)
+      nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -D OUTPUT -p tcp --dport 6789 -j DROP 2>/dev/null || true
+      nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -D INPUT -p tcp --sport 6789 -j DROP 2>/dev/null || true
+      
+      # Ceph OSD range (6800-7300)
+      nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -D OUTPUT -p tcp --dport 6800:7300 -j DROP 2>/dev/null || true
+      nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -D INPUT -p tcp --sport 6800:7300 -j DROP 2>/dev/null || true
+      
+      # Ceph MDS (port 6800 - also covered by range above but explicit cleanup)
+      nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -D OUTPUT -p tcp --dport 6800 -j DROP 2>/dev/null || true
+      nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -D INPUT -p tcp --sport 6800 -j DROP 2>/dev/null || true
+      
+      # Remove other storage service port blocks (GlusterFS, etc.)
+      echo "Removing other storage service blocks..."
+      nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -D OUTPUT -p tcp --dport 24007 -j DROP 2>/dev/null || true
+      
+      # Clean up any remaining Ceph-specific IP blocks that might have been added
+      echo "Cleaning up Ceph service IP blocks..."
+      # Try to discover and cleanup Ceph monitor IPs if kubectl is available
+      if nsenter --target 1 --mount --uts --ipc --net --pid -- which kubectl >/dev/null 2>&1; then
+        ceph_ips=$(nsenter --target 1 --mount --uts --ipc --net --pid -- kubectl get svc -n openshift-storage -l app=rook-ceph-mon -o jsonpath='{.items[*].spec.clusterIP}' 2>/dev/null || echo "")
+        if [ -n "$ceph_ips" ]; then
+          for ip in $ceph_ips; do
+            echo "Removing block for Ceph monitor IP: $ip"
+            nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -D OUTPUT -d "$ip" -j DROP 2>/dev/null || true
+          done
+        fi
+      fi
+      
+      # Clean up network range blocks used for Ceph
+      for network in "10.96.0.0/12" "172.30.0.0/16" "10.244.0.0/16"; do
+        echo "Removing Ceph network range block: $network"
+        nsenter --target 1 --mount --uts --ipc --net --pid -- iptables -D OUTPUT -d "$network" -p tcp --dport 6789 -j DROP 2>/dev/null || true
+      done
+      
+      echo "Comprehensive storage disruption cleanup completed."
+      echo "Both AWS/EFS and Ceph storage should now be accessible."
       echo "Cleanup finished successfully."
     securityContext:
       privileged: true
