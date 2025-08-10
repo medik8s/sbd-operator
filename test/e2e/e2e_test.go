@@ -2137,16 +2137,16 @@ spec:
 `, disruptorPodName, nodeName)
 
 	// Create the pod using k8s API
-	By(fmt.Sprintf("Creating storage disruptor pod: %s", disruptorPodName))
+	By(fmt.Sprintf("Creating Ceph storage disruptor pod: %s", disruptorPodName))
 	var disruptorPod corev1.Pod
-	err = yaml.Unmarshal([]byte(disruptorPodYAML), &disruptorPod)
+	err := yaml.Unmarshal([]byte(disruptorPodYAML), &disruptorPod)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal disruptor pod YAML: %w", err)
 	}
 
 	err = k8sClient.Create(ctx, &disruptorPod)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create disruptor pod: %w", err)
+		return nil, fmt.Errorf("failed to create Ceph disruptor pod: %w", err)
 	}
 
 	// Wait for pod to start and apply storage disruption rules
@@ -2242,16 +2242,16 @@ spec:
 `, validationPodName, nodeName)
 
 	// Create validation pod
-	By(fmt.Sprintf("Creating storage disruption validation pod: %s", validationPodName))
+	By(fmt.Sprintf("Creating Ceph storage disruption validation pod: %s", validationPodName))
 	var validationPod corev1.Pod
 	err = yaml.Unmarshal([]byte(validationPodYAML), &validationPod)
 	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal validation pod YAML: %w", err)
+		return nil, fmt.Errorf("failed to unmarshal Ceph validation pod YAML: %w", err)
 	}
 
 	err = k8sClient.Create(ctx, &validationPod)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create validation pod: %w", err)
+		return nil, fmt.Errorf("failed to create Ceph validation pod: %w", err)
 	}
 
 	// Wait for validation to complete
