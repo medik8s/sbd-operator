@@ -22,6 +22,7 @@ The controller maintains a list of known RWX-compatible provisioners:
 - `filestore.csi.storage.gke.io` (GCP Filestore)
 - `nfs.csi.k8s.io` (NFS CSI)
 - `cephfs.csi.ceph.com` (CephFS)
+- `openshift-storage.cephfs.csi.ceph.com` (OpenShift Data Foundation CephFS)
 - `gluster.org/glusterfs` (GlusterFS)
 - Various NFS provisioners
 

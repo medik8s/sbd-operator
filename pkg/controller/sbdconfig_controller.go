@@ -410,7 +410,8 @@ func (r *SBDConfigReconciler) isRWXCompatibleProvisioner(provisioner string) boo
 		"k8s-sigs.io/nfs-subdir-external-provisioner":   true,
 
 		// CephFS
-		"cephfs.csi.ceph.com": true,
+		"cephfs.csi.ceph.com":                    true,
+		"openshift-storage.cephfs.csi.ceph.com": true,
 
 		// GlusterFS
 		"gluster.org/glusterfs": true,

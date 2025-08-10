@@ -186,8 +186,12 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 
 			var rwxStorageClass *storagev1.StorageClass
 			for _, sc := range storageClasses.Items {
-				// Look for storage classes that are likely to support RWX
-				// Common patterns: efs, nfs, cephfs, glusterfs
+				// First check by provisioner (more reliable)
+				if isRWXCompatibleProvisioner(sc.Provisioner) {
+					rwxStorageClass = &sc
+					break
+				}
+				// Fallback to name-based detection for legacy support
 				scName := strings.ToLower(sc.Name)
 				if strings.Contains(scName, "efs") || strings.Contains(scName, "nfs") ||
 					strings.Contains(scName, "cephfs") || strings.Contains(scName, "glusterfs") ||
@@ -388,3 +392,36 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 		})
 	})
 })
+
+// isRWXCompatibleProvisioner checks if a CSI provisioner is known to support ReadWriteMany
+func isRWXCompatibleProvisioner(provisioner string) bool {
+	// Known RWX-compatible provisioners
+	rwxProvisioners := map[string]bool{
+		// AWS
+		"efs.csi.aws.com": true,
+
+		// Azure
+		"file.csi.azure.com": true,
+
+		// GCP
+		"filestore.csi.storage.gke.io": true,
+
+		// NFS
+		"nfs.csi.k8s.io":                                true,
+		"cluster.local/nfs-subdir-external-provisioner": true,
+		"k8s-sigs.io/nfs-subdir-external-provisioner":   true,
+
+		// CephFS
+		"cephfs.csi.ceph.com":                    true,
+		"openshift-storage.cephfs.csi.ceph.com": true,
+
+		// GlusterFS
+		"gluster.org/glusterfs": true,
+
+		// Other known RWX provisioners
+		"nfs-provisioner": true,
+		"csi-nfsplugin":   true,
+	}
+
+	return rwxProvisioners[provisioner]
+}
