@@ -407,6 +407,27 @@ cleanup_environment() {
     $KUBECTL delete clusterrolebinding -l app.kubernetes.io/managed-by=sbd-operator --ignore-not-found=true || true
     $KUBECTL delete clusterrole -l app.kubernetes.io/managed-by=sbd-operator --ignore-not-found=true || true
     
+    # Clean up SBD-related webhooks
+    log_info "Cleaning up SBD-related webhook configurations"
+    $KUBECTL delete validatingwebhookconfiguration \
+        validating-webhook-configuration \
+        sbd-operator-validating-webhook-configuration \
+        e2e-webhook-configuration \
+        sbd-operator-e2e-webhook-configuration \
+        --ignore-not-found=true || true
+    
+    $KUBECTL delete mutatingwebhookconfiguration \
+        mutating-webhook-configuration \
+        sbd-operator-mutating-webhook-configuration \
+        --ignore-not-found=true || true
+    
+    # Clean up webhook services
+    $KUBECTL delete service \
+        webhook-service \
+        sbd-operator-webhook-service \
+        -n sbd-operator-system \
+        --ignore-not-found=true || true
+    
     # Clean up webhook certificates secret
     $KUBECTL delete secret webhook-server-certs -n sbd-operator-system --ignore-not-found=true || true
     
