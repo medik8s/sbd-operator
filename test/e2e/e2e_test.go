@@ -1541,7 +1541,7 @@ spec:
 	}
 
 	// Wait for pod to start and stop kubelet
-	// We may not see the pod move from Pending to Running since kubelet is stopped
+	// We will not see the pod move from Pending to Running since kubelet is stopped
 	By("Waiting for disruptor pod to start...")
 	Eventually(func() bool {
 		pod := &corev1.Pod{}
@@ -1551,7 +1551,7 @@ spec:
 		}
 		GinkgoWriter.Printf("Disruptor pod status: %s\n", pod.Status.Phase)
 		return pod.Status.Phase != corev1.PodPending
-	}, time.Minute*2, time.Second*10).Should(BeTrue())
+	}, time.Minute*2, time.Second*10).ShouldNot(BeTrue())
 
 	return &disruptorPodName, nil
 }
