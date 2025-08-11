@@ -23,6 +23,7 @@ GIT_DESCRIBE ?= $(shell git describe --tags --dirty 2>/dev/null || echo "unknown
 IMG ?= $(QUAY_OPERATOR_IMG):$(TAG)
 OPERATOR_SHA=$$(podman inspect $(QUAY_OPERATOR_IMG):$(TAG) --format "{{.ID}}" )
 AGENT_SHA=$$(podman inspect $(QUAY_AGENT_IMG):$(TAG) --format "{{.ID}}" )
+TEST_ARGS ?= ""
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -101,25 +102,28 @@ test-e2e-clean: test-prep test-e2e ## Run e2e tests with complete deployment pip
 
 .PHONY: test-e2e
 test-e2e: ginkgo ## Run e2e tests again (assumes operator already deployed).
+	@mkdir -p testrun/sbd-operator-system
 	@echo "Running e2e tests (operator must be already deployed)..."
-	@mkdir -p testrun
-	$(GINKGO) -v  test/e2e | tee testrun/execution.log
+	$(GINKGO) $(TEST_ARGS) test/e2e | tee testrun/execution.log
 
 .PHONY: test-e2e-with-webhooks  
 test-e2e-with-webhooks: sync-test-files ## Run e2e tests with webhooks enabled using deployment pipeline.
+	@mkdir -p testrun/sbd-operator-system
 	@echo "Running e2e tests with webhooks enabled via deployment pipeline..."
 	@# The run-tests.sh script handles webhook certificate generation automatically
 	@scripts/prep-tests.sh --type e2e --env cluster -v 
+	$(GINKGO) $(TEST_ARGS) test/e2e | tee testrun/execution.log
 
 .PHONY: test-smoke
 test-smoke: ginkgo ## Run smoke tests with building images.
+	@mkdir -p testrun/sbd-operator-system
 	@echo "Running smoke tests with image building..."
-	$(GINKGO) -v  test/e2e | tee testrun/execution.log
+	$(GINKGO) $(TEST_ARGS) test/e2e | tee testrun/execution.log
 
 
 .PHONY: test-prep
 test-prep: build-openshift-installer sync-test-files ## Run smoke tests with building images.
-	@scripts/prep-tests.sh --env cluster -v
+	@scripts/prep-tests.sh --env cluster -v --no-webhooks
 # -ginkgo.label-filter="Remediation" 
 
 .PHONY: load-images
