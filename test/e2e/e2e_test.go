@@ -295,7 +295,8 @@ func testBasicSBDConfiguration() {
 	testStorageClassName := rwxStorageClass.Name
 	GinkgoWriter.Printf("Selected storage class for testing: %s\n", testStorageClassName)
 
-	sbdConfig, err := testNamespace.CreateSBDConfig("test-sbd-config", func(config *medik8sv1alpha1.SBDConfig) {
+	name := fmt.Sprintf("test-sbd-config-%d", time.Now().UnixNano()/1000000000)
+	sbdConfig, err := testNamespace.CreateSBDConfig(name, func(config *medik8sv1alpha1.SBDConfig) {
 		config.Spec.SbdWatchdogPath = "/dev/watchdog"
 		config.Spec.SharedStorageClass = testStorageClassName
 		config.Spec.StaleNodeTimeout = &metav1.Duration{Duration: 2 * time.Hour}
@@ -1268,6 +1269,22 @@ func cleanupTestArtifacts() {
 			},
 		}
 		_ = k8sClient.Delete(ctx, pod)
+	}
+
+	// Clean up SBDRemediation CRs to prevent namespace deletion issues
+	By("Cleaning up SBDRemediation CRs from test namespace")
+	sbdRemediations := &medik8sv1alpha1.SBDRemediationList{}
+	err = k8sClient.List(ctx, sbdRemediations, client.InNamespace(testNamespace.Name))
+	if err == nil {
+		for _, remediation := range sbdRemediations.Items {
+			// Remove finalizers first to prevent stuck resources
+			if len(remediation.Finalizers) > 0 {
+				remediation.Finalizers = nil
+				_ = k8sClient.Update(ctx, &remediation)
+			}
+			_ = k8sClient.Delete(ctx, &remediation)
+			By(fmt.Sprintf("Cleaned up SBDRemediation CR: %s", remediation.Name))
+		}
 	}
 
 	// Clean up temporary SCCs that might be left over from failed tests
