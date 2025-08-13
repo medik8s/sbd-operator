@@ -73,11 +73,10 @@ type NodeCondition struct {
 }
 
 var (
-	clusterInfo    ClusterInfo
-	awsSession     *session.Session
-	ec2Client      *ec2.EC2
-	awsRegion      string
-	awsInitialized bool // Track if AWS was successfully initialized
+	clusterInfo ClusterInfo
+	awsSession  *session.Session
+	ec2Client   *ec2.EC2
+	awsRegion   string
 
 	// Kubernetes clients - now using shared utilities
 	testClients *utils.TestClients
@@ -333,7 +332,7 @@ func isRWXCompatibleProvisioner(provisioner string) bool {
 		"k8s-sigs.io/nfs-subdir-external-provisioner":   true,
 
 		// CephFS
-		"cephfs.csi.ceph.com":                    true,
+		"cephfs.csi.ceph.com":                   true,
 		"openshift-storage.cephfs.csi.ceph.com": true,
 
 		// GlusterFS
@@ -509,6 +508,19 @@ func checkNodeReboot(nodeName, reason, originalBootTime string, timeout time.Dur
 			}
 			return false
 		}, time.Minute*10, time.Second*30).Should(BeTrue())
+
+		// Force-Delete any SBD agent pods from the node, since they will be left in a terminating state due to the reboot
+		pods := &corev1.PodList{}
+		err := k8sClient.List(ctx, pods, client.InNamespace(testNamespace.Name), client.MatchingLabels{"app": "sbd-agent"})
+		Expect(err).NotTo(HaveOccurred(), "Failed to list SBD agent pods")
+
+		for _, pod := range pods.Items {
+			if pod.Spec.NodeName == nodeName {
+				By(fmt.Sprintf("Force-deleting SBD agent pod %s from node %s", pod.Name, nodeName))
+				err = k8sClient.Delete(ctx, &pod)
+				Expect(err).NotTo(HaveOccurred(), "Failed to force-delete SBD agent pod %s", pod.Name)
+			}
+		}
 	}
 }
 
@@ -541,7 +553,7 @@ func checkNodeNotReady(nodeName, reason string, timeout time.Duration, enforceFn
 
 func testStorageAccessInterruption(cluster ClusterInfo) {
 	// Skip if AWS is not available
-	if !awsInitialized {
+	if !testClients.AWSInitialized {
 		Skip("Storage access interruption test requires AWS - skipping")
 	}
 
@@ -1177,87 +1189,90 @@ func testLargeClusterCoordination(cluster ClusterInfo) {
 	GinkgoWriter.Printf("Large cluster coordination test completed successfully\n")
 }
 
-func cleanupTestArtifacts() {
+func cleanupTestArtifacts(testNamespace *utils.TestNamespace) {
 	// Clean up any disruption pods or test artifacts
 	disruptionPods := []string{"storage-disruptor", "network-disruptor", "resource-consumer", "kubelet-stress-test"}
 
 	// Clean up storage disruptor pods (they have timestamped names)
 	storageDisruptorPods := &corev1.PodList{}
-	err := k8sClient.List(ctx, storageDisruptorPods, client.InNamespace("default"),
+	err := testNamespace.Clients.Client.List(testNamespace.Clients.Context, storageDisruptorPods, client.InNamespace("default"),
 		client.MatchingLabels{"app": "sbd-e2e-storage-disruptor"})
 	if err == nil {
 		for _, pod := range storageDisruptorPods.Items {
-			_ = k8sClient.Delete(ctx, &pod)
+			_ = testNamespace.Clients.Client.Delete(testNamespace.Clients.Context, &pod)
+			removeStorageDisruption(pod.Spec.NodeName)
 		}
 	}
 
 	// Clean up Ceph storage disruptor pods (they have timestamped names)
 	cephStorageDisruptorPods := &corev1.PodList{}
-	err = k8sClient.List(ctx, cephStorageDisruptorPods, client.InNamespace("default"),
+	err = testNamespace.Clients.Client.List(testNamespace.Clients.Context, cephStorageDisruptorPods, client.InNamespace("default"),
 		client.MatchingLabels{"app": "sbd-e2e-ceph-storage-disruptor"})
 	if err == nil {
 		for _, pod := range cephStorageDisruptorPods.Items {
-			_ = k8sClient.Delete(ctx, &pod)
+			_ = testNamespace.Clients.Client.Delete(testNamespace.Clients.Context, &pod)
+			removeStorageDisruption(pod.Spec.NodeName)
 		}
 	}
 
 	// Clean up AWS storage disruptor pods (they have timestamped names)
 	awsStorageDisruptorPods := &corev1.PodList{}
-	err = k8sClient.List(ctx, awsStorageDisruptorPods, client.InNamespace("default"),
+	err = testNamespace.Clients.Client.List(testNamespace.Clients.Context, awsStorageDisruptorPods, client.InNamespace("default"),
 		client.MatchingLabels{"app": "sbd-e2e-aws-storage-disruptor"})
 	if err == nil {
 		for _, pod := range awsStorageDisruptorPods.Items {
-			_ = k8sClient.Delete(ctx, &pod)
+			_ = testNamespace.Clients.Client.Delete(testNamespace.Clients.Context, &pod)
+			removeStorageDisruption(pod.Spec.NodeName)
 		}
 	}
 
 	// Clean up kubelet disruptor pods (they have timestamped names)
 	kubeletDisruptorPods := &corev1.PodList{}
-	err = k8sClient.List(ctx, kubeletDisruptorPods, client.InNamespace("default"),
+	err = testNamespace.Clients.Client.List(testNamespace.Clients.Context, kubeletDisruptorPods, client.InNamespace("default"),
 		client.MatchingLabels{"app": "sbd-e2e-kubelet-disruptor"})
 	if err == nil {
 		for _, pod := range kubeletDisruptorPods.Items {
-			_ = k8sClient.Delete(ctx, &pod)
+			_ = testNamespace.Clients.Client.Delete(testNamespace.Clients.Context, &pod)
 		}
 	}
 
 	// Clean up storage cleanup pods (they have timestamped names)
 	storageCleanupPods := &corev1.PodList{}
-	err = k8sClient.List(ctx, storageCleanupPods, client.InNamespace("default"),
+	err = testNamespace.Clients.Client.List(testNamespace.Clients.Context, storageCleanupPods, client.InNamespace("default"),
 		client.MatchingLabels{"app": "sbd-e2e-storage-cleanup"})
 	if err == nil {
 		for _, pod := range storageCleanupPods.Items {
-			_ = k8sClient.Delete(ctx, &pod)
+			_ = testNamespace.Clients.Client.Delete(testNamespace.Clients.Context, &pod)
 		}
 	}
 
 	// Clean up storage validation pods (they have timestamped names)
 	storageValidationPods := &corev1.PodList{}
-	err = k8sClient.List(ctx, storageValidationPods, client.InNamespace("default"),
+	err = testNamespace.Clients.Client.List(testNamespace.Clients.Context, storageValidationPods, client.InNamespace("default"),
 		client.MatchingLabels{"app": "sbd-e2e-storage-validator"})
 	if err == nil {
 		for _, pod := range storageValidationPods.Items {
-			_ = k8sClient.Delete(ctx, &pod)
+			_ = testNamespace.Clients.Client.Delete(testNamespace.Clients.Context, &pod)
 		}
 	}
 
 	// Clean up Ceph storage validation pods (they have timestamped names)
 	cephValidationPods := &corev1.PodList{}
-	err = k8sClient.List(ctx, cephValidationPods, client.InNamespace("default"),
+	err = testNamespace.Clients.Client.List(testNamespace.Clients.Context, cephValidationPods, client.InNamespace("default"),
 		client.MatchingLabels{"app": "sbd-e2e-ceph-storage-validator"})
 	if err == nil {
 		for _, pod := range cephValidationPods.Items {
-			_ = k8sClient.Delete(ctx, &pod)
+			_ = testNamespace.Clients.Client.Delete(testNamespace.Clients.Context, &pod)
 		}
 	}
 
 	// Clean up AWS storage validation pods (they have timestamped names)
 	awsValidationPods := &corev1.PodList{}
-	err = k8sClient.List(ctx, awsValidationPods, client.InNamespace("default"),
+	err = testNamespace.Clients.Client.List(testNamespace.Clients.Context, awsValidationPods, client.InNamespace("default"),
 		client.MatchingLabels{"app": "sbd-e2e-aws-storage-validator"})
 	if err == nil {
 		for _, pod := range awsValidationPods.Items {
-			_ = k8sClient.Delete(ctx, &pod)
+			_ = testNamespace.Clients.Client.Delete(testNamespace.Clients.Context, &pod)
 		}
 	}
 
@@ -1268,21 +1283,21 @@ func cleanupTestArtifacts() {
 				Namespace: testNamespace.Name,
 			},
 		}
-		_ = k8sClient.Delete(ctx, pod)
+		_ = testNamespace.Clients.Client.Delete(testNamespace.Clients.Context, pod)
 	}
 
 	// Clean up SBDRemediation CRs to prevent namespace deletion issues
 	By("Cleaning up SBDRemediation CRs from test namespace")
 	sbdRemediations := &medik8sv1alpha1.SBDRemediationList{}
-	err = k8sClient.List(ctx, sbdRemediations, client.InNamespace(testNamespace.Name))
+	err = testNamespace.Clients.Client.List(testNamespace.Clients.Context, sbdRemediations, client.InNamespace(testNamespace.Name))
 	if err == nil {
 		for _, remediation := range sbdRemediations.Items {
 			// Remove finalizers first to prevent stuck resources
 			if len(remediation.Finalizers) > 0 {
 				remediation.Finalizers = nil
-				_ = k8sClient.Update(ctx, &remediation)
+				_ = testNamespace.Clients.Client.Update(testNamespace.Clients.Context, &remediation)
 			}
-			_ = k8sClient.Delete(ctx, &remediation)
+			_ = testNamespace.Clients.Client.Delete(testNamespace.Clients.Context, &remediation)
 			By(fmt.Sprintf("Cleaned up SBDRemediation CR: %s", remediation.Name))
 		}
 	}
@@ -1290,10 +1305,10 @@ func cleanupTestArtifacts() {
 	// Clean up temporary SCCs that might be left over from failed tests
 	tempSCCs := []string{"sbd-e2e-network-test", "sbd-e2e-storage-test"}
 	for _, sccName := range tempSCCs {
-		err := testClients.Clientset.RESTClient().
+		err := testNamespace.Clients.Clientset.RESTClient().
 			Delete().
 			AbsPath("/apis/security.openshift.io/v1/securitycontextconstraints/" + sccName).
-			Do(ctx).
+			Do(testNamespace.Clients.Context).
 			Error()
 		if err != nil && !strings.Contains(err.Error(), "not found") {
 			_, _ = fmt.Fprintf(GinkgoWriter, "Warning: Failed to clean up temporary SCC %s: %v\n", sccName, err)
@@ -1307,7 +1322,7 @@ func cleanupTestArtifacts() {
 // AWS helper functions for disruption testing
 
 // initAWS initializes AWS session and clients with comprehensive validation
-func initAWS() error {
+func initAWS(testClients *utils.TestClients) error {
 	// First, validate this is an AWS-based cluster
 	if !isAWSCluster() {
 		return fmt.Errorf("cluster is not AWS-based, skipping AWS disruption tests")
@@ -1336,7 +1351,8 @@ func initAWS() error {
 	}
 
 	By(fmt.Sprintf("AWS initialization successful - Region: %s", awsRegion))
-	awsInitialized = true
+	testClients.Ec2Client = ec2Client
+	testClients.AWSInitialized = true
 	return nil
 }
 
@@ -1591,133 +1607,6 @@ func getNodeNameFromInstanceID(instanceID string) (string, error) {
 	return "", fmt.Errorf("no node found with instance ID %s", instanceID)
 }
 
-// removeNetworkDisruption removes the kubelet disruption by checking node status and rebooting only if necessary
-func removeNetworkDisruption(disruptorIdentifier *string, instanceID string) error {
-
-	GinkgoWriter.Printf("Removing kubelet disruption for instance %s (pod: %v)\n", instanceID, disruptorIdentifier)
-
-	if disruptorIdentifier != nil {
-		GinkgoWriter.Printf("Attempting to clean up disruptor pod %v...\n", *disruptorIdentifier)
-		// Try to delete the disruptor pod (might work if kubelet recovered)
-		pod := &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      *disruptorIdentifier,
-				Namespace: "default",
-			},
-		}
-		err := k8sClient.Delete(ctx, pod)
-		if err != nil {
-			By(fmt.Sprintf("Note: Could not delete disruptor pod (expected if kubelet was stopped): %v", err))
-		} else {
-			By("Disruptor pod cleanup initiated successfully")
-		}
-	}
-
-	// Get the node name first
-	nodeName, err := getNodeNameFromInstanceID(instanceID)
-	if err != nil {
-		By(fmt.Sprintf("Warning: failed to get node name: %v", err))
-		return fmt.Errorf("cannot proceed without node name: %w", err)
-	}
-
-	// Check current node status first
-	GinkgoWriter.Printf("Checking current status of node %s...\n", nodeName)
-	node := &corev1.Node{}
-	err = k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)
-	if err != nil {
-		GinkgoWriter.Printf("Warning: cannot get node status: %v\n", err)
-	} else {
-		// Check if node is already Ready
-		for _, condition := range node.Status.Conditions {
-			if condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue {
-				GinkgoWriter.Printf("Node %s is already Ready - no reboot needed\n", nodeName)
-				// Look for and delete any existing kubelet-disruptor pods targeting this node
-				pods := &corev1.PodList{}
-				err = k8sClient.List(ctx, pods, client.MatchingLabels{"app": "kubelet-disruptor"})
-				if err != nil {
-					GinkgoWriter.Printf("Warning: failed to list kubelet-disruptor pods: %v", err)
-				} else {
-					for _, pod := range pods.Items {
-						if strings.Contains(pod.Name, "kubelet-disruptor") &&
-							strings.Contains(pod.Spec.NodeName, nodeName) {
-							GinkgoWriter.Printf("Found existing kubelet-disruptor pod %s on node %s - cleaning up", pod.Name, nodeName)
-							err = k8sClient.Delete(ctx, &pod)
-							if err != nil {
-								GinkgoWriter.Printf("Warning: failed to delete existing disruptor pod %s: %v", pod.Name, err)
-							} else {
-								GinkgoWriter.Printf("Successfully deleted existing disruptor pod %s", pod.Name)
-							}
-						}
-					}
-				}
-
-				GinkgoWriter.Printf("Kubelet disruption cleanup completed - node already recovered\n")
-				return nil
-
-			} else if condition.Type == corev1.NodeReady {
-				GinkgoWriter.Printf("Node %s current status: %s (%s) - reboot required",
-					nodeName, condition.Status, condition.Reason)
-				break
-			}
-		}
-	}
-
-	// Node is not Ready, proceed with reboot
-	By("Node is not Ready - proceeding with reboot to restore kubelet service")
-
-	// CRITICAL: When kubelet is stopped, we cannot exec into pods or delete pods
-	// because kubelet manages the pod lifecycle. The only reliable way to restore
-	// the node is to reboot it using AWS EC2 API.
-
-	// Check if AWS is available for reboot
-	if !awsInitialized {
-		return fmt.Errorf("AWS not initialized - cannot reboot node to restore kubelet. Manual intervention required")
-	}
-
-	// Reboot the instance to restore kubelet service
-	By(fmt.Sprintf("Rebooting AWS instance %s to restore kubelet service", instanceID))
-	_, err = ec2Client.RebootInstances(&ec2.RebootInstancesInput{
-		InstanceIds: []*string{aws.String(instanceID)},
-	})
-	if err != nil {
-		return fmt.Errorf("failed to reboot instance %s: %w", instanceID, err)
-	}
-
-	GinkgoWriter.Print("Reboot initiated successfully")
-
-	GinkgoWriter.Printf("Waiting for node %s to reboot and become Ready...", nodeName)
-	Eventually(func() bool {
-		node := &corev1.Node{}
-		err := k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)
-		if err != nil {
-			return false
-		}
-
-		// Check if node is Ready
-		for _, condition := range node.Status.Conditions {
-			if condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue {
-				GinkgoWriter.Printf("Node %s has rebooted and is Ready", nodeName)
-				return true
-			}
-		}
-
-		// Log current condition for debugging
-		for _, condition := range node.Status.Conditions {
-			if condition.Type == corev1.NodeReady {
-				GinkgoWriter.Printf("Node %s current status: %s (%s)", nodeName, condition.Status, condition.Reason)
-				break
-			}
-		}
-		return false
-	}, time.Minute*5, time.Second*30).Should(BeTrue())
-
-	// The reboot will have automatically cleaned up the disruptor pod
-	GinkgoWriter.Print("Node reboot completed - kubelet disruption resolved")
-	GinkgoWriter.Print("Note: Disruptor pod was automatically cleaned up during reboot")
-
-	return nil
-}
-
 // StorageBackendType represents the type of storage backend in use
 type StorageBackendType string
 
@@ -1740,20 +1629,20 @@ func detectStorageBackend() (StorageBackendType, string, error) {
 	// Look for StorageClasses with known provisioners
 	for _, sc := range storageClasses.Items {
 		provisioner := sc.Provisioner
-		
+
 		// Check for Ceph-based provisioners
 		if provisioner == "cephfs.csi.ceph.com" || provisioner == "openshift-storage.cephfs.csi.ceph.com" {
 			return StorageBackendCeph, sc.Name, nil
 		}
-		
+
 		// Check for AWS-based provisioners
 		if provisioner == "efs.csi.aws.com" {
 			return StorageBackendAWS, sc.Name, nil
 		}
-		
+
 		// Check for NFS-based provisioners
-		if provisioner == "nfs.csi.k8s.io" || 
-		   strings.Contains(provisioner, "nfs") {
+		if provisioner == "nfs.csi.k8s.io" ||
+			strings.Contains(provisioner, "nfs") {
 			return StorageBackendNFS, sc.Name, nil
 		}
 	}
@@ -2372,19 +2261,9 @@ spec:
 	return []string{disruptorPodName}, nil
 }
 
-// restoreStorageDisruption removes the network-level storage disruption for both AWS and Ceph backends
-func restoreStorageDisruption(instanceID string, disruptorPodNames []string) error {
-	if len(disruptorPodNames) == 0 {
-		return nil
-	}
-
-	By(fmt.Sprintf("Removing network-level storage disruption for instance %s", instanceID))
-
-	// Get the node name from the instance ID
-	nodeName, err := getNodeNameFromInstanceID(instanceID)
-	if err != nil {
-		return fmt.Errorf("failed to get node name for instance %s: %w", instanceID, err)
-	}
+// removeStorageDisruption removes the network-level storage disruption for both AWS and Ceph backends
+func removeStorageDisruption(nodeName string) error {
+	By(fmt.Sprintf("Removing network-level storage disruption for node %s", nodeName))
 
 	// Detect what type of disruption was used
 	storageBackend, _, err := detectStorageBackend()
@@ -2394,21 +2273,6 @@ func restoreStorageDisruption(instanceID string, disruptorPodNames []string) err
 	}
 
 	By(fmt.Sprintf("Cleaning up storage disruption for backend: %s", storageBackend))
-
-	// Clean up the disruptor pod first
-	for _, podName := range disruptorPodNames {
-		By(fmt.Sprintf("Cleaning up storage disruptor pod: %s", podName))
-		pod := &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      podName,
-				Namespace: "default",
-			},
-		}
-		err := k8sClient.Delete(ctx, pod)
-		if err != nil {
-			By(fmt.Sprintf("Warning: Could not delete disruptor pod %s: %v", podName, err))
-		}
-	}
 
 	// Create a cleanup pod to remove the iptables rules
 	cleanupPodName := fmt.Sprintf("sbd-e2e-storage-cleanup-%d", time.Now().Unix())
@@ -2531,38 +2395,5 @@ spec:
 	}
 
 	By(fmt.Sprintf("Network-level storage disruption removed - node %s should regain shared storage access", nodeName))
-	return nil
-}
-
-// cleanupPreviousTestAttempts removes any leftover artifacts from previous test runs
-func cleanupPreviousTestAttempts() error {
-	if !awsInitialized {
-		GinkgoWriter.Print("AWS not initialized - skipping AWS cleanup\n")
-		return nil
-	}
-
-	GinkgoWriter.Print("Cleaning up any leftover artifacts from previous test runs\n")
-
-	// Get all instances in the cluster
-	instances, err := ec2Client.DescribeInstances(&ec2.DescribeInstancesInput{})
-	if err != nil {
-		return fmt.Errorf("failed to describe instances: %w", err)
-	}
-
-	for _, reservation := range instances.Reservations {
-		for _, instance := range reservation.Instances {
-			if instance.State != nil && *instance.State.Name == "running" {
-				By(fmt.Sprintf("Cleaning up any leftover artifacts from previous test runs for instance %s", *instance.InstanceId))
-				err = removeNetworkDisruption(nil, *instance.InstanceId)
-				Expect(err).NotTo(HaveOccurred())
-				err = restoreStorageDisruption(*instance.InstanceId, nil)
-				Expect(err).NotTo(HaveOccurred())
-			}
-		}
-	}
-
-	cleanupTestArtifacts()
-
-	GinkgoWriter.Print("Cleanup of previous test attempts completed")
 	return nil
 }

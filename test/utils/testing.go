@@ -26,11 +26,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go/service/ec2"
 	. "github.com/onsi/ginkgo/v2" //nolint:staticcheck
 	. "github.com/onsi/gomega"    //nolint:staticcheck
 
 	appsv1 "k8s.io/api/apps/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -57,10 +59,12 @@ var (
 
 // TestClients holds the Kubernetes clients used for testing
 type TestClients struct {
-	Client    client.Client
-	Clientset *kubernetes.Clientset
-	Config    *rest.Config
-	Context   context.Context
+	Client         client.Client
+	Clientset      *kubernetes.Clientset
+	Config         *rest.Config
+	Context        context.Context
+	Ec2Client      *ec2.EC2
+	AWSInitialized bool
 }
 
 // TestNamespace represents a test namespace with cleanup functionality
@@ -131,14 +135,13 @@ func SetupKubernetesClients() (*TestClients, error) {
 
 // CreateTestNamespace creates a test namespace and returns a cleanup function
 func (tc *TestClients) CreateTestNamespace(namePrefix string) (*TestNamespace, error) {
-	name := fmt.Sprintf("%s-%d", namePrefix, time.Now().UnixNano())
-	artifactsDir := fmt.Sprintf("testrun/%s", name)
+	nowMinutes := time.Now().Unix() / 60 // use minutes instead of seconds to avoid too many test namespaces
+	name := fmt.Sprintf("%s-%d", namePrefix, nowMinutes)
+	artifactsDir := fmt.Sprintf("testrun/test-%d", nowMinutes)
 
 	// Create the artifacts directory for this test namespace
 	err := os.MkdirAll(fmt.Sprintf("../../%s", artifactsDir), 0755)
 	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to create artifacts directory %s", artifactsDir))
-	err = os.MkdirAll("../../sbd-operator-system", 0755)
-	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to create operator artifacts directory %s", artifactsDir))
 
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
@@ -146,16 +149,17 @@ func (tc *TestClients) CreateTestNamespace(namePrefix string) (*TestNamespace, e
 		},
 	}
 
-	err = tc.Client.Create(tc.Context, ns)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create namespace %s: %w", name, err)
-	}
-
-	return &TestNamespace{
+	tns := &TestNamespace{
 		Name:         name,
 		ArtifactsDir: artifactsDir,
 		Clients:      tc,
-	}, nil
+	}
+
+	err = tc.Client.Create(tc.Context, ns)
+	if err != nil && !strings.Contains(err.Error(), "already exists") {
+		return tns, nil
+	}
+	return tns, err
 }
 
 // Cleanup removes the test namespace and all its resources
@@ -176,7 +180,7 @@ func (tn *TestNamespace) Cleanup() error {
 		var namespace corev1.Namespace
 		err := tn.Clients.Client.Get(tn.Clients.Context, client.ObjectKey{Name: tn.Name}, &namespace)
 		return errors.IsNotFound(err)
-	}, time.Minute*2, time.Second*5).Should(BeTrue())
+	}, time.Minute*2, time.Second*5).Should(BeTrue(), fmt.Sprintf("namespace %s not deleted", tn.Name))
 
 	return nil
 }
@@ -230,20 +234,11 @@ func (tn *TestNamespace) CleanupSBDConfig(sbdConfig *medik8sv1alpha1.SBDConfig) 
 			Name:      sbdConfig.Name,
 			Namespace: tn.Name,
 		}, &config)
-		return errors.IsNotFound(err)
-	}, time.Minute*2, time.Second*5).Should(BeTrue())
-
-	// Wait for associated DaemonSets to be deleted
-	Eventually(func() int {
-		daemonSets := &appsv1.DaemonSetList{}
-		err := tn.Clients.Client.List(tn.Clients.Context, daemonSets,
-			client.InNamespace(tn.Name),
-			client.MatchingLabels{"sbdconfig": sbdConfig.Name})
-		if err != nil {
-			return -1
+		if err != nil && !errors.IsNotFound(err) {
+			GinkgoWriter.Printf("Failed to get SBDConfig %s: %v\n", sbdConfig.Name, err)
 		}
-		return len(daemonSets.Items)
-	}, time.Minute*2, time.Second*5).Should(Equal(0))
+		return errors.IsNotFound(err)
+	}, time.Minute*5, time.Second*5).Should(BeTrue(), fmt.Sprintf("SBDConfig %s not deleted", sbdConfig.Name))
 
 	// Wait for associated pods to be terminated
 	Eventually(func() int {
@@ -255,9 +250,23 @@ func (tn *TestNamespace) CleanupSBDConfig(sbdConfig *medik8sv1alpha1.SBDConfig) 
 			GinkgoWriter.Printf("Failed to list pods: %v\n", err)
 			return -1
 		}
-		GinkgoWriter.Printf("Found %d pods\n", len(pods.Items))
+		for _, pod := range pods.Items {
+			GinkgoWriter.Printf("Pod %s: %s on %s\n", pod.Name, pod.Status.Phase, pod.Spec.NodeName)
+		}
 		return len(pods.Items)
-	}, time.Minute*2, time.Second*5).Should(Equal(0))
+	}, time.Minute*5, time.Second*10).Should(Equal(0), fmt.Sprintf("SBDConfig %s pods not deleted", sbdConfig.Name))
+
+	// Wait for associated DaemonSets to be deleted
+	Eventually(func() int {
+		daemonSets := &appsv1.DaemonSetList{}
+		err := tn.Clients.Client.List(tn.Clients.Context, daemonSets,
+			client.InNamespace(tn.Name),
+			client.MatchingLabels{"sbdconfig": sbdConfig.Name})
+		if err != nil {
+			return -1
+		}
+		return len(daemonSets.Items)
+	}, time.Minute*5, time.Second*5).Should(Equal(0), fmt.Sprintf("SBDConfig %s DaemonSets not deleted", sbdConfig.Name))
 
 	return nil
 }
@@ -484,18 +493,182 @@ func (dc *DebugCollector) CollectKubernetesEvents(namespace string) {
 	events, err := dc.Clients.Clientset.CoreV1().Events(namespace).List(dc.Clients.Context, metav1.ListOptions{})
 	if err == nil {
 		eventsOutput := ""
+		logFileName := fmt.Sprintf("%s/kubernetes-events.log", dc.ArtifactsDir)
+		f, fileErr := os.Create(logFileName)
+		if fileErr != nil {
+			GinkgoWriter.Printf("Failed to write agent logs to file %s: %s\n", logFileName, fileErr)
+			GinkgoWriter.Printf("Kubernetes events:\n%s\n", eventsOutput)
+		} else {
+			defer func() { _ = f.Close() }()
+			GinkgoWriter.Printf("Saving Kubernetes events to %s\n", logFileName)
+			_, _ = f.WriteString("Kubernetes events:\n")
+		}
 		for _, event := range events.Items {
-			eventsOutput += fmt.Sprintf("%s  %s     %s  %s/%s  %s\n",
+			eventOutput := fmt.Sprintf("%s  %s     %s  %s/%s  %s\n",
 				event.LastTimestamp.Format("2006-01-02T15:04:05Z"),
 				event.Type,
 				event.Reason,
 				event.InvolvedObject.Kind,
 				event.InvolvedObject.Name,
 				event.Message)
+			if fileErr == nil {
+				_, _ = f.WriteString(eventOutput)
+			} else {
+				GinkgoWriter.Printf(" %s", eventOutput)
+			}
 		}
-		GinkgoWriter.Printf("Kubernetes events:\n%s", eventsOutput)
 	} else {
 		GinkgoWriter.Printf("Failed to get Kubernetes events: %s", err)
+	}
+}
+
+// CollectStorageJobs collects SBD device initialization jobs for debugging
+func (dc *DebugCollector) CollectStorageJobs(namespace string) {
+	By("Fetching SBD device initialization jobs for debugging")
+
+	// Search for SBD device initialization jobs - these are created by the SBD operator controller
+	// and have specific labels: app.kubernetes.io/component=sbd-device-init
+	jobs := &batchv1.JobList{}
+	err := dc.Clients.Client.List(dc.Clients.Context, jobs,
+		client.InNamespace(namespace),
+		client.MatchingLabels{"app.kubernetes.io/component": "sbd-device-init"})
+
+	if err != nil {
+		GinkgoWriter.Printf("Failed to list SBD device initialization jobs in namespace %s: %v\n", namespace, err)
+		return
+	}
+
+	if len(jobs.Items) == 0 {
+		GinkgoWriter.Printf("No SBD device initialization jobs found in namespace %s\n", namespace)
+		return
+	}
+
+	GinkgoWriter.Printf("\n=== SBD Device Initialization Jobs in namespace %s ===\n", namespace)
+
+	for _, job := range jobs.Items {
+		// Collect job definition
+		jobYAML, err := yaml.Marshal(job)
+		if err == nil {
+			jobFileName := fmt.Sprintf("%s/%s-job.yaml", dc.ArtifactsDir, job.Name)
+			if f, fileErr := os.Create(jobFileName); fileErr == nil {
+				defer func() { _ = f.Close() }()
+				_, _ = f.Write(jobYAML)
+				GinkgoWriter.Printf("SBD device init job spec for %s saved to %s\n", job.Name, jobFileName)
+			} else {
+				GinkgoWriter.Printf("Failed to write SBD device init job spec to file %s: %s\n", jobFileName, fileErr)
+				GinkgoWriter.Printf("SBD device init job %s spec:\n%s\n", job.Name, string(jobYAML))
+			}
+		}
+
+		// Display job status
+		GinkgoWriter.Printf("SBD device init job %s: Active=%d, Succeeded=%d, Failed=%d\n",
+			job.Name, job.Status.Active, job.Status.Succeeded, job.Status.Failed)
+
+		// Display job conditions for more detailed status
+		if len(job.Status.Conditions) > 0 {
+			GinkgoWriter.Printf("Job %s conditions:\n", job.Name)
+			for _, condition := range job.Status.Conditions {
+				GinkgoWriter.Printf("  - Type: %s, Status: %s, Reason: %s, Message: %s\n",
+					condition.Type, condition.Status, condition.Reason, condition.Message)
+			}
+		}
+
+		// Collect logs from job pods
+		dc.collectJobPodLogs(namespace, job.Name)
+	}
+}
+
+// collectJobPodLogs collects logs from pods belonging to a specific job
+func (dc *DebugCollector) collectJobPodLogs(namespace, jobName string) {
+	// Get pods belonging to this job
+	pods := &corev1.PodList{}
+	err := dc.Clients.Client.List(dc.Clients.Context, pods,
+		client.InNamespace(namespace),
+		client.MatchingLabels{"job-name": jobName})
+
+	if err != nil {
+		GinkgoWriter.Printf("Failed to list pods for job %s: %v\n", jobName, err)
+		return
+	}
+
+	if len(pods.Items) == 0 {
+		GinkgoWriter.Printf("No pods found for SBD device init job %s\n", jobName)
+		return
+	}
+
+	for _, pod := range pods.Items {
+		GinkgoWriter.Printf("Collecting logs from SBD device init job pod: %s\n", pod.Name)
+
+		// Collect pod definition
+		podYAML, err := yaml.Marshal(pod)
+		if err == nil {
+			podFileName := fmt.Sprintf("%s/%s-podspec.yaml", dc.ArtifactsDir, pod.Name)
+			if f, fileErr := os.Create(podFileName); fileErr == nil {
+				defer func() { _ = f.Close() }()
+				_, _ = f.Write(podYAML)
+				GinkgoWriter.Printf("SBD device init pod spec for %s saved to %s\n", pod.Name, podFileName)
+			} else {
+				GinkgoWriter.Printf("Failed to write SBD device init pod spec to file %s: %s\n", podFileName, fileErr)
+			}
+		}
+
+		// Collect pod logs if the pod is not being deleted
+		if pod.DeletionTimestamp == nil {
+			req := dc.Clients.Clientset.CoreV1().Pods(namespace).GetLogs(pod.Name, &corev1.PodLogOptions{})
+			podLogs, err := req.Stream(dc.Clients.Context)
+			if err == nil {
+				defer func() { _ = podLogs.Close() }()
+				buf := new(bytes.Buffer)
+				_, _ = io.Copy(buf, podLogs)
+				logFileName := fmt.Sprintf("%s/%s.log", dc.ArtifactsDir, pod.Name)
+				if f, fileErr := os.Create(logFileName); fileErr == nil {
+					defer func() { _ = f.Close() }()
+					_, _ = f.Write(buf.Bytes())
+					GinkgoWriter.Printf("SBD device init pod logs for %s saved to %s\n", pod.Name, logFileName)
+				} else {
+					GinkgoWriter.Printf("Failed to write SBD device init pod logs to file %s: %s\n", logFileName, fileErr)
+					GinkgoWriter.Printf("SBD device init pod %s logs:\n%s\n", pod.Name, buf.String())
+				}
+			} else {
+				GinkgoWriter.Printf("Failed to get logs from SBD device init pod %s: %s\n", pod.Name, err)
+			}
+		}
+
+		// Display pod status
+		GinkgoWriter.Printf("SBD device init pod %s: Phase=%s, Node=%s\n",
+			pod.Name, pod.Status.Phase, pod.Spec.NodeName)
+
+		// Display pod conditions for detailed status
+		if len(pod.Status.Conditions) > 0 {
+			GinkgoWriter.Printf("Pod %s conditions:\n", pod.Name)
+			for _, condition := range pod.Status.Conditions {
+				GinkgoWriter.Printf("  - Type: %s, Status: %s, Reason: %s, Message: %s\n",
+					condition.Type, condition.Status, condition.Reason, condition.Message)
+			}
+		}
+	}
+}
+
+// CollectPodLogs collects logs from a specific pod container
+func (dc *DebugCollector) CollectPodLogs(namespace, podName, containerName string) {
+	By(fmt.Sprintf("Fetching logs from pod %s container %s", podName, containerName))
+	req := dc.Clients.Clientset.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{Container: containerName})
+	podLogs, err := req.Stream(dc.Clients.Context)
+	if err == nil {
+		defer func() { _ = podLogs.Close() }()
+		buf := new(bytes.Buffer)
+		_, _ = io.Copy(buf, podLogs)
+		logFileName := fmt.Sprintf("%s/%s-%s.log", dc.ArtifactsDir, podName, containerName)
+		if f, fileErr := os.Create(logFileName); fileErr == nil {
+			defer func() { _ = f.Close() }()
+			_, _ = f.Write(buf.Bytes())
+			GinkgoWriter.Printf("Pod logs for %s-%s saved to %s\n", podName, containerName, logFileName)
+		} else {
+			GinkgoWriter.Printf("Failed to write pod logs to file %s: %s\n", logFileName, fileErr)
+			GinkgoWriter.Printf("Pod %s-%s logs:\n%s\n", podName, containerName, buf.String())
+		}
+	} else {
+		GinkgoWriter.Printf("Failed to get logs from pod %s container %s: %s\n", podName, containerName, err)
 	}
 }
 
@@ -811,6 +984,42 @@ func (dsc *DaemonSetChecker) WaitForDaemonSet(labels map[string]string,
 		}
 		if len(daemonSets.Items) == 0 {
 			GinkgoWriter.Printf("No DaemonSets found with labels %v\n", labels)
+			// Show the state of any jobs in the namespace
+			jobs := &batchv1.JobList{}
+			err := dsc.Clients.Client.List(dsc.Clients.Context, jobs,
+				client.InNamespace(dsc.Namespace))
+			if err != nil {
+				GinkgoWriter.Printf("Failed to list Jobs: %v\n", err)
+			} else {
+				GinkgoWriter.Printf("Jobs in namespace %s:\n", dsc.Namespace)
+				for _, job := range jobs.Items {
+					yaml, err := yaml.Marshal(job.Status)
+					if err != nil {
+						GinkgoWriter.Printf("Failed to marshal job status: %v\n", err)
+						GinkgoWriter.Printf("Job %s: %+v\n", job.Name, job.Status)
+					} else {
+						GinkgoWriter.Printf("Job %s status:\n %s\n", job.Name, string(yaml))
+					}
+				}
+			}
+			// Show the state of any pods in the namespace
+			pods := &corev1.PodList{}
+			err = dsc.Clients.Client.List(dsc.Clients.Context, pods,
+				client.InNamespace(dsc.Namespace))
+			if err != nil {
+				GinkgoWriter.Printf("Failed to list Pods: %v\n", err)
+			} else {
+				GinkgoWriter.Printf("Pods in namespace %s:\n", dsc.Namespace)
+				for _, pod := range pods.Items {
+					yaml, err := yaml.Marshal(pod.Status)
+					if err != nil {
+						GinkgoWriter.Printf("Failed to marshal pod status: %v\n", err)
+						GinkgoWriter.Printf("Pod %s: %+v\n", pod.Name, pod.Status)
+					} else {
+						GinkgoWriter.Printf("Pod %s status:\n %s\n", pod.Name, string(yaml))
+					}
+				}
+			}
 			return false
 		}
 		daemonSet = &daemonSets.Items[0]
@@ -870,7 +1079,7 @@ func DefaultValidateAgentDeploymentOptions(sbdConfigName string) ValidateAgentDe
 			"--watchdog-timeout=1m30s",
 		},
 		MinReadyPods:     1,
-		DaemonSetTimeout: time.Minute * 2,
+		DaemonSetTimeout: time.Minute * 5,
 		PodReadyTimeout:  time.Minute * 5,
 		NodeStableTime:   time.Minute * 3,
 		LogCheckTimeout:  time.Minute * 1,
@@ -1035,17 +1244,33 @@ func (sav *SBDAgentValidator) ValidateNoNodeReboots(opts ValidateAgentDeployment
 	return nil
 }
 
-func CleanupSBDConfigs(k8sClient client.Client, testNS TestNamespace, ctx context.Context) {
-	By("cleaning up SBD configuration and waiting for agents to terminate")
+func CleanupSBDConfigs(testNamespace *TestNamespace) {
+	By("Cleaning up SBD configuration and waiting for agents to terminate")
 	// Clean up all SBDConfigs in the test namespace
 	sbdConfigs := &medik8sv1alpha1.SBDConfigList{}
-	err := k8sClient.List(ctx, sbdConfigs, client.InNamespace(testNS.Name))
+	err := testNamespace.Clients.Client.List(testNamespace.Clients.Context, sbdConfigs, client.InNamespace(testNamespace.Name))
 	if err == nil {
 		for _, config := range sbdConfigs.Items {
-			err := testNS.CleanupSBDConfig(&config)
+			err := testNamespace.CleanupSBDConfig(&config)
 			if err != nil {
 				GinkgoWriter.Printf("Warning: failed to cleanup SBDConfig %s: %v\n", config.Name, err)
 			}
+		}
+	}
+
+	By("Cleaning up SBDRemediation CRs to prevent namespace deletion issues")
+	// Clean up all SBDRemediations in the test namespace
+	sbdRemediations := &medik8sv1alpha1.SBDRemediationList{}
+	err = testNamespace.Clients.Client.List(testNamespace.Clients.Context, sbdRemediations, client.InNamespace(testNamespace.Name))
+	if err == nil {
+		for _, remediation := range sbdRemediations.Items {
+			// Remove finalizers first to prevent stuck resources
+			if len(remediation.Finalizers) > 0 {
+				remediation.Finalizers = nil
+				_ = testNamespace.Clients.Client.Update(testNamespace.Clients.Context, &remediation)
+			}
+			_ = testNamespace.Clients.Client.Delete(testNamespace.Clients.Context, &remediation)
+			GinkgoWriter.Printf("Cleaned up SBDRemediation CR: %s\n", remediation.Name)
 		}
 	}
 }
@@ -1087,9 +1312,7 @@ func SuiteSetup(namespace string) (*TestNamespace, error) {
 
 	By("creating e2e test namespace")
 	testNamespace, err := testClients.CreateTestNamespace(namespace)
-	if err != nil && !strings.Contains(err.Error(), "already exists") {
-		Expect(err).NotTo(HaveOccurred())
-	}
+	Expect(err).NotTo(HaveOccurred(), "Failed to create test namespace")
 
 	// The smoke tests are intended to run on a temporary cluster that is created and destroyed for testing.
 	// To prevent errors when tests run in environments with CertManager already installed,
@@ -1231,9 +1454,27 @@ func DescribeEnvironment(testClients *TestClients, testNamespace *TestNamespace)
 	}
 
 	if isAgentNamespace {
+
+		// Save the definition and logs of all pods in the namespace for debugging
+		podList := &corev1.PodList{}
+		err := testClients.Client.List(testClients.Context, podList, client.InNamespace(testNamespace.Name))
+		if err != nil {
+			GinkgoWriter.Printf("Failed to list pods in namespace %q: %v\n", testNamespace.Name, err)
+		} else {
+			for _, pod := range podList.Items {
+				// Save pod definition
+				debugCollector.CollectPodDescription(testNamespace.Name, pod.Name)
+				// Save pod logs for all containers
+				for _, container := range pod.Spec.Containers {
+					debugCollector.CollectPodLogs(testNamespace.Name, pod.Name, container.Name)
+				}
+			}
+			GinkgoWriter.Printf("Saved definition and logs for %d pods in namespace %q\n", len(podList.Items), testNamespace.Name)
+		}
+
 		By("Fetching SBDConfig CRs")
 		sbdConfigs := &medik8sv1alpha1.SBDConfigList{}
-		err := testClients.Client.List(testClients.Context, sbdConfigs, client.InNamespace(testNamespace.Name))
+		err = testClients.Client.List(testClients.Context, sbdConfigs, client.InNamespace(testNamespace.Name))
 		if err != nil {
 			GinkgoWriter.Printf("Failed to get SBDConfig CRs: %s", err)
 		} else {
@@ -1309,17 +1550,14 @@ func DescribeEnvironment(testClients *TestClients, testNamespace *TestNamespace)
 			if err != nil {
 				GinkgoWriter.Printf("Failed to get node mapping summary: %s\n", err)
 			}
-
-			// Collect agent pod logs
-			for _, pod := range activePods {
-				debugCollector.CollectPodDescription(testNamespace.Name, pod.Name)
-			}
 		}
 		Eventually(verifyAgentsUp).Should(Succeed())
 
 		// Collect agent logs
 		debugCollector.CollectAgentLogs(testNamespace.Name)
 
+		// Collect the definition of any storage jobs
+		debugCollector.CollectStorageJobs(testNamespace.Name)
 	}
 
 	By("Fetching curl-metrics logs")

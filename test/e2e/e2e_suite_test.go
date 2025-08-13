@@ -23,7 +23,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/medik8s/sbd-operator/test/utils"
@@ -56,6 +55,8 @@ var _ = BeforeSuite(func() {
 	var err error
 	testNamespace, err = utils.SuiteSetup("sbd-test-e2e")
 	Expect(err).NotTo(HaveOccurred(), "Failed to setup test clients")
+
+	fmt.Printf("Test namespace: %s\n", testNamespace.Name)
 	testClients = testNamespace.Clients
 
 	// Update global clients for backward compatibility
@@ -66,18 +67,18 @@ var _ = BeforeSuite(func() {
 	discoverClusterTopology()
 
 	By("Checking AWS availability for disruption tests (one-time setup)")
-	if err := initAWS(); err != nil {
+	if err := initAWS(testClients); err != nil {
 		By(fmt.Sprintf("AWS not available for disruption tests: %v", err))
-		awsInitialized = false
 	} else {
 		By("AWS initialized successfully for disruption tests")
-		awsInitialized = true
 	}
 
 	// Clean up any leftover artifacts from previous test runs
-	if err := cleanupPreviousTestAttempts(); err != nil {
-		By(fmt.Sprintf("Warning: cleanup of previous test attempts failed: %v", err))
-	}
+	By("Cleaning up previous test attempts")
+	cleanupTestArtifacts(testNamespace)
+	utils.WaitForNodesReady(testNamespace, "10m", "30s", true)
+	utils.CleanupSBDConfigs(testNamespace)
+
 	By("Complete: Cleaning up previous test attempts")
 })
 
@@ -95,50 +96,25 @@ var _ = AfterSuite(func() {
 })
 
 var _ = BeforeEach(func() {
-	By("waiting for all cluster nodes to be Ready before test")
-	Eventually(func() bool {
-		nodeList, err := testClients.Clientset.CoreV1().Nodes().List(testClients.Context, metav1.ListOptions{})
-		if err != nil {
-			GinkgoWriter.Printf("Failed to list nodes: %v\n", err)
-			return false
-		}
-		if len(nodeList.Items) == 0 {
-			GinkgoWriter.Printf("No nodes found in cluster\n")
-			return false
-		}
-		for _, node := range nodeList.Items {
-			ready := false
-			for _, cond := range node.Status.Conditions {
-				if cond.Type == "Ready" && cond.Status == "True" {
-					ready = true
-					break
-				}
-			}
-			if !ready {
-				GinkgoWriter.Printf("Node %s is not Ready\n", node.Name)
-				return false
-			}
-		}
-		return true
-	}, "10m", "20s").Should(BeTrue(), "expected all nodes to be Ready before test")
-
-	GinkgoWriter.Printf("Cleaning up SBDConfigs in namespace %v before each test\n", testNamespace.Name)
-	utils.CleanupSBDConfigs(testClients.Client, *testNamespace, testClients.Context)
 })
 
 var _ = AfterEach(func() {
+	systemNamespace := &utils.TestNamespace{
+		Name:         "sbd-operator-system",
+		ArtifactsDir: testNamespace.ArtifactsDir,
+		Clients:      testClients,
+	}
+
 	specReport := CurrentSpecReport()
 	if specReport.Failed() {
-		systemNamespace := &utils.TestNamespace{
-			Name:         "sbd-operator-system",
-			ArtifactsDir: "testrun/sbd-operator-system",
-			Clients:      testClients,
-		}
 		utils.DescribeEnvironment(testClients, systemNamespace)
 		utils.DescribeEnvironment(testClients, testNamespace)
 	}
+
 	By("Cleaning up previous test attempts")
-	_ = cleanupPreviousTestAttempts()
+	cleanupTestArtifacts(testNamespace)
+	utils.WaitForNodesReady(testNamespace, "10m", "30s", false)
+	utils.CleanupSBDConfigs(testNamespace)
 })
 
 // var _ = AfterAll(func() {

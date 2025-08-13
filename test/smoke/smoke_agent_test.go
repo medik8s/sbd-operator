@@ -43,12 +43,13 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 
 	// Verify the environment is set up correctly (setup handled by Makefile)
 	BeforeAll(func() {
-		utils.CleanupSBDConfigs(testClients.Client, *testNamespace, testClients.Context)
+		By("Cleaning up previous test attempts")
+		utils.WaitForNodesReady(testNamespace, "10m", "30s", true)
+		utils.CleanupSBDConfigs(testNamespace)
 	})
 
 	// Clean up test-specific resources (overall cleanup handled by Makefile)
 	AfterAll(func() {
-		utils.CleanupSBDConfigs(testClients.Client, *testNamespace, testClients.Context)
 	})
 
 	// After each test, check for failures and collect logs, events,
@@ -64,6 +65,8 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 			utils.DescribeEnvironment(testClients, systemNamespace)
 			utils.DescribeEnvironment(testClients, testNamespace)
 		}
+		utils.WaitForNodesReady(testNamespace, "10m", "30s", false)
+		utils.CleanupSBDConfigs(testNamespace)
 
 	})
 
@@ -76,10 +79,6 @@ var _ = Describe("SBD Agent Smoke Tests", Ordered, Label("Smoke", "Agent"), func
 
 		BeforeEach(func() {
 			sbdConfigName = fmt.Sprintf("test-sbdconfig-%d", time.Now().UnixNano())
-		})
-
-		AfterEach(func() {
-			utils.CleanupSBDConfigs(testClients.Client, *testNamespace, testClients.Context)
 		})
 
 		It("should deploy SBD agent DaemonSet when SBDConfig is created", func() {
@@ -407,12 +406,12 @@ func isRWXCompatibleProvisioner(provisioner string) bool {
 		"filestore.csi.storage.gke.io": true,
 
 		// NFS
-		"nfs.csi.k8s.io":                                true,
+		"nfs.csi.k8s.io": true,
 		"cluster.local/nfs-subdir-external-provisioner": true,
 		"k8s-sigs.io/nfs-subdir-external-provisioner":   true,
 
 		// CephFS
-		"cephfs.csi.ceph.com":                    true,
+		"cephfs.csi.ceph.com":                   true,
 		"openshift-storage.cephfs.csi.ceph.com": true,
 
 		// GlusterFS

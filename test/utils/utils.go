@@ -24,7 +24,15 @@ import (
 	"os/exec"
 	"strings"
 
-	. "github.com/onsi/ginkgo/v2" // nolint:revive,staticcheck
+	. "github.com/onsi/ginkgo/v2" //nolint:staticcheck
+	. "github.com/onsi/gomega"    //nolint:staticcheck
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
@@ -421,4 +429,111 @@ func GetAgentImage() string {
 	}
 
 	return fmt.Sprintf("%s/%s/sbd-agent:%s", registry, org, version)
+}
+
+// GetAWSInstanceIDForNode finds the AWS EC2 instance ID for a given Kubernetes node name
+func GetAWSInstanceIDForNode(tc *TestClients, nodeName string) (string, error) {
+	// Get the node details from Kubernetes
+	node := &corev1.Node{}
+	err := tc.Client.Get(tc.Context, client.ObjectKey{Name: nodeName}, node)
+	if err != nil {
+		return "", fmt.Errorf("failed to get node %s: %w", nodeName, err)
+	}
+
+	// Extract the internal IP address from the node
+	var internalIP string
+	for _, address := range node.Status.Addresses {
+		if address.Type == corev1.NodeInternalIP {
+			internalIP = address.Address
+			break
+		}
+	}
+
+	if internalIP == "" {
+		return "", fmt.Errorf("no internal IP found for node %s", nodeName)
+	}
+
+	GinkgoWriter.Printf("Looking up AWS instance for node %s with internal IP %s\n", nodeName, internalIP)
+
+	// Use AWS CLI to find the instance by internal IP
+	cmd := exec.Command("aws", "ec2", "describe-instances",
+		"--filters", fmt.Sprintf("Name=private-ip-address,Values=%s", internalIP),
+		"--query", "Reservations[*].Instances[*].InstanceId",
+		"--output", "text")
+
+	// Set AWS_PAGER to prevent paging
+	cmd.Env = append(os.Environ(), "AWS_PAGER=")
+
+	GinkgoWriter.Printf("Executing AWS CLI command to find instance for IP %s\n", internalIP)
+
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to execute AWS CLI command: %w", err)
+	}
+
+	instanceID := strings.TrimSpace(string(output))
+	if instanceID == "" {
+		return "", fmt.Errorf("no AWS instance found for node %s with IP %s", nodeName, internalIP)
+	}
+
+	GinkgoWriter.Printf("Found AWS instance ID %s for node %s\n", instanceID, nodeName)
+	return instanceID, nil
+}
+
+// RebootAWSInstanceForNode finds and reboots the AWS EC2 instance for a given Kubernetes node name
+func RebootAWSInstanceForNode(tc *TestClients, nodeName string) error {
+	if !tc.AWSInitialized {
+		GinkgoWriter.Printf("AWS is not initialized")
+		return nil
+	}
+
+	// First, get the AWS instance ID for the node
+	instanceID, err := GetAWSInstanceIDForNode(tc, nodeName)
+	if err != nil {
+		return fmt.Errorf("failed to find AWS instance for node %s: %w", nodeName, err)
+	}
+
+	GinkgoWriter.Printf("Rebooting AWS instance %s for node %s\n", instanceID, nodeName)
+	_, err = tc.Ec2Client.RebootInstances(&ec2.RebootInstancesInput{
+		InstanceIds: []*string{aws.String(instanceID)},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to reboot instance %s: %w", instanceID, err)
+	}
+
+	GinkgoWriter.Printf("Successfully initiated reboot for AWS instance %s (node %s)\n", instanceID, nodeName)
+	return nil
+}
+
+func WaitForNodesReady(testNamespace *TestNamespace, timeout, interval string, attemptReboot bool) {
+	firstPass := attemptReboot
+	By("Waiting for all cluster nodes to be Ready")
+	Eventually(func() bool {
+		nodeList, err := testNamespace.Clients.Clientset.CoreV1().Nodes().List(testNamespace.Clients.Context, metav1.ListOptions{})
+		if err != nil {
+			GinkgoWriter.Printf("Failed to list nodes: %v\n", err)
+			return false
+		}
+		if len(nodeList.Items) == 0 {
+			GinkgoWriter.Printf("No nodes found in cluster\n")
+			return false
+		}
+		allReady := true
+		for _, node := range nodeList.Items {
+			for _, cond := range node.Status.Conditions {
+				if cond.Type == "Ready" && cond.Status == "True" {
+					break
+				} else if cond.Type == "Ready" {
+					GinkgoWriter.Printf("Node %s has Ready status %s, message %s, reason %s\n", node.Name, cond.Status, cond.Message, cond.Reason)
+					if firstPass {
+						RebootAWSInstanceForNode(testNamespace.Clients, node.Name)
+					}
+					allReady = false
+				}
+			}
+		}
+		firstPass = false
+		return allReady
+	}, timeout, interval).Should(BeTrue(), "expected all nodes to be Ready")
+	GinkgoWriter.Printf("All nodes are Ready\n")
 }

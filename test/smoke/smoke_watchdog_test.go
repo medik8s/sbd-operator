@@ -57,11 +57,12 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 			Name:    testNamespace.Name,
 			Clients: testClients,
 		}
-		utils.CleanupSBDConfigs(testClients.Client, *testNamespace, testClients.Context)
+		By("Cleaning up previous test attempts")
+		utils.WaitForNodesReady(testNamespace, "10m", "30s", true)
+		utils.CleanupSBDConfigs(testNamespace)
 	})
 
 	AfterAll(func() {
-		utils.CleanupSBDConfigs(testClients.Client, *testNamespace, testClients.Context)
 	})
 
 	Context("Watchdog Compatibility and Stability", func() {
@@ -74,17 +75,9 @@ var _ = Describe("SBD Watchdog Smoke Tests", Ordered, Label("Smoke", "Watchdog")
 		AfterEach(func() {
 			By("cleaning up SBD configuration and waiting for agents to terminate")
 
-			// Clean up all SBDConfigs in the test namespace
-			sbdConfigs := &medik8sv1alpha1.SBDConfigList{}
-			err := testClients.Client.List(testClients.Context, sbdConfigs, client.InNamespace(testNamespace.Name))
-			if err == nil {
-				for _, config := range sbdConfigs.Items {
-					err := testNamespace.CleanupSBDConfig(&config)
-					if err != nil {
-						GinkgoWriter.Printf("Warning: failed to cleanup SBDConfig %s: %v\n", config.Name, err)
-					}
-				}
-			}
+			By("Cleaning up previous test attempts")
+			utils.WaitForNodesReady(testNamespace, "10m", "30s", false)
+			utils.CleanupSBDConfigs(testNamespace)
 		})
 
 		It("should successfully deploy SBD agents without causing node instability", func() {
