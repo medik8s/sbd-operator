@@ -38,7 +38,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/go-logr/logr"
 
@@ -104,6 +106,9 @@ type SBDConfigReconciler struct {
 
 	// OpenShift detection cache
 	isOpenShift *bool
+
+	// Filter log
+	FilterLog logr.Logger
 }
 
 // initializeRetryConfig initializes the retry configuration for SBDConfig operations
@@ -410,7 +415,7 @@ func (r *SBDConfigReconciler) isRWXCompatibleProvisioner(provisioner string) boo
 		"k8s-sigs.io/nfs-subdir-external-provisioner":   true,
 
 		// CephFS
-		"cephfs.csi.ceph.com":                    true,
+		"cephfs.csi.ceph.com":                   true,
 		"openshift-storage.cephfs.csi.ceph.com": true,
 
 		// GlusterFS
@@ -1831,16 +1836,46 @@ func mustParseQuantity(s string) resource.Quantity {
 	return q
 }
 
+// Example predicate that only triggers on meaningful changes
+func (r *SBDConfigReconciler) filterEvents() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			r.FilterLog.Info("CREATE event", "object", e.Object.GetName())
+			return true
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			r.FilterLog.Info("UPDATE event",
+				"object", e.ObjectNew.GetName(),
+				"oldGeneration", e.ObjectOld.GetGeneration(),
+				"newGeneration", e.ObjectNew.GetGeneration())
+			// Only reconcile if spec actually changed
+			return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration()
+		},
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			r.FilterLog.Info("DELETE event", "object", e.Object.GetName())
+			return true
+		},
+		GenericFunc: func(e event.GenericEvent) bool {
+			r.FilterLog.Info("GENERIC event", "object", e.Object.GetName())
+			return true
+		},
+	}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *SBDConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	logger := mgr.GetLogger().WithName("setup").WithValues("controller", "SBDConfig")
 
 	logger.Info("Setting up SBDConfig controller")
 
+	r.FilterLog = logger.WithName("filter")
+
 	err := ctrl.NewControllerManagedBy(mgr).
 		For(&medik8sv1alpha1.SBDConfig{}).
 		Owns(&appsv1.DaemonSet{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
+		Owns(&batchv1.Job{}).
+		WithEventFilter(r.filterEvents()).
 		Named("sbdconfig").
 		Complete(r)
 
