@@ -18,6 +18,7 @@ package e2e
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"testing"
 
@@ -32,6 +33,9 @@ var (
 	// Kubernetes clients
 	k8sClient client.Client
 	ctx       context.Context
+
+	// Test configuration from command line flags
+	testFlags *utils.TestFlags
 )
 
 // TestE2E runs the e2e test suite for the project. These tests execute in an isolated,
@@ -39,6 +43,15 @@ var (
 // The default setup requires Kind, builds/loads the Manager Docker image locally, and installs
 // CertManager.
 func TestE2E(t *testing.T) {
+	// Parse command line flags to make them available to tests
+	flag.Parse()
+	testFlags = utils.GetTestFlags()
+
+	if testFlags.DebugMode {
+		GinkgoWriter.Printf("Debug mode enabled\n")
+		GinkgoWriter.Printf("Test configuration: %+v\n", testFlags)
+	}
+
 	RegisterFailHandler(Fail)
 	GinkgoWriter.Print("Starting sbd-operator e2e test suite\n")
 	RunSpecs(t, "e2e suite")
@@ -46,17 +59,25 @@ func TestE2E(t *testing.T) {
 
 var skipall = false
 var _ = BeforeSuite(func() {
+	// Skip slow tests if requested
+
 	// Check cluster connection first - skip entire suite if not available
 	if err := utils.CheckClusterConnection(); err != nil {
 		skipall = true
 		Skip(fmt.Sprintf("Cluster connection not available: %v", err))
 	}
 
+	if testFlags.DebugMode {
+		GinkgoWriter.Printf("Using test configuration:\n")
+		if testFlags.NodeSelector != "" {
+			GinkgoWriter.Printf("  Node selector: %s\n", testFlags.NodeSelector)
+		}
+	}
+
 	var err error
 	testNamespace, err = utils.SuiteSetup("sbd-test-e2e")
 	Expect(err).NotTo(HaveOccurred(), "Failed to setup test clients")
 
-	fmt.Printf("Test namespace: %s\n", testNamespace.Name)
 	testClients = testNamespace.Clients
 
 	// Update global clients for backward compatibility

@@ -134,28 +134,29 @@ func SetupKubernetesClients() (*TestClients, error) {
 }
 
 // CreateTestNamespace creates a test namespace and returns a cleanup function
-func (tc *TestClients) CreateTestNamespace(namePrefix string) (*TestNamespace, error) {
-	nowMinutes := time.Now().Unix() / 60 // use minutes instead of seconds to avoid too many test namespaces
-	name := fmt.Sprintf("%s-%d", namePrefix, nowMinutes)
-	artifactsDir := fmt.Sprintf("testrun/test-%d", nowMinutes)
+func (tc *TestClients) CreateTestNamespace(namespace string) (*TestNamespace, error) {
+	testFlags := GetTestFlags()
+	artifactsDir := fmt.Sprintf("../../%s", testFlags.ArtifactsDir)
 
-	// Create the artifacts directory for this test namespace
-	err := os.MkdirAll(fmt.Sprintf("../../%s", artifactsDir), 0755)
-	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to create artifacts directory %s", artifactsDir))
+	// Ensure the artifacts directory for this test namespace exists
+	if _, err := os.Stat(artifactsDir); os.IsNotExist(err) {
+		err := os.MkdirAll(artifactsDir, 0755)
+		Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to create artifacts directory %s", testFlags.ArtifactsDir))
+	}
 
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
+			Name: namespace,
 		},
 	}
 
 	tns := &TestNamespace{
-		Name:         name,
+		Name:         namespace,
 		ArtifactsDir: artifactsDir,
 		Clients:      tc,
 	}
 
-	err = tc.Client.Create(tc.Context, ns)
+	err := tc.Client.Create(tc.Context, ns)
 	if err != nil && !strings.Contains(err.Error(), "already exists") {
 		return tns, nil
 	}
@@ -1299,24 +1300,28 @@ func CheckClusterConnection() error {
 	}
 }
 
-func SuiteSetup(namespace string) (*TestNamespace, error) {
+func SuiteSetup(prefix string) (*TestNamespace, error) {
 
-	By("verifying smoke test environment setup")
-	_, _ = fmt.Fprintf(GinkgoWriter, "Smoke test environment setup completed by Makefile\n")
-	_, _ = fmt.Fprintf(GinkgoWriter, "Project image: %s\n", GetProjectImage())
-	_, _ = fmt.Fprintf(GinkgoWriter, "Agent image: %s\n", GetAgentImage())
+	testFlags := GetTestFlags()
+	namespace := fmt.Sprintf("%s-%s", prefix, testFlags.TestID)
+	By("Verifying test environment setup")
+	GinkgoWriter.Printf("Test ID: %s\n", testFlags.TestID)
+	GinkgoWriter.Printf("Namespace: %s\n", namespace)
+	GinkgoWriter.Printf("Artifacts directory: %s\n", testFlags.ArtifactsDir)
+	GinkgoWriter.Printf("Agent image: %s\n", GetAgentImage())
+	GinkgoWriter.Printf("Operator image: %s\n", GetProjectImage())
 
-	By("initializing Kubernetes clients for tests if needed")
+	By("Initializing Kubernetes clients for tests if needed")
 	testClients, err := SetupKubernetesClients()
 	Expect(err).NotTo(HaveOccurred(), "Failed to setup Kubernetes clients")
 
 	// Verify we can connect to the cluster
-	By("verifying cluster connection")
+	By("Verifying cluster connection")
 	serverVersion, err := testClients.Clientset.Discovery().ServerVersion()
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to connect to cluster")
-	_, _ = fmt.Fprintf(GinkgoWriter, "Connected to Kubernetes cluster version: %s\n", serverVersion.String())
+	GinkgoWriter.Printf("Connected to Kubernetes cluster version: %s\n", serverVersion.String())
 
-	By("creating e2e test namespace")
+	By("Creating e2e test namespace")
 	testNamespace, err := testClients.CreateTestNamespace(namespace)
 	Expect(err).NotTo(HaveOccurred(), "Failed to create test namespace")
 
@@ -1328,14 +1333,14 @@ func SuiteSetup(namespace string) (*TestNamespace, error) {
 		By("checking if cert manager is installed already")
 		isCertManagerAlreadyInstalled = IsCertManagerCRDsInstalled()
 		if !isCertManagerAlreadyInstalled {
-			_, _ = fmt.Fprintf(GinkgoWriter, "Installing CertManager...\n")
+			GinkgoWriter.Printf("Installing CertManager...\n")
 			Expect(InstallCertManager()).To(Succeed(), "Failed to install CertManager")
 		} else {
-			_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: CertManager is already installed. Skipping installation...\n")
+			GinkgoWriter.Printf("WARNING: CertManager is already installed. Skipping installation...\n")
 		}
 	}
 
-	By("verifying CRDs are installed")
+	By("Verifying CRDs are installed")
 	// Check for SBD CRDs by looking for API resources in the medik8s.medik8s.io group
 	apiResourceList, err := testClients.Clientset.Discovery().ServerResourcesForGroupVersion("medik8s.medik8s.io/v1alpha1")
 	Expect(err).NotTo(HaveOccurred(), "Failed to get API resources for medik8s.medik8s.io/v1alpha1")

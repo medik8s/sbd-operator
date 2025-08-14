@@ -17,6 +17,7 @@ limitations under the License.
 package smoke
 
 import (
+	"flag"
 	"fmt"
 	"testing"
 
@@ -30,6 +31,7 @@ var (
 	// Kubernetes clients - now using shared utilities
 	testClients   *utils.TestClients
 	testNamespace *utils.TestNamespace
+	testFlags     *utils.TestFlags
 )
 
 // namespace where the project is deployed in
@@ -43,6 +45,9 @@ const serviceAccountName = "sbd-operator-controller-manager"
 // The default setup requires CRC, builds/loads the Manager Docker image locally, and installs
 // CertManager.
 func TestSmoke(t *testing.T) {
+	flag.Parse()
+	testFlags = utils.GetTestFlags()
+
 	RegisterFailHandler(Fail)
 	GinkgoWriter.Print("Starting sbd-operator smoke test suite\n")
 	RunSpecs(t, "smoke suite")

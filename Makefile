@@ -100,22 +100,27 @@ sync-test-files: ## Sync shared configuration files to test directories.
 .PHONY: test-e2e-clean
 test-e2e-clean: test-prep test-e2e ## Run e2e tests with complete deployment pipeline.
 
+TEST_ID=$(shell date +'%s')
+
 .PHONY: test-e2e
 test-e2e: ginkgo ## Run e2e tests again (assumes operator already deployed).
 	@echo "Running e2e tests (operator must be already deployed)..."
-	$(GINKGO) $(TEST_ARGS) test/e2e | tee testrun/execution.log
+	mkdir -p testrun/$(TEST_ID)
+	$(GINKGO) $(TEST_ARGS) test/e2e -- --test-id $(TEST_ID) --artifacts-dir testrun/$(TEST_ID) | tee testrun/$(TEST_ID)/execution.log
 
 .PHONY: test-e2e-with-webhooks  
 test-e2e-with-webhooks: sync-test-files ## Run e2e tests with webhooks enabled using deployment pipeline.
 	@echo "Running e2e tests with webhooks enabled via deployment pipeline..."
 	@# The run-tests.sh script handles webhook certificate generation automatically
 	@scripts/prep-tests.sh --type e2e --env cluster -v 
-	$(GINKGO) $(TEST_ARGS) test/e2e | tee testrun/execution.log
+	mkdir -p testrun/$(TEST_ID)
+	$(GINKGO) $(TEST_ARGS) test/e2e -- --test-id $(TEST_ID) --artifacts-dir testrun/$(TEST_ID) | tee testrun/$(TEST_ID)/execution.log
 
 .PHONY: test-smoke
 test-smoke: ginkgo ## Run smoke tests with building images.
 	@echo "Running smoke tests with image building..."
-	$(GINKGO) $(TEST_ARGS) test/e2e | tee testrun/execution.log
+	mkdir -p testrun/$(TEST_ID)
+	$(GINKGO) $(TEST_ARGS) test/e2e -- --test-id $(TEST_ID) --artifacts-dir testrun/$(TEST_ID) | tee testrun/$(TEST_ID)/execution.log
 
 
 .PHONY: test-prep
