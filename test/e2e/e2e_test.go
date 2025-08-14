@@ -229,7 +229,6 @@ func discoverClusterTopology() {
 	}
 
 	// Log cluster topology
-	GinkgoWriter.Printf("Discovered cluster topology:\n")
 	GinkgoWriter.Printf("  Total nodes: %d\n", clusterInfo.TotalNodes)
 	GinkgoWriter.Printf("  Worker nodes: %d\n", len(clusterInfo.WorkerNodes))
 	GinkgoWriter.Printf("  Control plane nodes: %d\n", len(clusterInfo.ControlNodes))
@@ -480,13 +479,14 @@ func checkNodeReboot(nodeName, reason, originalBootTime string, timeout time.Dur
 			return true
 		}
 		return false
-	}, timeout, time.Second*15)
+	}, timeout, time.Second*45)
 
 	resultText := fmt.Sprintf("Node %s should %shave rebooted %s", nodeName, rebootText, reason)
+
 	if target {
 		result.Should(BeTrue(), resultText)
 	} else {
-		result.Should(BeFalse(), resultText)
+		result.ShouldNot(BeTrue(), resultText)
 	}
 
 	if target {
@@ -509,19 +509,65 @@ func checkNodeReboot(nodeName, reason, originalBootTime string, timeout time.Dur
 			return false
 		}, time.Minute*10, time.Second*30).Should(BeTrue())
 
-		// Force-Delete any SBD agent pods from the node, since they will be left in a terminating state due to the reboot
-		pods := &corev1.PodList{}
-		err := k8sClient.List(ctx, pods, client.InNamespace(testNamespace.Name), client.MatchingLabels{"app": "sbd-agent"})
-		Expect(err).NotTo(HaveOccurred(), "Failed to list SBD agent pods")
+		err := cleanupRemediatedWorkloads(testNamespace, nodeName)
+		Expect(err).NotTo(HaveOccurred(), "Failed to cleanup remediated node %s", nodeName)
+	}
+}
 
-		for _, pod := range pods.Items {
-			if pod.Spec.NodeName == nodeName {
-				By(fmt.Sprintf("Force-deleting SBD agent pod %s from node %s", pod.Name, nodeName))
-				err = k8sClient.Delete(ctx, &pod)
-				Expect(err).NotTo(HaveOccurred(), "Failed to force-delete SBD agent pod %s", pod.Name)
-			}
+func cleanupRemediatedWorkloads(testNamespace *utils.TestNamespace, nodeName string) error {
+	// Force-Delete any SBD agent pods from the node, since they will be left in a terminating state due to the reboot
+	pods := &corev1.PodList{}
+	err := k8sClient.List(ctx, pods, client.InNamespace(testNamespace.Name), client.MatchingLabels{"app": "sbd-agent"})
+	Expect(err).NotTo(HaveOccurred(), "Failed to list SBD agent pods")
+
+	for _, pod := range pods.Items {
+		if pod.Spec.NodeName == nodeName {
+			By(fmt.Sprintf("Force-deleting SBD agent pod %s from node %s", pod.Name, nodeName))
+
+			zero := int64(0)
+			policy := metav1.DeletePropagationBackground
+			err := testNamespace.Clients.Clientset.CoreV1().Pods(testNamespace.Name).Delete(
+				ctx, pod.Name, metav1.DeleteOptions{
+					GracePeriodSeconds: &zero,
+					PropagationPolicy:  &policy,
+				})
+			Expect(err).NotTo(HaveOccurred(), "Failed to force-delete SBD agent pod %s", pod.Name)
+
+			// Wait for the pod to be deleted
+			Eventually(func() bool {
+				_, err := testNamespace.Clients.Clientset.CoreV1().Pods(testNamespace.Name).Get(ctx, pod.Name, metav1.GetOptions{})
+				return err != nil
+			}, time.Minute*5, time.Second*10).Should(BeTrue(), "SBD agent pod %s was not removed", pod.Name)
 		}
 	}
+
+	// Force-delete any failed operator pods from the node, since they will be left in a terminating state due to the reboot
+	operatorPods := &corev1.PodList{}
+	err = k8sClient.List(ctx, operatorPods, client.InNamespace(testNamespace.Name), client.MatchingLabels{"app": "sbd-operator"})
+	Expect(err).NotTo(HaveOccurred(), "Failed to list SBD operator pods")
+
+	for _, pod := range operatorPods.Items {
+		if pod.Spec.NodeName == nodeName {
+			By(fmt.Sprintf("Force-deleting SBD operator pod %s from node %s", pod.Name, nodeName))
+
+			zero := int64(0)
+			policy := metav1.DeletePropagationBackground
+			err := testNamespace.Clients.Clientset.CoreV1().Pods(testNamespace.Name).Delete(
+				ctx, pod.Name, metav1.DeleteOptions{
+					GracePeriodSeconds: &zero,
+					PropagationPolicy:  &policy,
+				})
+			Expect(err).NotTo(HaveOccurred(), "Failed to force-delete SBD operator pod %s", pod.Name)
+
+			// Wait for the pod to be deleted
+			Eventually(func() bool {
+				_, err := testNamespace.Clients.Clientset.CoreV1().Pods(testNamespace.Name).Get(ctx, pod.Name, metav1.GetOptions{})
+				return err != nil
+			}, time.Minute*5, time.Second*10).Should(BeTrue(), "SBD operator pod %s was not removed", pod.Name)
+		}
+	}
+
+	return nil
 }
 
 func checkNodeNotReady(nodeName, reason string, timeout time.Duration, enforceFn func() gomegatypes.GomegaMatcher) {
