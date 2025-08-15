@@ -29,6 +29,7 @@ RUN mkdir -p bin && chown -R default:root bin
 USER default
 
 # Calculate version information from git
+RUN git config --global --add safe.directory /workspace
 RUN export GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown") && \
     export GIT_DESCRIBE=$(git describe --tags --dirty 2>/dev/null || echo "unknown") && \
     export BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ") && \
