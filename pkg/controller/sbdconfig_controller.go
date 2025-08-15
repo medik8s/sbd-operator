@@ -72,7 +72,7 @@ const (
 	ReasonPVCManaged                = "PVCManaged"
 	ReasonPVCError                  = "PVCError"
 	ReasonSBDDeviceInitialized      = "SBDDeviceInitialized"
-	ReasonSBDDeviceInitError        = "SBDDeviceInitError"
+	ReasonSBDDeviceInitError        = "SBDDeviceInitWaiting"
 
 	// Finalizer for cleanup operations
 	SBDConfigFinalizerName = "sbd-operator.medik8s.io/cleanup"
@@ -343,7 +343,7 @@ func (r *SBDConfigReconciler) validateStorageClass(
 	ctx context.Context, sbdConfig *medik8sv1alpha1.SBDConfig, logger logr.Logger) error {
 	if !sbdConfig.Spec.HasSharedStorage() {
 		// No shared storage configured, nothing to validate
-		return nil
+		return fmt.Errorf("no shared storage configured")
 	}
 
 	storageClassName := sbdConfig.Spec.GetSharedStorageStorageClass()
@@ -1149,11 +1149,11 @@ func (r *SBDConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Ensure PVC exists for shared storage
 	action, err := r.ensurePVC(ctx, &sbdConfig, logger)
 	if err != nil {
-		logger.Error(err, "Failed to ensure PVC after retries",
+		logger.Error(err, "Waiting for PVC to be created",
 			"namespace", sbdConfig.Namespace,
 			"operation", "pvc-creation")
 		r.emitEventf(&sbdConfig, EventTypeWarning, ReasonPVCError,
-			"Failed to ensure PVC for shared storage in namespace '%s': %v", sbdConfig.Namespace, err)
+			"Waiting for PVC for shared storage in namespace '%s': %v", sbdConfig.Namespace, err)
 	} else if action != controllerutil.OperationResultNone {
 		// Return requeue with backoff
 		return ctrl.Result{Requeue: true}, err
@@ -1162,11 +1162,10 @@ func (r *SBDConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Ensure SBD device exists in shared storage
 	action, err = r.ensureSBDDevice(ctx, &sbdConfig, logger)
 	if err != nil {
-		logger.Error(err, "Failed to ensure SBD device after retries",
+		logger.Error(err, "Waiting for SBD device to be initialized",
 			"namespace", sbdConfig.Namespace,
 			"operation", "sbd-device-init")
-		r.emitEventf(&sbdConfig, EventTypeWarning, ReasonSBDDeviceInitError,
-			"Failed to ensure SBD device in shared storage in namespace '%s': %v", sbdConfig.Namespace, err)
+		r.emitEventf(&sbdConfig, EventTypeWarning, ReasonSBDDeviceInitError, err.Error())
 
 		return ctrl.Result{RequeueAfter: InitialSBDConfigRetryDelay}, err
 	} else if action != controllerutil.OperationResultNone {
