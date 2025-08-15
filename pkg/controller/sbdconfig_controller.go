@@ -1142,11 +1142,8 @@ func (r *SBDConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			"Failed to validate storage class compatibility for PVC '%s': %v",
 			sbdConfig.Spec.GetSharedStoragePVCName(sbdConfig.Name), err)
 
-		// Return requeue with backoff for transient errors
-		if r.isTransientKubernetesError(err) {
-			return ctrl.Result{RequeueAfter: InitialSBDConfigRetryDelay}, err
-		}
-		return ctrl.Result{}, err
+		// Return requeue with backoff
+		return ctrl.Result{RequeueAfter: InitialSBDConfigRetryDelay}, err
 	}
 
 	// Ensure PVC exists for shared storage
@@ -1216,7 +1213,7 @@ func (r *SBDConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Emit event for DaemonSet management
 		r.emitEventf(&sbdConfig, EventTypeNormal, ReasonDaemonSetManaged,
 			"DaemonSet '%s' for SBD Agent %s successfully", actualDaemonSet.Name, action)
-		daemonSetLogger.Info("DaemonSet %s successfully", action)
+		daemonSetLogger.Info(fmt.Sprintf("DaemonSet %s successfully", action))
 		return ctrl.Result{Requeue: true}, err
 	}
 
@@ -1372,7 +1369,7 @@ func (r *SBDConfigReconciler) ensureServiceAccount(
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: "rbac.authorization.k8s.io",
 			Kind:     "ClusterRole",
-			Name:     "sbd-agent-role", // Use the generated cluster role with proper permissions
+			Name:     "sbd-operator-sbd-agent-role", // Use the generated cluster role with proper permissions
 		},
 	}
 
@@ -1800,23 +1797,31 @@ func mustParseQuantity(s string) resource.Quantity {
 func (r *SBDConfigReconciler) filterEvents() predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
-			r.FilterLog.Info("CREATE event", "object", e.Object.GetName())
+			r.FilterLog.Info("CREATE event", "object", e.Object.GetName(),
+				"kind", e.Object.GetResourceVersion(),
+				"namespace", e.Object.GetNamespace())
 			return true
 		},
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			r.FilterLog.Info("UPDATE event",
 				"object", e.ObjectNew.GetName(),
 				"oldGeneration", e.ObjectOld.GetGeneration(),
-				"newGeneration", e.ObjectNew.GetGeneration())
+				"newGeneration", e.ObjectNew.GetGeneration(),
+				"kind", e.ObjectNew.GetResourceVersion(),
+				"namespace", e.ObjectNew.GetNamespace())
 			// Only reconcile if spec actually changed
 			return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration()
 		},
 		DeleteFunc: func(e event.DeleteEvent) bool {
-			r.FilterLog.Info("DELETE event", "object", e.Object.GetName())
+			r.FilterLog.Info("DELETE event", "object", e.Object.GetName(),
+				"kind", e.Object.GetResourceVersion(),
+				"namespace", e.Object.GetNamespace())
 			return true
 		},
 		GenericFunc: func(e event.GenericEvent) bool {
-			r.FilterLog.Info("GENERIC event", "object", e.Object.GetName())
+			r.FilterLog.Info("GENERIC event", "object", e.Object.GetName(),
+				"kind", e.Object.GetResourceVersion(),
+				"namespace", e.Object.GetNamespace())
 			return true
 		},
 	}
