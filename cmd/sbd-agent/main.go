@@ -47,6 +47,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
+	"k8s.io/client-go/tools/record"
+
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -62,9 +64,11 @@ import (
 )
 
 // RBAC permissions for SBD Agent
-// The agent needs to list and process SBDRemediation CRs for fencing operations
+// The agent needs to read SBDConfig for configuration and process SBDRemediation CRs for fencing operations
+// +kubebuilder:rbac:groups=medik8s.medik8s.io,resources=sbdconfigs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=medik8s.medik8s.io,resources=sbdconfigs/status,verbs=get
 // +kubebuilder:rbac:groups=medik8s.medik8s.io,resources=sbdremediations,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=medik8s.medik8s.io,resources=sbdremediations/status,verbs=update;patch
+// +kubebuilder:rbac:groups=medik8s.medik8s.io,resources=sbdremediations/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
@@ -548,6 +552,8 @@ func generateFenceDevicePath(heartbeatDevicePath string) string {
 
 // SBDAgent represents the main SBD agent with self-fencing capabilities
 type SBDAgent struct {
+	recorderObject      runtime.Object
+	recorder            record.EventRecorder
 	watchdog            WatchdogInterface
 	heartbeatDevice     BlockDevice // Device used for heartbeat messages
 	fenceDevice         BlockDevice // Device used for fence messages
@@ -719,9 +725,11 @@ func NewSBDAgentWithWatchdog(wd WatchdogInterface, heartbeatDevicePath, nodeName
 		k8sClientset:         k8sClientset,
 		watchNamespace:       watchNamespace,
 		enableFencing:        enableFencing,
-		controllerManager:    nil, // Will be initialized during Start() if enableFencing is true
+		controllerManager:    nil, // Will be initialized below
 		leaderElectors:       make(map[string]*RemediationLeaderElector),
 		leaderElectionConfig: leaderElectionConfig,
+		recorder:             nil,
+		recorderObject:       nil,
 	}
 
 	// Initialize heartbeat and fence devices
@@ -751,6 +759,25 @@ func NewSBDAgentWithWatchdog(wd WatchdogInterface, heartbeatDevicePath, nodeName
 
 	// Initialize metrics
 	sbdAgent.initMetrics()
+
+	if err := sbdAgent.initializeControllerManager(); err != nil {
+		return nil, fmt.Errorf("failed to initialize controller manager: %w", err)
+	}
+
+	sbdAgent.recorder = sbdAgent.controllerManager.GetEventRecorderFor("sbd-agent")
+
+	// Get the first SBDConfig object from the POD_NAMESPACE
+	sbdConfigs := &v1alpha1.SBDConfigList{}
+	if err := sbdAgent.k8sClient.List(sbdAgent.ctx, sbdConfigs, client.InNamespace(os.Getenv("POD_NAMESPACE"))); err != nil {
+		logger.Error(err, "Failed to list SBDConfig objects")
+	} else if len(sbdConfigs.Items) > 0 {
+		sbdAgent.recorderObject = &sbdConfigs.Items[0]
+	} else {
+		logger.Info("No SBDConfig found in namespace", "namespace", os.Getenv("POD_NAMESPACE"))
+		sbdAgent.recorderObject = nil
+	}
+
+	sbdAgent.recorder.Eventf(sbdAgent.recorderObject, "Normal", "AgentCreated", "Agent activated on %s", sbdAgent.nodeName)
 
 	return sbdAgent, nil
 }
@@ -968,12 +995,18 @@ func (s *SBDAgent) shouldTriggerSelfFence() (bool, string) {
 	defer s.failureCountMutex.RUnlock()
 
 	if s.watchdogFailureCount >= MaxConsecutiveFailures {
+		s.recorder.Event(s.recorderObject, "Warning", "WatchdogPetFailed",
+			fmt.Sprintf("Watchdog pet failures on (%s, %d) exceeded threshold", s.nodeName, s.nodeID))
 		return true, fmt.Sprintf("watchdog pet failures exceeded threshold (%d)", MaxConsecutiveFailures)
 	}
 	if s.sbdFailureCount >= MaxConsecutiveFailures {
+		s.recorder.Event(s.recorderObject, "Warning", "SBDWriteFailed",
+			fmt.Sprintf("SBD device write failures on (%s, %d) exceeded threshold", s.nodeName, s.nodeID))
 		return true, fmt.Sprintf("SBD device failures exceeded threshold (%d)", MaxConsecutiveFailures)
 	}
 	if s.heartbeatFailureCount >= MaxConsecutiveFailures {
+		s.recorder.Event(s.recorderObject, "Warning", "HeartbeatWriteFailed",
+			fmt.Sprintf("Heartbeat write failures on (%s, %d) exceeded threshold", s.nodeName, s.nodeID))
 		return true, fmt.Sprintf("heartbeat write failures exceeded threshold (%d)", MaxConsecutiveFailures)
 	}
 
@@ -1132,16 +1165,11 @@ func (s *SBDAgent) Start() error {
 	}
 
 	// Start fencing loop if enabled
-	if s.enableFencing {
-		if err := s.initializeControllerManager(); err != nil {
-			return fmt.Errorf("failed to initialize controller manager: %w", err)
+	go func() {
+		if err := s.controllerManager.Start(s.ctx); err != nil {
+			logger.Error(err, "Controller manager failed")
 		}
-		go func() {
-			if err := s.controllerManager.Start(s.ctx); err != nil {
-				logger.Error(err, "Controller manager failed")
-			}
-		}()
-	}
+	}()
 
 	logger.Info("SBD Agent started successfully")
 	return nil
@@ -1591,6 +1619,9 @@ func (s *SBDAgent) readOwnSlotForFenceMessage() error {
 				"sourceNodeID", fenceMsg.Header.NodeID,
 				"targetNodeID", fenceMsg.TargetNodeID,
 				"fenceReason", sbdprotocol.GetFenceReasonName(fenceMsg.Reason))
+			s.recorder.Event(s.recorderObject, "Warning", "FenceMessageDetected",
+				fmt.Sprintf("Fence message detected in own slot (%s, %d) from %d, reason: %s",
+					s.nodeName, s.nodeID, fenceMsg.Header.NodeID, sbdprotocol.GetFenceReasonName(fenceMsg.Reason)))
 
 			// Execute self-fencing immediately
 			s.executeSelfFencing(reason)

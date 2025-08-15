@@ -29,6 +29,20 @@ rules:
 - apiGroups:
   - medik8s.medik8s.io
   resources:
+  - sbdconfigs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - medik8s.medik8s.io
+  resources:
+  - sbdconfigs/status
+  verbs:
+  - get
+- apiGroups:
+  - medik8s.medik8s.io
+  resources:
   - sbdremediations
   verbs:
   - get
@@ -41,5 +55,6 @@ rules:
   resources:
   - sbdremediations/status
   verbs:
+  - get
   - patch
   - update
