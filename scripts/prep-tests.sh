@@ -404,8 +404,6 @@ cleanup_environment() {
     $KUBECTL delete sbdremediation --all -A --ignore-not-found=true || true
     $KUBECTL delete sbdconfig --all -A --ignore-not-found=true || true
     $KUBECTL delete daemonset -l app=sbd-agent -n $test_namespace --ignore-not-found=true || true
-    $KUBECTL delete clusterrolebinding -l app.kubernetes.io/managed-by=sbd-operator --ignore-not-found=true || true
-    $KUBECTL delete clusterrole -l app.kubernetes.io/managed-by=sbd-operator --ignore-not-found=true || true
     
     # Clean up SBD-related webhooks
     log_info "Cleaning up SBD-related webhook configurations"
@@ -431,21 +429,31 @@ cleanup_environment() {
     # Clean up webhook certificates secret
     $KUBECTL delete secret webhook-server-certs -n sbd-operator-system --ignore-not-found=true || true
     
-    $KUBECTL delete ns sbd-operator-system --ignore-not-found=true || true
-    $KUBECTL delete ns $test_namespace --ignore-not-found=true || true
-    $KUBECTL delete ns sbd-system --ignore-not-found=true || true
-    $KUBECTL delete serviceaccount sbd-agent -n "$test_namespace" --ignore-not-found=true || true
-
-    # Clean up environment-specific resources
-    if [[ "$TEST_ENVIRONMENT" == "crc" ]]; then
-        $KUBECTL delete scc sbd-operator-sbd-agent-privileged --ignore-not-found=true || true
-        $KUBECTL delete clusterrolebinding sbd-operator-sbd-agent-scc-user --ignore-not-found=true || true
-        $KUBECTL delete clusterrole sbd-operator-sbd-agent-scc-user --ignore-not-found=true || true
-    fi
+    SERVICEACCOUNTS=$(oc get sa | grep sbd- | awk '{print $1}')
+    for SERVICEACCOUNT in $SERVICEACCOUNTS; do
+        $KUBECTL delete serviceaccount "$SERVICEACCOUNT" || true
+    done
     
     # Clean up CRDs
     $KUBECTL kustomize config/crd | $KUBECTL delete --ignore-not-found=true -f - || true
-    
+
+    # Clean up all sbd related cluster roles and bindings
+    ROLEBINDINGS=$(oc get clusterrolebinding | grep sbd- | awk '{print $1}')
+    for ROLEBINDING in $ROLEBINDINGS; do
+        $KUBECTL delete clusterrolebinding "$ROLEBINDING" || true
+    done
+
+    ROLES=$(oc get clusterrole | grep sbd- | awk '{print $1}')
+    for ROLE in $ROLES; do
+        $KUBECTL delete clusterrole "$ROLE"  || true
+    done
+
+    NAMESPACES=$(oc get ns | grep sbd- | awk '{print $1}')
+    for NAMESPACE in $NAMESPACES; do
+        $KUBECTL delete ns "$NAMESPACE" || true
+    done
+
+
     # Clean up local webhook certificates if this is a complete cleanup
     if [[ "$cleanup_reason" == "test environment" || "$cleanup_reason" == "test resources (cleanup-only mode)" ]]; then
         log_info "Cleaning up local webhook certificates"
