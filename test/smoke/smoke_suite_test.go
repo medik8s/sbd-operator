@@ -79,17 +79,21 @@ var _ = AfterSuite(func() {
 		_ = testNamespace.Cleanup()
 	}
 
+	GinkgoWriter.Printf("\n\n--------------------------------\n")
+	GinkgoWriter.Printf("Artefacts available at: %s\n", testNamespace.ArtifactsDir)
+	GinkgoWriter.Printf("--------------------------------\n\n")
+
 })
 
 var _ = AfterEach(func() {
 	specReport := CurrentSpecReport()
 	if specReport.Failed() {
-		systemNamespace := &utils.TestNamespace{
-			Name:         "sbd-operator-system",
-			ArtifactsDir: "testrun/sbd-operator-system",
-			Clients:      testClients,
-		}
-		utils.DescribeEnvironment(testClients, systemNamespace)
+		GinkgoWriter.Printf("\n\n--------------------------------\n")
+		GinkgoWriter.Printf("Test failed: %s\n", specReport.FullText())
+		GinkgoWriter.Printf("--------------------------------\n\n")
+
+		utils.DescribeEnvironment(testClients, testNamespace.OperatorNamespace())
 		utils.DescribeEnvironment(testClients, testNamespace)
 	}
+	utils.CleanupSBDConfigs(testNamespace)
 })
