@@ -552,7 +552,7 @@ func parseSBDSlot(nodeID uint16, data []byte) (SBDNodeSummary, error) {
 	typeStr := sbdprotocol.GetMessageTypeName(msgType)
 
 	// Convert timestamp from nanoseconds to time.Time
-	ts := time.Unix(0, int64(timestamp))
+	ts := time.Unix(int64(timestamp)/1000000000, 0)
 
 	return SBDNodeSummary{
 		NodeID:    nodeID,
