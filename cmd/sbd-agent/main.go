@@ -18,7 +18,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"flag"
 	"fmt"
 	"io"
@@ -41,13 +40,10 @@ import (
 	// Kubernetes imports for SBDRemediation CR watching
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/tools/leaderelection"
-	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/client-go/tools/record"
 
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -100,12 +96,6 @@ var (
 		"Port for Prometheus metrics endpoint")
 	staleNodeTimeout = flag.Duration(agent.FlagStaleNodeTimeout, 1*time.Hour,
 		"Timeout for considering nodes stale and removing them from slot mapping")
-
-	// Kubernetes client configuration flags (kubeconfig is auto-registered by controller-runtime)
-	namespace = flag.String("namespace", "",
-		"Namespace to watch for SBDRemediation CRs (optional, watches all namespaces if not specified)")
-	enableFencing = flag.Bool("enable-fencing", true,
-		"Enable agent-based fencing capabilities (watch and process SBDRemediation CRs)")
 
 	// I/O timeout configuration
 	ioTimeout = flag.Duration("io-timeout", 2*time.Second,
@@ -444,110 +434,6 @@ func (pm *PeerMonitor) updatePeerMetrics(nodeID uint16, isHealthy bool) {
 	}
 }
 
-// LeaderElectionConfig contains configuration for leader election
-type LeaderElectionConfig struct {
-	LeaseDuration time.Duration
-	RenewDeadline time.Duration
-	RetryPeriod   time.Duration
-	Namespace     string
-}
-
-// RemediationLeaderElector manages leader election for a specific SBDRemediation
-type RemediationLeaderElector struct {
-	remediationKey string // namespace/name
-	leaderElector  *leaderelection.LeaderElector
-	isLeader       bool
-	isLeaderMutex  sync.RWMutex
-	stopCh         chan struct{}
-	logger         logr.Logger
-}
-
-// NewRemediationLeaderElector creates a new leader elector for a specific remediation
-func NewRemediationLeaderElector(remediationKey, nodeName string,
-	k8sClientset kubernetes.Interface, config LeaderElectionConfig,
-	logger logr.Logger) (*RemediationLeaderElector, error) {
-	rle := &RemediationLeaderElector{
-		remediationKey: remediationKey,
-		isLeader:       false,
-		stopCh:         make(chan struct{}),
-		logger:         logger,
-	}
-
-	// Create a deterministic but unique lease name for this remediation
-	h := sha256.New()
-	h.Write([]byte(remediationKey))
-	leaseName := fmt.Sprintf("sbd-remediation-%x", h.Sum(nil)[:8])
-
-	// Create resource lock for leader election
-	lock := &resourcelock.LeaseLock{
-		LeaseMeta: metav1.ObjectMeta{
-			Name:      leaseName,
-			Namespace: config.Namespace,
-		},
-		Client: k8sClientset.CoordinationV1(),
-		LockConfig: resourcelock.ResourceLockConfig{
-			Identity: nodeName,
-		},
-	}
-
-	// Configure leader election
-	leaderElectionConfig := leaderelection.LeaderElectionConfig{
-		Lock:          lock,
-		LeaseDuration: config.LeaseDuration,
-		RenewDeadline: config.RenewDeadline,
-		RetryPeriod:   config.RetryPeriod,
-		Callbacks: leaderelection.LeaderCallbacks{
-			OnStartedLeading: func(ctx context.Context) {
-				rle.setLeader(true)
-				rle.logger.Info("Started leading remediation", "remediation", remediationKey, "leaseName", leaseName)
-			},
-			OnStoppedLeading: func() {
-				rle.setLeader(false)
-				rle.logger.Info("Stopped leading remediation", "remediation", remediationKey, "leaseName", leaseName)
-			},
-			OnNewLeader: func(identity string) {
-				rle.logger.V(1).Info("New leader elected for remediation",
-					"remediation", remediationKey, "leader", identity, "leaseName", leaseName)
-			},
-		},
-	}
-
-	elector, err := leaderelection.NewLeaderElector(leaderElectionConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create leader elector for remediation %s: %w", remediationKey, err)
-	}
-
-	rle.leaderElector = elector
-	return rle, nil
-}
-
-// Start begins the leader election process
-func (rle *RemediationLeaderElector) Start(ctx context.Context) {
-	go func() {
-		rle.logger.Info("Starting leader election", "remediation", rle.remediationKey)
-		rle.leaderElector.Run(ctx)
-	}()
-}
-
-// Stop terminates the leader election
-func (rle *RemediationLeaderElector) Stop() {
-	close(rle.stopCh)
-}
-
-// IsLeader returns whether this node is currently the leader for this remediation
-func (rle *RemediationLeaderElector) IsLeader() bool {
-	rle.isLeaderMutex.RLock()
-	defer rle.isLeaderMutex.RUnlock()
-	return rle.isLeader
-}
-
-// setLeader updates the leader status
-func (rle *RemediationLeaderElector) setLeader(leader bool) {
-	rle.isLeaderMutex.Lock()
-	defer rle.isLeaderMutex.Unlock()
-	rle.isLeader = leader
-}
-
 // generateFenceDevicePath creates the fence device path from the heartbeat device path
 // by appending the fence device suffix from agent constants
 func generateFenceDevicePath(heartbeatDevicePath string) string {
@@ -597,26 +483,17 @@ type SBDAgent struct {
 	retryConfig           retry.Config
 
 	// Kubernetes client for SBDRemediation CR watching and fencing coordination
-	k8sClient      client.Client
-	k8sClientset   kubernetes.Interface
-	watchNamespace string
-	enableFencing  bool
+	k8sClient client.Client
 
 	// Controller manager for SBDRemediation reconciliation
 	controllerManager manager.Manager
-
-	// Leader election for coordinating SBDRemediation processing across agents (deprecated - using controller-runtime now)
-	leaderElectors       map[string]*RemediationLeaderElector // key: remediation namespace/name
-	leaderElectorsMutex  sync.RWMutex
-	leaderElectionConfig LeaderElectionConfig
 }
 
 // NewSBDAgent creates a new SBD agent with the specified configuration
 func NewSBDAgent(watchdogPath, heartbeatDevicePath, nodeName, clusterName string,
 	nodeID uint16, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration,
 	sbdTimeoutSeconds uint, rebootMethod string, metricsPort int, staleNodeTimeout time.Duration,
-	fileLockingEnabled bool, ioTimeout time.Duration, k8sClient client.Client,
-	k8sClientset kubernetes.Interface, watchNamespace string, enableFencing bool) (*SBDAgent, error) {
+	fileLockingEnabled bool, ioTimeout time.Duration, k8sClient client.Client) (*SBDAgent, error) {
 	// Initialize watchdog first (always required) with softdog fallback for systems without hardware watchdog
 	wd, err := watchdog.NewWithSoftdogFallback(watchdogPath, logger)
 	if err != nil {
@@ -625,16 +502,14 @@ func NewSBDAgent(watchdogPath, heartbeatDevicePath, nodeName, clusterName string
 
 	return NewSBDAgentWithWatchdog(wd, heartbeatDevicePath, nodeName, clusterName, nodeID,
 		petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval, sbdTimeoutSeconds,
-		rebootMethod, metricsPort, staleNodeTimeout, fileLockingEnabled, ioTimeout, k8sClient,
-		k8sClientset, watchNamespace, enableFencing)
+		rebootMethod, metricsPort, staleNodeTimeout, fileLockingEnabled, ioTimeout, k8sClient)
 }
 
 // NewSBDAgentWithWatchdog creates a new SBD agent with a provided watchdog interface
 func NewSBDAgentWithWatchdog(wd WatchdogInterface, heartbeatDevicePath, nodeName, clusterName string,
 	nodeID uint16, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration,
 	sbdTimeoutSeconds uint, rebootMethod string, metricsPort int, staleNodeTimeout time.Duration,
-	fileLockingEnabled bool, ioTimeout time.Duration, k8sClient client.Client,
-	k8sClientset kubernetes.Interface, watchNamespace string, enableFencing bool) (*SBDAgent, error) {
+	fileLockingEnabled bool, ioTimeout time.Duration, k8sClient client.Client) (*SBDAgent, error) {
 	// Input validation
 	if wd == nil {
 		return nil, fmt.Errorf("watchdog interface cannot be nil")
@@ -655,6 +530,10 @@ func NewSBDAgentWithWatchdog(wd WatchdogInterface, heartbeatDevicePath, nodeName
 
 	// Generate fence device path from heartbeat device path
 	fenceDevicePath := generateFenceDevicePath(heartbeatDevicePath)
+
+	if k8sClient == nil {
+		return nil, fmt.Errorf("k8s client cannot be nil")
+	}
 
 	// Validate timing parameters
 	if petInterval <= 0 {
@@ -690,50 +569,32 @@ func NewSBDAgentWithWatchdog(wd WatchdogInterface, heartbeatDevicePath, nodeName
 		BackoffFactor: CriticalRetryBackoffFactor,
 	}
 
-	// Configure leader election settings
-	leaderElectionConfig := LeaderElectionConfig{
-		LeaseDuration: 15 * time.Second, // How long the leader holds the lease
-		RenewDeadline: 10 * time.Second, // Deadline for renewing the lease
-		RetryPeriod:   2 * time.Second,  // Frequency of retries
-		Namespace:     watchNamespace,   // Use the watch namespace for leases
-	}
-
-	// If watch namespace is empty, use default namespace
-	if leaderElectionConfig.Namespace == "" {
-		leaderElectionConfig.Namespace = "default"
-	}
-
 	sbdAgent := &SBDAgent{
-		watchdog:             wd,
-		heartbeatDevicePath:  heartbeatDevicePath,
-		fenceDevicePath:      fenceDevicePath,
-		nodeName:             nodeName,
-		nodeID:               nodeID,
-		petInterval:          petInterval,
-		sbdUpdateInterval:    sbdUpdateInterval,
-		heartbeatInterval:    heartbeatInterval,
-		peerCheckInterval:    peerCheckInterval,
-		rebootMethod:         rebootMethod,
-		ioTimeout:            ioTimeout,
-		ctx:                  ctx,
-		cancel:               cancel,
-		sbdHealthy:           false,
-		heartbeatSequence:    0,
-		selfFenceDetected:    false,
-		metricsPort:          metricsPort,
-		nodeManagerStop:      make(chan struct{}),
-		staleNodeTimeout:     staleNodeTimeout,
-		lastFailureReset:     time.Now(),
-		retryConfig:          retryConfig,
-		k8sClient:            k8sClient,
-		k8sClientset:         k8sClientset,
-		watchNamespace:       watchNamespace,
-		enableFencing:        enableFencing,
-		controllerManager:    nil, // Will be initialized below
-		leaderElectors:       make(map[string]*RemediationLeaderElector),
-		leaderElectionConfig: leaderElectionConfig,
-		recorder:             nil,
-		recorderObject:       nil,
+		watchdog:            wd,
+		heartbeatDevicePath: heartbeatDevicePath,
+		fenceDevicePath:     fenceDevicePath,
+		nodeName:            nodeName,
+		nodeID:              nodeID,
+		petInterval:         petInterval,
+		sbdUpdateInterval:   sbdUpdateInterval,
+		heartbeatInterval:   heartbeatInterval,
+		peerCheckInterval:   peerCheckInterval,
+		rebootMethod:        rebootMethod,
+		ioTimeout:           ioTimeout,
+		ctx:                 ctx,
+		cancel:              cancel,
+		sbdHealthy:          false,
+		heartbeatSequence:   0,
+		selfFenceDetected:   false,
+		metricsPort:         metricsPort,
+		nodeManagerStop:     make(chan struct{}),
+		staleNodeTimeout:    staleNodeTimeout,
+		lastFailureReset:    time.Now(),
+		retryConfig:         retryConfig,
+		k8sClient:           k8sClient,
+		controllerManager:   nil, // Will be initialized below
+		recorder:            nil,
+		recorderObject:      nil,
 	}
 
 	// Initialize heartbeat and fence devices
@@ -767,9 +628,7 @@ func NewSBDAgentWithWatchdog(wd WatchdogInterface, heartbeatDevicePath, nodeName
 	if err := sbdAgent.initializeControllerManager(); err != nil {
 		return nil, fmt.Errorf("failed to initialize controller manager: %w", err)
 	}
-
 	sbdAgent.recorder = sbdAgent.controllerManager.GetEventRecorderFor("sbd-agent")
-
 	// Get the first SBDConfig object from the POD_NAMESPACE
 	sbdConfigs := &v1alpha1.SBDConfigList{}
 	if err := sbdAgent.k8sClient.List(
@@ -784,8 +643,15 @@ func NewSBDAgentWithWatchdog(wd WatchdogInterface, heartbeatDevicePath, nodeName
 		logger.Info("No SBDConfig found in namespace", "namespace", os.Getenv("POD_NAMESPACE"))
 		sbdAgent.recorderObject = nil
 	}
-
-	sbdAgent.recorder.Eventf(sbdAgent.recorderObject, "Normal", "AgentCreated", "Agent activated on %s", sbdAgent.nodeName)
+	if sbdAgent.recorder != nil && sbdAgent.recorderObject != nil {
+		sbdAgent.recorder.Eventf(
+			sbdAgent.recorderObject,
+			"Normal",
+			"AgentCreated",
+			"Agent activated on %s",
+			sbdAgent.nodeName,
+		)
+	}
 
 	return sbdAgent, nil
 }
@@ -1185,12 +1051,6 @@ func (s *SBDAgent) Stop() error {
 	// Signal all goroutines to stop
 	s.cancel()
 
-	// Stop leader election for all remediations
-	if s.enableFencing {
-		logger.Info("Stopping all leader electors")
-		s.stopAllLeaderElectors()
-	}
-
 	// Stop node manager coordination
 	if s.nodeManagerStop != nil {
 		close(s.nodeManagerStop)
@@ -1234,18 +1094,6 @@ func (s *SBDAgent) Stop() error {
 
 	logger.Info("SBD Agent stopped successfully")
 	return nil
-}
-
-// stopAllLeaderElectors stops all active leader electors
-func (s *SBDAgent) stopAllLeaderElectors() {
-	s.leaderElectorsMutex.Lock()
-	defer s.leaderElectorsMutex.Unlock()
-
-	for remediationKey, elector := range s.leaderElectors {
-		logger.Info("Stopping leader elector", "remediation", remediationKey)
-		elector.Stop()
-	}
-	s.leaderElectors = make(map[string]*RemediationLeaderElector)
 }
 
 // watchdogLoop continuously pets the watchdog to prevent system reset
@@ -2125,10 +1973,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Initialize Kubernetes clients if fencing is enabled
+	// Initialize Kubernetes clients (fencing is core functionality)
 	var k8sClient client.Client
-	var k8sClientset kubernetes.Interface
-	if *enableFencing {
+	{
 		var err error
 		// Get kubeconfig from controller-runtime's auto-registered flag
 		kubeconfigFlag := flag.Lookup("kubeconfig")
@@ -2136,23 +1983,19 @@ func main() {
 		if kubeconfigFlag != nil {
 			kubeconfigPath = kubeconfigFlag.Value.String()
 		}
-		k8sClient, k8sClientset, err = initializeKubernetesClients(kubeconfigPath)
+		k8sClient, _, err = initializeKubernetesClients(kubeconfigPath)
 		if err != nil {
-			logger.Error(err, "Failed to initialize Kubernetes clients", "enableFencing", *enableFencing)
+			logger.Error(err, "Failed to initialize Kubernetes clients")
 			os.Exit(1)
 		}
-		logger.Info("Kubernetes clients initialized successfully for fencing operations",
-			"namespace", *namespace,
-			"enableFencing", *enableFencing)
-	} else {
-		logger.Info("Fencing disabled - running in monitoring-only mode")
+		logger.Info("Kubernetes clients initialized successfully for fencing operations")
 	}
 
 	// Create SBD agent (hash mapping is always enabled)
 	sbdAgent, err := NewSBDAgent(*watchdogPath, *sbdDevice, nodeNameValue, *clusterName, nodeIDValue,
 		*petInterval, *sbdUpdateInterval, heartbeatInterval, *peerCheckInterval, sbdTimeoutValue,
 		rebootMethodValue, *metricsPort, *staleNodeTimeout, *sbdFileLocking, *ioTimeout,
-		k8sClient, k8sClientset, *namespace, *enableFencing)
+		k8sClient)
 	if err != nil {
 		logger.Error(err, "Failed to create SBD agent",
 			"watchdogPath", *watchdogPath,

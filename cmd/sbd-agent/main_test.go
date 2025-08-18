@@ -28,6 +28,8 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/medik8s/sbd-operator/pkg/sbdprotocol"
+	rtclient "sigs.k8s.io/controller-runtime/pkg/client"
+	rtfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 const (
@@ -295,7 +297,8 @@ func createTestSBDAgentWithFileLocking(t *testing.T, nodeName string, metricsPor
 
 	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, nodeName, "test-cluster", 1,
 		1*time.Second, 1*time.Second, 1*time.Second, 1*time.Second, 30, "panic", metricsPort,
-		10*time.Minute, fileLockingEnabled, 2*time.Second, nil, nil, "", false)
+		10*time.Minute, fileLockingEnabled, 2*time.Second,
+		newFakeClient(t))
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
@@ -303,7 +306,9 @@ func createTestSBDAgentWithFileLocking(t *testing.T, nodeName string, metricsPor
 	// Set mock devices to override the real file-based devices
 	agent.setSBDDevices(mockHeartbeatDevice, mockFenceDevice)
 
-	cleanup := func() { _ = agent.Stop() }
+	var once sync.Once
+	cleanup := func() { once.Do(func() { _ = agent.Stop() }) }
+	t.Cleanup(cleanup)
 	return agent, mockWatchdog, mockHeartbeatDevice, cleanup
 }
 
@@ -614,7 +619,7 @@ func TestSBDAgent_NewSBDAgent(t *testing.T) {
 	// Test invalid configurations
 	invalidWatchdog := NewMockWatchdog("")
 	_, err := NewSBDAgentWithWatchdog(invalidWatchdog, "/dev/invalid-sbd", "", "test-cluster", 0, 0, 0, 0, 0, 0,
-		"invalid", 8087, 10*time.Minute, true, 2*time.Second, nil, nil, "", false)
+		"invalid", 8087, 10*time.Minute, true, 2*time.Second, newFakeClient(t))
 	if err == nil {
 		t.Error("Expected error for invalid configuration")
 	}
@@ -794,7 +799,7 @@ func BenchmarkSBDAgent_WriteHeartbeat(b *testing.B) {
 
 	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
 		30*time.Second, 5*time.Second, 15*time.Second, 5*time.Second, 30, "panic", 8080,
-		10*time.Minute, true, 2*time.Second, nil, nil, "", false)
+		10*time.Minute, true, 2*time.Second, newFakeClient(b))
 	if err != nil {
 		b.Fatalf("Failed to create agent: %v", err)
 	}
@@ -823,7 +828,7 @@ func BenchmarkSBDAgent_ReadPeerHeartbeat(b *testing.B) {
 
 	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
 		30*time.Second, 5*time.Second, 15*time.Second, 5*time.Second, 30, "panic", 8080,
-		10*time.Minute, true, 2*time.Second, nil, nil, "", false)
+		10*time.Minute, true, 2*time.Second, newFakeClient(b))
 	if err != nil {
 		b.Fatalf("Failed to create agent: %v", err)
 	}
@@ -1452,7 +1457,7 @@ func TestSBDAgent_FileLockingConfiguration(t *testing.T) {
 		// Try to create agent with empty SBD device path should fail
 		_, err := NewSBDAgentWithWatchdog(mockWatchdog, "", "test-node", "test-cluster", 1,
 			1*time.Second, 1*time.Second, 1*time.Second, 1*time.Second, 30, "panic", 8202, 10*time.Minute, false,
-			2*time.Second, nil, nil, "", false)
+			2*time.Second, newFakeClient(t))
 		if err == nil {
 			t.Error("Expected error when creating agent with empty SBD device path")
 		}
@@ -1516,4 +1521,11 @@ func TestPreflightChecks_BothFailing(t *testing.T) {
 	if !strings.Contains(err.Error(), "both watchdog device and SBD device are inaccessible") {
 		t.Errorf("Expected error about both devices being inaccessible, but got: %v", err)
 	}
+}
+
+// newFakeClient creates a minimal fake controller-runtime client for tests/benchmarks
+func newFakeClient(tb testing.TB) rtclient.Client {
+	tb.Helper()
+	// Use the default scheme with no custom types required for these tests
+	return rtfake.NewClientBuilder().Build()
 }
