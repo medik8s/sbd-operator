@@ -17,7 +17,6 @@ limitations under the License.
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,9 +26,9 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	mocks "github.com/medik8s/sbd-operator/pkg/mocks"
 	"github.com/medik8s/sbd-operator/pkg/sbdprotocol"
-	rtclient "sigs.k8s.io/controller-runtime/pkg/client"
-	rtfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	testutils "github.com/medik8s/sbd-operator/test/utils"
 )
 
 const (
@@ -37,255 +36,24 @@ const (
 	nonExistentWatchdogPath = "/non/existent/watchdog"
 )
 
-// MockBlockDevice is a mock implementation of BlockDevice for testing
-type MockBlockDevice struct {
-	data      []byte
-	path      string
-	closed    bool
-	failRead  bool
-	failWrite bool
-	failSync  bool
-	mutex     sync.RWMutex
-}
-
-// NewMockBlockDevice creates a new mock block device with the specified size
-func NewMockBlockDevice(path string, size int) *MockBlockDevice {
-	return &MockBlockDevice{
-		data: make([]byte, size),
-		path: path,
-	}
-}
-
-func (m *MockBlockDevice) ReadAt(p []byte, off int64) (int, error) {
-	m.mutex.RLock()
-	defer m.mutex.RUnlock()
-
-	if m.closed {
-		return 0, errors.New("device is closed")
-	}
-
-	if m.failRead {
-		return 0, errors.New("mock read failure")
-	}
-
-	if off < 0 || off >= int64(len(m.data)) {
-		return 0, errors.New("offset out of range")
-	}
-
-	n := copy(p, m.data[off:])
-	return n, nil
-}
-
-func (m *MockBlockDevice) WriteAt(p []byte, off int64) (int, error) {
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-
-	if m.closed {
-		return 0, errors.New("device is closed")
-	}
-
-	if m.failWrite {
-		return 0, errors.New("mock write failure")
-	}
-
-	if off < 0 || off >= int64(len(m.data)) {
-		return 0, errors.New("offset out of range")
-	}
-
-	// Ensure we don't write beyond the buffer
-	end := off + int64(len(p))
-	if end > int64(len(m.data)) {
-		end = int64(len(m.data))
-	}
-
-	n := copy(m.data[off:end], p)
-	return n, nil
-}
-
-func (m *MockBlockDevice) Sync() error {
-	m.mutex.RLock()
-	defer m.mutex.RUnlock()
-
-	if m.closed {
-		return errors.New("device is closed")
-	}
-
-	if m.failSync {
-		return errors.New("mock sync failure")
-	}
-
-	return nil
-}
-
-func (m *MockBlockDevice) Close() error {
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-
-	m.closed = true
-	return nil
-}
-
-func (m *MockBlockDevice) Path() string {
-	return m.path
-}
-
-func (m *MockBlockDevice) IsClosed() bool {
-	m.mutex.RLock()
-	defer m.mutex.RUnlock()
-	return m.closed
-}
-
-// SetFailRead configures the mock to fail read operations
-func (m *MockBlockDevice) SetFailRead(fail bool) {
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-	m.failRead = fail
-}
-
-// SetFailWrite configures the mock to fail write operations
-func (m *MockBlockDevice) SetFailWrite(fail bool) {
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-	m.failWrite = fail
-}
-
-// SetFailSync configures the mock to fail sync operations
-func (m *MockBlockDevice) SetFailSync(fail bool) {
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-	m.failSync = fail
-}
-
-// GetData returns a copy of the current data buffer
-func (m *MockBlockDevice) GetData() []byte {
-	m.mutex.RLock()
-	defer m.mutex.RUnlock()
-	result := make([]byte, len(m.data))
-	copy(result, m.data)
-	return result
-}
-
-// WritePeerHeartbeat writes a heartbeat message to a specific peer slot for testing
-func (m *MockBlockDevice) WritePeerHeartbeat(nodeID uint16, timestamp uint64, sequence uint64) error {
-	// Create heartbeat message
-	header := sbdprotocol.NewHeartbeat(nodeID, sequence)
-	header.Timestamp = timestamp
-	heartbeatMsg := sbdprotocol.SBDHeartbeatMessage{Header: header}
-
-	// Marshal the message
-	msgBytes, err := sbdprotocol.MarshalHeartbeat(heartbeatMsg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal heartbeat message: %w", err)
-	}
-
-	// Calculate slot offset for this node
-	slotOffset := int64(nodeID) * sbdprotocol.SBD_SLOT_SIZE
-
-	// Write heartbeat message to the designated slot
-	_, err = m.WriteAt(msgBytes, slotOffset)
-	return err
-}
-
-// WriteFenceMessage writes a fence message to a specific slot for testing
-func (m *MockBlockDevice) WriteFenceMessage(nodeID, targetNodeID uint16, sequence uint64, reason uint8) error {
-	// Create fence message header
-	fenceMsg := sbdprotocol.NewFence(nodeID, targetNodeID, sequence, reason)
-
-	// Marshal the fence message
-	msgBytes, err := sbdprotocol.MarshalFence(fenceMsg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal fence message: %w", err)
-	}
-
-	// Calculate slot offset for the target node (where the fence message is written)
-	slotOffset := int64(targetNodeID) * sbdprotocol.SBD_SLOT_SIZE
-
-	// Write fence message to the designated slot
-	_, err = m.WriteAt(msgBytes, slotOffset)
-	return err
-}
-
-// MockWatchdog is a mock implementation of WatchdogInterface for testing
-type MockWatchdog struct {
-	path      string
-	petCount  int
-	closed    bool
-	failPet   bool
-	failClose bool
-	mutex     sync.RWMutex
-}
-
-// NewMockWatchdog creates a new mock watchdog
-func NewMockWatchdog(path string) *MockWatchdog {
-	return &MockWatchdog{
-		path: path,
-	}
-}
-
-func (m *MockWatchdog) Pet() error {
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-
-	if m.closed {
-		return errors.New("watchdog is closed")
-	}
-
-	if m.failPet {
-		return errors.New("mock pet failure")
-	}
-
-	m.petCount++
-	return nil
-}
-
-func (m *MockWatchdog) Close() error {
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-
-	if m.failClose {
-		return errors.New("mock close failure")
-	}
-
-	m.closed = true
-	return nil
-}
-
-func (m *MockWatchdog) Path() string {
-	return m.path
-}
-
-// GetPetCount returns the number of times Pet() was called
-func (m *MockWatchdog) GetPetCount() int {
-	m.mutex.RLock()
-	defer m.mutex.RUnlock()
-	return m.petCount
-}
-
-// SetFailPet configures the mock to fail pet operations
-func (m *MockWatchdog) SetFailPet(fail bool) {
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-	m.failPet = fail
-}
-
 // createTestSBDAgent creates a test SBD agent with mock devices and temporary SBD files
 func createTestSBDAgent(t *testing.T, metricsPort int) (
-	*SBDAgent, *MockWatchdog, *MockBlockDevice, func()) {
+	*SBDAgent, *mocks.MockWatchdog, *mocks.MockBlockDevice, func()) {
 	return createTestSBDAgentWithFileLocking(t, "test-node", metricsPort, true)
 }
 
 // createTestSBDAgentWithFileLocking creates a test SBD agent with configurable file locking
 func createTestSBDAgentWithFileLocking(t *testing.T, nodeName string, metricsPort int, fileLockingEnabled bool) (
-	*SBDAgent, *MockWatchdog, *MockBlockDevice, func()) {
+	*SBDAgent, *mocks.MockWatchdog, *mocks.MockBlockDevice, func()) {
 
 	// Create temporary SBD device files (both heartbeat and fence)
 	tmpDir := t.TempDir()
 	sbdPath := tmpDir + "/test-sbd"
 	fencePath := sbdPath + "-fence"
 
-	mockWatchdog := NewMockWatchdog(tmpDir + "/watchdog")
-	mockHeartbeatDevice := NewMockBlockDevice(sbdPath, 1024*1024)
-	mockFenceDevice := NewMockBlockDevice(fencePath, 1024*1024)
+	mockWatchdog := mocks.NewMockWatchdog(tmpDir + "/watchdog")
+	mockHeartbeatDevice := mocks.NewMockBlockDevice(sbdPath, 1024*1024)
+	mockFenceDevice := mocks.NewMockBlockDevice(fencePath, 1024*1024)
 
 	// Create both heartbeat and fence device files
 	if err := os.WriteFile(sbdPath, make([]byte, 1024*1024), 0644); err != nil {
@@ -298,7 +66,7 @@ func createTestSBDAgentWithFileLocking(t *testing.T, nodeName string, metricsPor
 	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, nodeName, "test-cluster", 1,
 		1*time.Second, 1*time.Second, 1*time.Second, 1*time.Second, 30, "panic", metricsPort,
 		10*time.Minute, fileLockingEnabled, 2*time.Second,
-		newFakeClient(t))
+		testutils.NewFakeClient(t))
 	if err != nil {
 		t.Fatalf("Failed to create SBD agent: %v", err)
 	}
@@ -436,7 +204,7 @@ func TestSBDAgent_ReadPeerHeartbeat(t *testing.T) {
 	// Write a heartbeat message from peer node 2
 	timestamp := uint64(time.Now().UnixNano())
 	sequence := uint64(100)
-	err = mockDevice.WritePeerHeartbeat(2, timestamp, sequence)
+	err = testutils.WritePeerHeartbeat(mockDevice, 2, timestamp, sequence)
 	if err != nil {
 		t.Fatalf("Failed to write peer heartbeat: %v", err)
 	}
@@ -547,12 +315,12 @@ func TestSBDAgent_PeerMonitorLoop_Integration(t *testing.T) {
 	defer cleanup()
 
 	// Write heartbeats for multiple peers
-	err := mockDevice.WritePeerHeartbeat(2, 12345, 1)
+	err := testutils.WritePeerHeartbeat(mockDevice, 2, 12345, 1)
 	if err != nil {
 		t.Fatalf("Failed to write peer 2 heartbeat: %v", err)
 	}
 
-	err = mockDevice.WritePeerHeartbeat(3, 12346, 1)
+	err = testutils.WritePeerHeartbeat(mockDevice, 3, 12346, 1)
 	if err != nil {
 		t.Fatalf("Failed to write peer 3 heartbeat: %v", err)
 	}
@@ -570,12 +338,12 @@ func TestSBDAgent_PeerMonitorLoop_Integration(t *testing.T) {
 	}
 
 	// Refresh the heartbeats
-	err = mockDevice.WritePeerHeartbeat(2, 12345, 1)
+	err = testutils.WritePeerHeartbeat(mockDevice, 2, 12345, 1)
 	if err != nil {
 		t.Fatalf("Failed to write peer 2 heartbeat: %v", err)
 	}
 
-	err = mockDevice.WritePeerHeartbeat(3, 12346, 1)
+	err = testutils.WritePeerHeartbeat(mockDevice, 3, 12346, 1)
 	if err != nil {
 		t.Fatalf("Failed to write peer 3 heartbeat: %v", err)
 	}
@@ -617,9 +385,9 @@ func TestSBDAgent_NewSBDAgent(t *testing.T) {
 	}
 
 	// Test invalid configurations
-	invalidWatchdog := NewMockWatchdog("")
+	invalidWatchdog := mocks.NewMockWatchdog("")
 	_, err := NewSBDAgentWithWatchdog(invalidWatchdog, "/dev/invalid-sbd", "", "test-cluster", 0, 0, 0, 0, 0, 0,
-		"invalid", 8087, 10*time.Minute, true, 2*time.Second, newFakeClient(t))
+		"invalid", 8087, 10*time.Minute, true, 2*time.Second, testutils.NewFakeClient(t))
 	if err == nil {
 		t.Error("Expected error for invalid configuration")
 	}
@@ -787,8 +555,8 @@ func TestEnvironmentVariables(t *testing.T) {
 
 // Benchmark tests
 func BenchmarkSBDAgent_WriteHeartbeat(b *testing.B) {
-	mockWatchdog := NewMockWatchdog("/dev/watchdog")
-	mockDevice := NewMockBlockDevice("/dev/mock-sbd", int(sbdprotocol.SBD_MAX_NODES*sbdprotocol.SBD_SLOT_SIZE))
+	mockWatchdog := mocks.NewMockWatchdog("/dev/watchdog")
+	mockDevice := mocks.NewMockBlockDevice("/dev/mock-sbd", int(sbdprotocol.SBD_MAX_NODES*sbdprotocol.SBD_SLOT_SIZE))
 
 	// Create temporary SBD device file
 	tmpDir := b.TempDir()
@@ -799,7 +567,7 @@ func BenchmarkSBDAgent_WriteHeartbeat(b *testing.B) {
 
 	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
 		30*time.Second, 5*time.Second, 15*time.Second, 5*time.Second, 30, "panic", 8080,
-		10*time.Minute, true, 2*time.Second, newFakeClient(b))
+		10*time.Minute, true, 2*time.Second, testutils.NewFakeClient(b))
 	if err != nil {
 		b.Fatalf("Failed to create agent: %v", err)
 	}
@@ -816,8 +584,8 @@ func BenchmarkSBDAgent_WriteHeartbeat(b *testing.B) {
 }
 
 func BenchmarkSBDAgent_ReadPeerHeartbeat(b *testing.B) {
-	mockWatchdog := NewMockWatchdog("/dev/watchdog")
-	mockDevice := NewMockBlockDevice("/dev/mock-sbd", int(sbdprotocol.SBD_MAX_NODES*sbdprotocol.SBD_SLOT_SIZE))
+	mockWatchdog := mocks.NewMockWatchdog("/dev/watchdog")
+	mockDevice := mocks.NewMockBlockDevice("/dev/mock-sbd", int(sbdprotocol.SBD_MAX_NODES*sbdprotocol.SBD_SLOT_SIZE))
 
 	// Create temporary SBD device file
 	tmpDir := b.TempDir()
@@ -828,7 +596,7 @@ func BenchmarkSBDAgent_ReadPeerHeartbeat(b *testing.B) {
 
 	agent, err := NewSBDAgentWithWatchdog(mockWatchdog, sbdPath, "test-node", "test-cluster", 1,
 		30*time.Second, 5*time.Second, 15*time.Second, 5*time.Second, 30, "panic", 8080,
-		10*time.Minute, true, 2*time.Second, newFakeClient(b))
+		10*time.Minute, true, 2*time.Second, testutils.NewFakeClient(b))
 	if err != nil {
 		b.Fatalf("Failed to create agent: %v", err)
 	}
@@ -837,7 +605,7 @@ func BenchmarkSBDAgent_ReadPeerHeartbeat(b *testing.B) {
 	agent.setSBDDevices(mockDevice, mockDevice)
 
 	// Write a peer heartbeat
-	err = mockDevice.WritePeerHeartbeat(2, 12345, 1)
+	err = testutils.WritePeerHeartbeat(mockDevice, 2, 12345, 1)
 	if err != nil {
 		b.Fatalf("Failed to write peer heartbeat: %v", err)
 	}
@@ -865,7 +633,7 @@ func TestSBDAgent_ReadOwnSlotForFenceMessage(t *testing.T) {
 	defer cleanup()
 
 	// Get the fence device (different from heartbeat device)
-	mockFenceDevice := agent.fenceDevice.(*MockBlockDevice)
+	mockFenceDevice := agent.fenceDevice.(*mocks.MockBlockDevice)
 
 	// Initially, no fence message should be found
 	err := agent.readOwnSlotForFenceMessage()
@@ -875,7 +643,7 @@ func TestSBDAgent_ReadOwnSlotForFenceMessage(t *testing.T) {
 
 	// Write a fence message targeting this node to the FENCE device
 	// Use the actual assigned nodeID from the agent (not hardcoded 3)
-	err = mockFenceDevice.WriteFenceMessage(2, agent.nodeID, 100, sbdprotocol.FENCE_REASON_HEARTBEAT_TIMEOUT)
+	err = testutils.WriteFenceMessage(mockFenceDevice, 2, agent.nodeID, 100, sbdprotocol.FENCE_REASON_HEARTBEAT_TIMEOUT)
 	if err != nil {
 		t.Fatalf("Failed to write fence message: %v", err)
 	}
@@ -904,10 +672,10 @@ func TestSBDAgent_ReadOwnSlotForFenceMessage_WrongTarget(t *testing.T) {
 	defer cleanup()
 
 	// Get the fence device (different from heartbeat device)
-	mockFenceDevice := agent.fenceDevice.(*MockBlockDevice)
+	mockFenceDevice := agent.fenceDevice.(*mocks.MockBlockDevice)
 
 	// Write a fence message targeting a different node to the fence device
-	err := mockFenceDevice.WriteFenceMessage(2, 5, 100, sbdprotocol.FENCE_REASON_MANUAL)
+	err := testutils.WriteFenceMessage(mockFenceDevice, 2, 5, 100, sbdprotocol.FENCE_REASON_MANUAL)
 	if err != nil {
 		t.Fatalf("Failed to write fence message: %v", err)
 	}
@@ -1256,7 +1024,7 @@ func TestPerformSBDReadWriteTest(t *testing.T) {
 	}
 
 	// Test with working mock device
-	mockDevice := NewMockBlockDevice("/dev/sbd", 1024*1024) // 1MB device
+	mockDevice := mocks.NewMockBlockDevice("/dev/sbd", 1024*1024) // 1MB device
 	err := performSBDReadWriteTest(mockDevice, 1, "test-node")
 	if err != nil {
 		t.Errorf("Expected SBD read/write test to succeed, but got error: %v", err)
@@ -1407,7 +1175,7 @@ func containsSubstring(s, substr string) bool {
 }
 
 func TestSBDAgent_FileLockingConfiguration(t *testing.T) {
-	mockWatchdog := NewMockWatchdog("/dev/watchdog")
+	mockWatchdog := mocks.NewMockWatchdog("/dev/watchdog")
 
 	// Test with file locking enabled
 	t.Run("FileLockingEnabled", func(t *testing.T) {
@@ -1457,7 +1225,7 @@ func TestSBDAgent_FileLockingConfiguration(t *testing.T) {
 		// Try to create agent with empty SBD device path should fail
 		_, err := NewSBDAgentWithWatchdog(mockWatchdog, "", "test-node", "test-cluster", 1,
 			1*time.Second, 1*time.Second, 1*time.Second, 1*time.Second, 30, "panic", 8202, 10*time.Minute, false,
-			2*time.Second, newFakeClient(t))
+			2*time.Second, testutils.NewFakeClient(t))
 		if err == nil {
 			t.Error("Expected error when creating agent with empty SBD device path")
 		}
@@ -1521,11 +1289,4 @@ func TestPreflightChecks_BothFailing(t *testing.T) {
 	if !strings.Contains(err.Error(), "both watchdog device and SBD device are inaccessible") {
 		t.Errorf("Expected error about both devices being inaccessible, but got: %v", err)
 	}
-}
-
-// newFakeClient creates a minimal fake controller-runtime client for tests/benchmarks
-func newFakeClient(tb testing.TB) rtclient.Client {
-	tb.Helper()
-	// Use the default scheme with no custom types required for these tests
-	return rtfake.NewClientBuilder().Build()
 }
