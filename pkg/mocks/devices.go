@@ -18,14 +18,17 @@ package mocks
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"sync"
+
+	"github.com/medik8s/sbd-operator/pkg/sbdprotocol"
 )
 
-// BlockDevice interface defines the basic block device operations
-// This is duplicated here to avoid import cycles with specific implementations
-type BlockDevice interface {
-	ReadAt(p []byte, off int64) (int, error)
-	WriteAt(p []byte, off int64) (int, error)
+// BlockDevice defines the interface for block device operations
+type BlockDeviceInterface interface {
+	io.ReaderAt
+	io.WriterAt
 	Sync() error
 	Close() error
 	Path() string
@@ -168,6 +171,46 @@ func (m *MockBlockDevice) GetData() []byte {
 	return result
 }
 
+// WritePeerHeartbeat writes a heartbeat message to a specific peer slot for testing
+func (m *MockBlockDevice) WritePeerHeartbeat(nodeID uint16, timestamp uint64, sequence uint64) error {
+	// Create heartbeat message
+	header := sbdprotocol.NewHeartbeat(nodeID, sequence)
+	header.Timestamp = timestamp
+	heartbeatMsg := sbdprotocol.SBDHeartbeatMessage{Header: header}
+
+	// Marshal the message
+	msgBytes, err := sbdprotocol.MarshalHeartbeat(heartbeatMsg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal heartbeat message: %w", err)
+	}
+
+	// Calculate slot offset for this node
+	slotOffset := int64(nodeID) * sbdprotocol.SBD_SLOT_SIZE
+
+	// Write heartbeat message to the designated slot
+	_, err = m.WriteAt(msgBytes, slotOffset)
+	return err
+}
+
+// WriteFenceMessage writes a fence message to a specific slot for testing
+func (m *MockBlockDevice) WriteFenceMessage(nodeID, targetNodeID uint16, sequence uint64, reason uint8) error {
+	// Create fence message header
+	fenceMsg := sbdprotocol.NewFence(nodeID, targetNodeID, sequence, reason)
+
+	// Marshal the fence message
+	msgBytes, err := sbdprotocol.MarshalFence(fenceMsg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal fence message: %w", err)
+	}
+
+	// Calculate slot offset for the target node (where the fence message is written)
+	slotOffset := int64(targetNodeID) * sbdprotocol.SBD_SLOT_SIZE
+
+	// Write fence message to the designated slot
+	_, err = m.WriteAt(msgBytes, slotOffset)
+	return err
+}
+
 // MockWatchdog is a mock implementation of WatchdogInterface for testing
 type MockWatchdog struct {
 	path      string
@@ -262,12 +305,12 @@ var globalSharedDevices = &SharedMockDevices{
 }
 
 // GetSharedMockDevice returns a shared mock device for the given path
-func GetSharedMockDevice(path string, size int) *MockBlockDevice {
+func GetSharedMockDevice(path string, size int) BlockDeviceInterface {
 	return globalSharedDevices.Get(path, size)
 }
 
 // Get returns a shared mock device for the given path
-func (s *SharedMockDevices) Get(path string, size int) *MockBlockDevice {
+func (s *SharedMockDevices) Get(path string, size int) BlockDeviceInterface {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 

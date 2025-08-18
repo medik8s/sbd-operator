@@ -32,7 +32,7 @@ import (
 
 	"github.com/go-logr/logr"
 	medik8sv1alpha1 "github.com/medik8s/sbd-operator/api/v1alpha1"
-	"github.com/medik8s/sbd-operator/pkg/blockdevice"
+	"github.com/medik8s/sbd-operator/pkg/mocks"
 	"github.com/medik8s/sbd-operator/pkg/retry"
 	"github.com/medik8s/sbd-operator/pkg/sbdprotocol"
 	corev1 "k8s.io/api/core/v1"
@@ -84,8 +84,8 @@ type SBDRemediationReconciler struct {
 	apiRetryConfig    retry.Config
 
 	// SBD device for fencing operations
-	sbdDevice   *blockdevice.Device
-	fenceDevice *blockdevice.Device
+	sbdDevice   mocks.BlockDeviceInterface
+	fenceDevice mocks.BlockDeviceInterface
 	nodeManager *sbdprotocol.NodeManager
 	ownNodeID   uint16
 	ownNodeName string // Changed from uint32 to uint64
@@ -97,14 +97,10 @@ type SBDRemediationReconciler struct {
 // +kubebuilder:rbac:groups=medik8s.medik8s.io,resources=sbdremediations/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
-// SetSBDDevice sets the Heartbeat device for checking heartbeat age
-func (r *SBDRemediationReconciler) SetSBDDevice(device *blockdevice.Device) {
-	r.sbdDevice = device
-}
-
-// SetFenceDevice sets the fence device for fencing operations
-func (r *SBDRemediationReconciler) SetFenceDevice(device *blockdevice.Device) {
-	r.fenceDevice = device
+// setSBDDevices allows setting custom SBD devices (useful for testing)
+func (s *SBDRemediationReconciler) SetSBDDevices(heartbeatDevice, fenceDevice mocks.BlockDeviceInterface) {
+	s.sbdDevice = heartbeatDevice
+	s.fenceDevice = fenceDevice
 }
 
 // SetNodeManager sets the node manager for node ID resolution

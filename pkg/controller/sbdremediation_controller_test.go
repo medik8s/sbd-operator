@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,6 +30,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	medik8sv1alpha1 "github.com/medik8s/sbd-operator/api/v1alpha1"
+	"github.com/medik8s/sbd-operator/pkg/mocks"
+	"github.com/medik8s/sbd-operator/pkg/sbdprotocol"
 )
 
 // Note: Controller tests simplified since agent-based fencing architecture
@@ -57,6 +60,32 @@ var _ = Describe("SBDRemediation Controller", func() {
 				Scheme:   k8sClient.Scheme(),
 				Recorder: nil, // Event recorder not needed for basic tests
 			}
+
+			config := sbdprotocol.NodeManagerConfig{
+				ClusterName:        "test-cluster",
+				SyncInterval:       30 * time.Second,
+				StaleNodeTimeout:   10 * time.Minute,
+				Logger:             logr.Discard(),
+				FileLockingEnabled: true,
+			}
+
+			mockHeartbeatDevice := mocks.NewMockBlockDevice("/tmp/test-sbd", 1024*1024)
+			mockFenceDevice := mocks.NewMockBlockDevice("/tmp/test-sbd-fence", 1024*1024)
+			reconciler.SetSBDDevices(mockHeartbeatDevice, mockFenceDevice)
+
+			nodeManager, err := sbdprotocol.NewNodeManager(mockHeartbeatDevice, config)
+			Expect(err).NotTo(HaveOccurred())
+
+			for i := 1; i <= 5; i++ {
+				_, err := nodeManager.GetNodeIDForNode(fmt.Sprintf("worker-%d", i))
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			nodeID, err := nodeManager.GetNodeIDForNode("worker-1")
+			Expect(err).NotTo(HaveOccurred())
+			reconciler.SetOwnNodeInfo(nodeID, "worker-1")
+
+			reconciler.SetNodeManager(nodeManager)
 		})
 
 		It("should handle non-existent resources gracefully", func() {
@@ -156,7 +185,42 @@ var _ = Describe("SBDRemediation Controller", func() {
 			}, 5*time.Second, 100*time.Millisecond).Should(Equal(customTimeout))
 		})
 
-		Context("with valid SBDRemediation spec", func() {
+		Context("with valid SBDRemediation spec for a fake node", func() {
+			It("should handle normal processing flow", func() {
+				By("Creating a well-formed SBDRemediation resource")
+				resource := &medik8sv1alpha1.SBDRemediation{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      resourceName,
+						Namespace: "default",
+					},
+					Spec: medik8sv1alpha1.SBDRemediationSpec{
+						NodeName:       "worker-4",
+						Reason:         medik8sv1alpha1.SBDRemediationReasonNodeUnresponsive,
+						TimeoutSeconds: 300,
+					},
+				}
+				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+
+				By("Reconciling the resource multiple times")
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: namespacedName,
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = reconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: namespacedName,
+				})
+				Expect(err).To(HaveOccurred())
+
+				By("Verifying the resource exists and is processable")
+				finalResource := &medik8sv1alpha1.SBDRemediation{}
+				Expect(k8sClient.Get(ctx, namespacedName, finalResource)).To(Succeed())
+				Expect(finalResource.Spec.NodeName).To(Equal("worker-4"))
+				Expect(finalResource.Spec.Reason).To(Equal(medik8sv1alpha1.SBDRemediationReasonNodeUnresponsive))
+			})
+		})
+
+		Context("with valid SBDRemediation spec for a real node", func() {
 			It("should handle normal processing flow", func() {
 				By("Creating a well-formed SBDRemediation resource")
 				resource := &medik8sv1alpha1.SBDRemediation{

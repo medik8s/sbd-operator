@@ -77,6 +77,7 @@ func createTestSBDAgentWithFileLocking(t *testing.T, nodeName string, metricsPor
 	var once sync.Once
 	cleanup := func() { once.Do(func() { _ = agent.Stop() }) }
 	t.Cleanup(cleanup)
+
 	return agent, mockWatchdog, mockHeartbeatDevice, cleanup
 }
 
@@ -204,7 +205,7 @@ func TestSBDAgent_ReadPeerHeartbeat(t *testing.T) {
 	// Write a heartbeat message from peer node 2
 	timestamp := uint64(time.Now().UnixNano())
 	sequence := uint64(100)
-	err = testutils.WritePeerHeartbeat(mockDevice, 2, timestamp, sequence)
+	err = mockDevice.WritePeerHeartbeat(2, timestamp, sequence)
 	if err != nil {
 		t.Fatalf("Failed to write peer heartbeat: %v", err)
 	}
@@ -315,12 +316,12 @@ func TestSBDAgent_PeerMonitorLoop_Integration(t *testing.T) {
 	defer cleanup()
 
 	// Write heartbeats for multiple peers
-	err := testutils.WritePeerHeartbeat(mockDevice, 2, 12345, 1)
+	err := mockDevice.WritePeerHeartbeat(2, 12345, 1)
 	if err != nil {
 		t.Fatalf("Failed to write peer 2 heartbeat: %v", err)
 	}
 
-	err = testutils.WritePeerHeartbeat(mockDevice, 3, 12346, 1)
+	err = mockDevice.WritePeerHeartbeat(3, 12346, 1)
 	if err != nil {
 		t.Fatalf("Failed to write peer 3 heartbeat: %v", err)
 	}
@@ -338,12 +339,12 @@ func TestSBDAgent_PeerMonitorLoop_Integration(t *testing.T) {
 	}
 
 	// Refresh the heartbeats
-	err = testutils.WritePeerHeartbeat(mockDevice, 2, 12345, 1)
+	err = mockDevice.WritePeerHeartbeat(2, 12345, 1)
 	if err != nil {
 		t.Fatalf("Failed to write peer 2 heartbeat: %v", err)
 	}
 
-	err = testutils.WritePeerHeartbeat(mockDevice, 3, 12346, 1)
+	err = mockDevice.WritePeerHeartbeat(3, 12346, 1)
 	if err != nil {
 		t.Fatalf("Failed to write peer 3 heartbeat: %v", err)
 	}
@@ -605,7 +606,7 @@ func BenchmarkSBDAgent_ReadPeerHeartbeat(b *testing.B) {
 	agent.setSBDDevices(mockDevice, mockDevice)
 
 	// Write a peer heartbeat
-	err = testutils.WritePeerHeartbeat(mockDevice, 2, 12345, 1)
+	err = mockDevice.WritePeerHeartbeat(2, 12345, 1)
 	if err != nil {
 		b.Fatalf("Failed to write peer heartbeat: %v", err)
 	}
@@ -643,7 +644,7 @@ func TestSBDAgent_ReadOwnSlotForFenceMessage(t *testing.T) {
 
 	// Write a fence message targeting this node to the FENCE device
 	// Use the actual assigned nodeID from the agent (not hardcoded 3)
-	err = testutils.WriteFenceMessage(mockFenceDevice, 2, agent.nodeID, 100, sbdprotocol.FENCE_REASON_HEARTBEAT_TIMEOUT)
+	err = mockFenceDevice.WriteFenceMessage(2, agent.nodeID, 100, sbdprotocol.FENCE_REASON_HEARTBEAT_TIMEOUT)
 	if err != nil {
 		t.Fatalf("Failed to write fence message: %v", err)
 	}
@@ -675,7 +676,7 @@ func TestSBDAgent_ReadOwnSlotForFenceMessage_WrongTarget(t *testing.T) {
 	mockFenceDevice := agent.fenceDevice.(*mocks.MockBlockDevice)
 
 	// Write a fence message targeting a different node to the fence device
-	err := testutils.WriteFenceMessage(mockFenceDevice, 2, 5, 100, sbdprotocol.FENCE_REASON_MANUAL)
+	err := mockFenceDevice.WriteFenceMessage(2, 5, 100, sbdprotocol.FENCE_REASON_MANUAL)
 	if err != nil {
 		t.Fatalf("Failed to write fence message: %v", err)
 	}

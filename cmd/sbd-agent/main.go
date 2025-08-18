@@ -20,7 +20,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -54,6 +53,7 @@ import (
 	"github.com/medik8s/sbd-operator/pkg/agent"
 	"github.com/medik8s/sbd-operator/pkg/blockdevice"
 	"github.com/medik8s/sbd-operator/pkg/controller"
+	"github.com/medik8s/sbd-operator/pkg/mocks"
 	"github.com/medik8s/sbd-operator/pkg/retry"
 	"github.com/medik8s/sbd-operator/pkg/sbdprotocol"
 	"github.com/medik8s/sbd-operator/pkg/version"
@@ -228,23 +228,6 @@ var (
 		Help: "Total number of times the agent has initiated a self-fence",
 	})
 )
-
-// BlockDevice defines the interface for block device operations
-type BlockDevice interface {
-	io.ReaderAt
-	io.WriterAt
-	Sync() error
-	Close() error
-	Path() string
-	IsClosed() bool
-}
-
-// WatchdogInterface defines the interface for watchdog operations
-type WatchdogInterface interface {
-	Pet() error
-	Close() error
-	Path() string
-}
 
 // PeerStatus represents the status of a peer node
 type PeerStatus struct {
@@ -444,11 +427,11 @@ func generateFenceDevicePath(heartbeatDevicePath string) string {
 type SBDAgent struct {
 	recorderObject      runtime.Object
 	recorder            record.EventRecorder
-	watchdog            WatchdogInterface
-	heartbeatDevice     BlockDevice // Device used for heartbeat messages
-	fenceDevice         BlockDevice // Device used for fence messages
-	heartbeatDevicePath string      // Path to heartbeat device
-	fenceDevicePath     string      // Path to fence device
+	watchdog            mocks.WatchdogInterface
+	heartbeatDevice     mocks.BlockDeviceInterface // Device used for heartbeat messages
+	fenceDevice         mocks.BlockDeviceInterface // Device used for fence messages
+	heartbeatDevicePath string                     // Path to heartbeat device
+	fenceDevicePath     string                     // Path to fence device
 	nodeName            string
 	nodeID              uint16
 	petInterval         time.Duration
@@ -506,7 +489,7 @@ func NewSBDAgent(watchdogPath, heartbeatDevicePath, nodeName, clusterName string
 }
 
 // NewSBDAgentWithWatchdog creates a new SBD agent with a provided watchdog interface
-func NewSBDAgentWithWatchdog(wd WatchdogInterface, heartbeatDevicePath, nodeName, clusterName string,
+func NewSBDAgentWithWatchdog(wd mocks.WatchdogInterface, heartbeatDevicePath, nodeName, clusterName string,
 	nodeID uint16, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration,
 	sbdTimeoutSeconds uint, rebootMethod string, metricsPort int, staleNodeTimeout time.Duration,
 	fileLockingEnabled bool, ioTimeout time.Duration, k8sClient client.Client) (*SBDAgent, error) {
@@ -712,7 +695,7 @@ func (s *SBDAgent) initializeSBDDevices() error {
 }
 
 // setSBDDevices allows setting custom SBD devices (useful for testing)
-func (s *SBDAgent) setSBDDevices(heartbeatDevice, fenceDevice BlockDevice) {
+func (s *SBDAgent) setSBDDevices(heartbeatDevice, fenceDevice mocks.BlockDeviceInterface) {
 	s.heartbeatDevice = heartbeatDevice
 	s.fenceDevice = fenceDevice
 }
@@ -1607,7 +1590,7 @@ func checkSBDDevice(sbdDevicePath string, nodeID uint16, nodeName string) error 
 }
 
 // performSBDReadWriteTest writes the node ID to its slot and reads it back to verify functionality
-func performSBDReadWriteTest(device BlockDevice, nodeID uint16, nodeName string) error {
+func performSBDReadWriteTest(device mocks.BlockDeviceInterface, nodeID uint16, nodeName string) error {
 	logger.V(1).Info("Performing SBD device read/write test", "nodeID", nodeID, "nodeName", nodeName)
 
 	// Calculate slot offset for this node
@@ -1844,18 +1827,7 @@ func (s *SBDAgent) addSBDRemediationController() error {
 	}
 
 	// Set up the reconciler with agent resources
-	// Type assert the fence device to the expected concrete type for fence operations
-	if fenceDevice, ok := s.fenceDevice.(*blockdevice.Device); ok {
-		reconciler.SetFenceDevice(fenceDevice)
-	} else {
-		return fmt.Errorf("fence device is not of expected type *blockdevice.Device")
-	}
-
-	if sbdDevice, ok := s.heartbeatDevice.(*blockdevice.Device); ok {
-		reconciler.SetSBDDevice(sbdDevice)
-	} else {
-		return fmt.Errorf("SBD device is not of expected type *blockdevice.Device")
-	}
+	reconciler.SetSBDDevices(s.heartbeatDevice, s.fenceDevice)
 
 	reconciler.SetNodeManager(s.nodeManager)
 	reconciler.SetOwnNodeInfo(s.nodeID, s.nodeName)

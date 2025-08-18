@@ -17,56 +17,13 @@ limitations under the License.
 package utils
 
 import (
-	"fmt"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/medik8s/sbd-operator/pkg/mocks"
-	"github.com/medik8s/sbd-operator/pkg/sbdprotocol"
 	rtclient "sigs.k8s.io/controller-runtime/pkg/client"
 	rtfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
-
-// WritePeerHeartbeat writes a heartbeat message to a specific peer slot for testing
-func WritePeerHeartbeat(device *mocks.MockBlockDevice, nodeID uint16, timestamp uint64, sequence uint64) error {
-	// Create heartbeat message
-	header := sbdprotocol.NewHeartbeat(nodeID, sequence)
-	header.Timestamp = timestamp
-	heartbeatMsg := sbdprotocol.SBDHeartbeatMessage{Header: header}
-
-	// Marshal the message
-	msgBytes, err := sbdprotocol.MarshalHeartbeat(heartbeatMsg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal heartbeat message: %w", err)
-	}
-
-	// Calculate slot offset for this node
-	slotOffset := int64(nodeID) * sbdprotocol.SBD_SLOT_SIZE
-
-	// Write heartbeat message to the designated slot
-	_, err = device.WriteAt(msgBytes, slotOffset)
-	return err
-}
-
-// WriteFenceMessage writes a fence message to a specific slot for testing
-func WriteFenceMessage(device *mocks.MockBlockDevice, nodeID, targetNodeID uint16, sequence uint64, reason uint8) error {
-	// Create fence message header
-	fenceMsg := sbdprotocol.NewFence(nodeID, targetNodeID, sequence, reason)
-
-	// Marshal the fence message
-	msgBytes, err := sbdprotocol.MarshalFence(fenceMsg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal fence message: %w", err)
-	}
-
-	// Calculate slot offset for the target node (where the fence message is written)
-	slotOffset := int64(targetNodeID) * sbdprotocol.SBD_SLOT_SIZE
-
-	// Write fence message to the designated slot
-	_, err = device.WriteAt(msgBytes, slotOffset)
-	return err
-}
 
 // NewFakeClient creates a minimal fake controller-runtime client for tests
 func NewFakeClient(tb testing.TB) rtclient.Client {
