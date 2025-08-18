@@ -476,26 +476,61 @@ type SBDAgent struct {
 }
 
 // NewSBDAgent creates a new SBD agent with the specified configuration
-func NewSBDAgent(watchdogPath, heartbeatDevicePath, nodeName, clusterName string,
-	nodeID uint16, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration,
-	sbdTimeoutSeconds uint, rebootMethod string, metricsPort int, staleNodeTimeout time.Duration,
-	fileLockingEnabled bool, ioTimeout time.Duration, k8sClient client.Client, controllerNamespace string) (*SBDAgent, error) {
+func NewSBDAgent(
+	watchdogPath, heartbeatDevicePath, nodeName, clusterName string,
+	nodeID uint16,
+	petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration,
+	sbdTimeoutSeconds uint,
+	rebootMethod string,
+	metricsPort int,
+	staleNodeTimeout time.Duration,
+	fileLockingEnabled bool,
+	ioTimeout time.Duration,
+	k8sClient client.Client,
+	controllerNamespace string,
+) (*SBDAgent, error) {
 	// Initialize watchdog first (always required) with softdog fallback for systems without hardware watchdog
 	wd, err := watchdog.NewWithSoftdogFallback(watchdogPath, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize watchdog %s: %w", watchdogPath, err)
 	}
 
-	return NewSBDAgentWithWatchdog(wd, heartbeatDevicePath, nodeName, clusterName, nodeID,
-		petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval, sbdTimeoutSeconds,
-		rebootMethod, metricsPort, staleNodeTimeout, fileLockingEnabled, ioTimeout, k8sClient, controllerNamespace)
+	return NewSBDAgentWithWatchdog(
+		wd,
+		heartbeatDevicePath,
+		nodeName,
+		clusterName,
+		nodeID,
+		petInterval,
+		sbdUpdateInterval,
+		heartbeatInterval,
+		peerCheckInterval,
+		sbdTimeoutSeconds,
+		rebootMethod,
+		metricsPort,
+		staleNodeTimeout,
+		fileLockingEnabled,
+		ioTimeout,
+		k8sClient,
+		controllerNamespace,
+	)
 }
 
 // NewSBDAgentWithWatchdog creates a new SBD agent with a provided watchdog interface
-func NewSBDAgentWithWatchdog(wd mocks.WatchdogInterface, heartbeatDevicePath, nodeName, clusterName string,
-	nodeID uint16, petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration,
-	sbdTimeoutSeconds uint, rebootMethod string, metricsPort int, staleNodeTimeout time.Duration,
-	fileLockingEnabled bool, ioTimeout time.Duration, k8sClient client.Client, controllerNamespace string) (*SBDAgent, error) {
+func NewSBDAgentWithWatchdog(
+	wd mocks.WatchdogInterface,
+	heartbeatDevicePath, nodeName, clusterName string,
+	nodeID uint16,
+	petInterval, sbdUpdateInterval, heartbeatInterval, peerCheckInterval time.Duration,
+	sbdTimeoutSeconds uint,
+	rebootMethod string,
+	metricsPort int,
+	staleNodeTimeout time.Duration,
+	fileLockingEnabled bool,
+	ioTimeout time.Duration,
+	k8sClient client.Client,
+	controllerNamespace string,
+) (*SBDAgent, error) {
 	// Input validation
 	if wd == nil {
 		return nil, fmt.Errorf("watchdog interface cannot be nil")

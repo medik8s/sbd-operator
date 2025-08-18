@@ -88,7 +88,11 @@ func runReconcile(
 	return counter, result, err
 }
 
-func reconcileWithJob(ctx context.Context, controllerReconciler *SBDConfigReconciler, typeNamespacedName types.NamespacedName) (int, reconcile.Result, error) {
+func reconcileWithJob(
+	ctx context.Context,
+	controllerReconciler *SBDConfigReconciler,
+	typeNamespacedName types.NamespacedName,
+) (int, reconcile.Result, error) {
 	var result reconcile.Result
 	var err error
 
@@ -99,7 +103,7 @@ func reconcileWithJob(ctx context.Context, controllerReconciler *SBDConfigReconc
 		Expect(k8sClient.List(ctx, jobs, client.InNamespace(typeNamespacedName.Namespace))).To(Succeed())
 		Expect(jobs.Items).To(HaveLen(1))
 		job := &jobs.Items[0]
-		Expect(len(jobs.Items)).To(BeNumerically("==", 1))
+		Expect(jobs.Items).To(HaveLen(1))
 
 		By(fmt.Sprintf("updating job %s to be completed", job.Name))
 		job.Status.Succeeded = 1
@@ -110,7 +114,7 @@ func reconcileWithJob(ctx context.Context, controllerReconciler *SBDConfigReconc
 		Expect(k8sClient.List(ctx, jobs, client.InNamespace(typeNamespacedName.Namespace))).To(Succeed())
 		Expect(jobs.Items).To(HaveLen(1))
 		job = &jobs.Items[0]
-		Expect(len(jobs.Items)).To(BeNumerically("==", 1))
+		Expect(jobs.Items).To(HaveLen(1))
 		Expect(job.Status.Succeeded).To(BeNumerically("==", 1))
 
 		By("Reconciling the SBDConfig again")
@@ -188,9 +192,10 @@ var _ = Describe("SBDConfig Controller", func() {
 			}
 
 			// set environment variable for the operator image
-			os.Setenv("OPERATOR_IMAGE", "test-sbd-agent:latest")
-			//os.Setenv("POD_NAME", "test-sbd-agent")
-			os.Setenv("POD_NAMESPACE", namespace)
+			err = os.Setenv("OPERATOR_IMAGE", "test-sbd-agent:latest")
+			Expect(err).NotTo(HaveOccurred())
+			err = os.Setenv("POD_NAMESPACE", namespace)
+			Expect(err).NotTo(HaveOccurred())
 		})
 
 		AfterEach(func() {

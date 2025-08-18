@@ -258,7 +258,11 @@ func (r *SBDConfigReconciler) isRunningOnOpenShift(logger logr.Logger) bool {
 // ensureSCCPermissions ensures that the service account has the required SCC permissions
 // This function updates the existing SCC to include the service account from the target namespace
 func (r *SBDConfigReconciler) ensureSCCPermissions(
-	ctx context.Context, sbdConfig *medik8sv1alpha1.SBDConfig, namespaceName string, logger logr.Logger) (controllerutil.OperationResult, error) {
+	ctx context.Context,
+	sbdConfig *medik8sv1alpha1.SBDConfig,
+	namespaceName string,
+	logger logr.Logger,
+) (controllerutil.OperationResult, error) {
 	if !r.isRunningOnOpenShift(logger) {
 		logger.V(1).Info("Not running on OpenShift, skipping SCC management")
 		return controllerutil.OperationResultNone, nil
@@ -1298,7 +1302,11 @@ func (r *SBDConfigReconciler) handleDeletion(
 
 // ensureServiceAccount creates the service account and RBAC resources if they don't exist
 func (r *SBDConfigReconciler) ensureServiceAccount(
-	ctx context.Context, sbdConfig *medik8sv1alpha1.SBDConfig, namespaceName string, logger logr.Logger) (controllerutil.OperationResult, error) {
+	ctx context.Context,
+	sbdConfig *medik8sv1alpha1.SBDConfig,
+	namespaceName string,
+	logger logr.Logger,
+) (controllerutil.OperationResult, error) {
 	// Create the service account - SHARED across multiple SBDConfigs in the same namespace
 	serviceAccount := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
