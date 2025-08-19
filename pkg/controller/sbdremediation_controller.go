@@ -211,6 +211,9 @@ func (r *SBDRemediationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return r.handleDeletion(ctx, &sbdRemediation, logger)
 	}
 
+	logger.V(1).Info("Checking finalizers for SBDRemediation",
+		"spec.nodeName", sbdRemediation.Spec.NodeName)
+
 	// Add finalizer if not present
 	if !controllerutil.ContainsFinalizer(&sbdRemediation, SBDRemediationFinalizer) {
 		controllerutil.AddFinalizer(&sbdRemediation, SBDRemediationFinalizer)
@@ -223,11 +226,21 @@ func (r *SBDRemediationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	logger.V(1).Info("Checking conditions for SBDRemediation",
+		"conditions", sbdRemediation.Status.Conditions)
+
 	// Emit initial event for remediation initiation
 	if len(sbdRemediation.Status.Conditions) == 0 {
 		r.emitEventf(&sbdRemediation, "Normal", ReasonRemediationInitiated,
 			"SBD remediation initiated for node '%s'", sbdRemediation.Spec.NodeName)
 	}
+
+	logger.V(1).Info("Checking if remediation is ready",
+		"ready", sbdRemediation.IsReady(),
+		"fencingSucceeded", sbdRemediation.IsFencingSucceeded(),
+		"fencingInProgress", sbdRemediation.IsFencingInProgress(),
+		"condition", sbdRemediation.GetCondition(medik8sv1alpha1.SBDRemediationConditionFencingSucceeded),
+	)
 
 	// Check if we already completed this remediation
 	if sbdRemediation.IsFencingSucceeded() {
@@ -389,9 +402,8 @@ func (r *SBDRemediationReconciler) clearFenceSlotForNode(
 		"nodeID", nodeID)
 
 	r.emitEventf(remediation, "Normal", ReasonCompleted,
-		"Cleared SBD slot for node after remediation completion",
-		"nodeName", remediation.Spec.NodeName,
-		"nodeID", nodeID)
+		"Cleared SBD slot for node %s (%d) after remediation completion",
+		remediation.Spec.NodeName, nodeID)
 
 	return nil
 }
@@ -420,7 +432,8 @@ func (r *SBDRemediationReconciler) handleDeletion(
 func (r *SBDRemediationReconciler) emitEventf(obj *medik8sv1alpha1.SBDRemediation,
 	eventType, reason, messageFmt string, args ...interface{}) {
 	if r.Recorder != nil {
-		r.Recorder.Eventf(obj, eventType, reason, messageFmt, args...)
+		combinedFmt := fmt.Sprintf("%s (%d): %s", r.ownNodeName, r.ownNodeID, messageFmt)
+		r.Recorder.Eventf(obj, eventType, reason, combinedFmt, args...)
 	}
 }
 
@@ -456,7 +469,7 @@ func (r *SBDRemediationReconciler) handleFencingFailure(
 		fmt.Sprintf("Fencing failed for node '%s': %v", remediation.Spec.NodeName, err))
 
 	// Try to update multiple conditions for failure state
-	// Log but don't fail if these updates don't work (e.g., due to RBAC issues)
+	// Log but don't fail if these updates don't work
 	if updateErr := r.updateRemediationCondition(ctx, remediation,
 		medik8sv1alpha1.SBDRemediationConditionFencingInProgress,
 		metav1.ConditionFalse, ReasonFailed, err.Error()); updateErr != nil {
@@ -684,7 +697,7 @@ func (r *SBDRemediationReconciler) hasNodeStoppedHeartbeating(nodeName string, l
 		maxHeartbeatAge := 60 * time.Second // Conservative estimate for max heartbeat age
 
 		if messageAge > maxHeartbeatAge {
-			logger.V(1).Info("Node heartbeat is stale",
+			logger.Info("Node heartbeat is stale",
 				"nodeID", targetNodeID,
 				"messageAge", messageAge,
 				"maxAge", maxHeartbeatAge)
