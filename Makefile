@@ -1,28 +1,49 @@
+# IMAGE_REGISTRY used to indicate the registery/group for the operator, bundle and catalog
+IMAGE_REGISTRY ?= quay.io/medik8s
+export IMAGE_REGISTRY
+
 # Quay registry configuration - primary image naming system
-QUAY_REGISTRY ?= quay.io
-QUAY_ORG ?= medik8s
-OPERATOR_IMG ?= sbd-operator
-AGENT_IMG ?= sbd-agent
-QUAY_OPERATOR_IMG ?= $(QUAY_REGISTRY)/$(QUAY_ORG)/$(OPERATOR_IMG)
-QUAY_AGENT_IMG ?= $(QUAY_REGISTRY)/$(QUAY_ORG)/$(AGENT_IMG)
+OPERATOR_NAME ?= sbd-operator
+AGENT_NAME ?= sbd-agent
+QUAY_OPERATOR_NAME ?= $(IMAGE_REGISTRY)/$(OPERATOR_NAME)
+QUAY_AGENT_IMG ?= $(IMAGE_REGISTRY)/$(AGENT_NAME)
 
 # VERSION defines the project version for the bundle.
 # Update this value when you upgrade the version of your project.
 # To re-generate a bundle for another specific version without changing the standard setup, you can:
 # - use the VERSION as arg of the bundle target (e.g make bundle VERSION=0.0.2)
 # - use environment variables to overwrite this value (e.g export VERSION=0.0.2)
-VERSION ?= latest
-TAG ?= latest
+DEFAULT_VERSION := 0.0.1
+VERSION ?= $(DEFAULT_VERSION)
+PREVIOUS_VERSION ?= $(DEFAULT_VERSION)
+export VERSION
+
+# When no version is set, use latest as image tags
+ifeq ($(VERSION), $(DEFAULT_VERSION))
+IMAGE_TAG = latest
+else
+IMAGE_TAG = v$(VERSION)
+endif
+export IMAGE_TAG
+# Image URL to use all building/pushing image targets
+IMG ?= $(IMAGE_REGISTRY)/sbd-operator:$(IMAGE_TAG)
+
+# BUNDLE_IMG defines the image:tag used for the bundle.
+# You can use it as an arg. (E.g make bundle-build BUNDLE_IMG=<some-registry>/<project-name-bundle>:<tag>)
+BUNDLE_IMG ?= $(IMAGE_REGISTRY)/sbd-operator-bundle:$(IMAGE_TAG)
+
+# The image tag given to the resulting catalog image (e.g. make catalog-build CATALOG_IMG=example.com/operator-catalog:v0.2.0).
+CATALOG_IMG ?= $(IMAGE_REGISTRY)/sbd-operator-catalog:$(IMAGE_TAG)
+
+AGENT_IMG ?= $(IMAGE_REGISTRY)/sbd-agent:$(IMAGE_TAG)
 
 # Build information
 BUILD_DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 GIT_DESCRIBE ?= $(shell git describe --tags --dirty 2>/dev/null || echo "unknown")
 
-# Legacy IMG variable for backwards compatibility (maps to operator image)
-IMG ?= $(QUAY_OPERATOR_IMG):$(TAG)
-OPERATOR_SHA=$$(podman inspect $(QUAY_OPERATOR_IMG):$(TAG) --format "{{.ID}}" )
-AGENT_SHA=$$(podman inspect $(QUAY_AGENT_IMG):$(TAG) --format "{{.ID}}" )
+OPERATOR_SHA=$$(podman inspect $(QUAY_OPERATOR_NAME):$(IMAGE_TAG) --format "{{.ID}}" )
+AGENT_SHA=$$(podman inspect $(QUAY_AGENT_IMG):$(IMAGE_TAG) --format "{{.ID}}" )
 TEST_ARGS ?= ""
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
@@ -132,17 +153,17 @@ test-prep: build-openshift-installer sync-test-files ## Run smoke tests with bui
 .PHONY: load-images
 load-images:
 	@echo "Loading images into CRC..."
-	$(CONTAINER_TOOL) save --format docker-archive $(QUAY_OPERATOR_IMG):$(TAG) -o bin/$(OPERATOR_IMG).tar
-	$(CONTAINER_TOOL) save --format docker-archive $(QUAY_AGENT_IMG):$(TAG) -o bin/$(AGENT_IMG).tar
-	@eval $$(crc podman-env) && $(CONTAINER_TOOL) load -i bin/$(OPERATOR_IMG).tar
-	@eval $$(crc podman-env) && $(CONTAINER_TOOL) load -i bin/$(AGENT_IMG).tar
+	$(CONTAINER_TOOL) save --format docker-archive $(QUAY_OPERATOR_NAME):$(IMAGE_TAG) -o bin/$(OPERATOR_NAME).tar
+	$(CONTAINER_TOOL) save --format docker-archive $(QUAY_AGENT_IMG):$(IMAGE_TAG) -o bin/$(AGENT_NAME).tar
+	@eval $$(crc podman-env) && $(CONTAINER_TOOL) load -i bin/$(OPERATOR_NAME).tar
+	@eval $$(crc podman-env) && $(CONTAINER_TOOL) load -i bin/$(AGENT_NAME).tar
 
 .PHONY: test-smoke-reload
 test-smoke-reload:
 	@echo "Reloading operator deployment..."
-	@eval $$(crc oc-env) && kubectl patch deployment sbd-operator-controller-manager -n sbd-operator-system -p '{"spec":{"template":{"spec":{"containers":[{"name":"manager","image":"$(QUAY_OPERATOR_IMG)@sha256:$$(podman inspect $(QUAY_AGENT_IMG):$(TAG) --format "{{.ID}}"| head -c 12 )","imagePullPolicy":"Never"}]}}}}'
-	@eval $$(crc oc-env) && kubectl patch sbdconfig test-config -n sbd-operator-system -p '{"spec":{"image":"$(QUAY_AGENT_IMG)@sha256:$$(podman inspect $(QUAY_AGENT_IMG):$(TAG) --format "{{.ID}}"| head -c 12 )"}}'
-	#	OPERATOR_IMG="$(QUAY_OPERATOR_IMG)@sha256:$(OPERATOR_SHA)" \
+	@eval $$(crc oc-env) && kubectl patch deployment sbd-operator-controller-manager -n sbd-operator-system -p '{"spec":{"template":{"spec":{"containers":[{"name":"manager","image":"$(QUAY_OPERATOR_NAME)@sha256:$$(podman inspect $(QUAY_AGENT_IMG):$(IMAGE_TAG) --format "{{.ID}}"| head -c 12 )","imagePullPolicy":"Never"}]}}}}'
+	@eval $$(crc oc-env) && kubectl patch sbdconfig test-config -n sbd-operator-system -p '{"spec":{"image":"$(QUAY_AGENT_IMG)@sha256:$$(podman inspect $(QUAY_AGENT_IMG):$(IMAGE_TAG) --format "{{.ID}}"| head -c 12 )"}}'
+	#	OPERATOR_NAME="$(QUAY_OPERATOR_NAME)@sha256:$(OPERATOR_SHA)" \
 	#	AGENT_IMG="$(QUAY_AGENT_IMG)@sha256:$(AGENT_SHA)" \
 
 ##@ OpenShift on AWS
@@ -312,61 +333,59 @@ clean-webhook-certs: ## Clean up generated webhook certificates.
 # Primary build targets (Quay-first approach)
 # Use these for standard development and CI/CD workflows
 # Example: make build-images VERSION=v1.0.0
-# Example: make build-push QUAY_REGISTRY=my-registry.io QUAY_ORG=myorg
+# Example: make build-push IMAGE_REGISTRY=my-registry.io/myorg
 
 # PLATFORMS defines the target platforms for multi-platform builds
 PLATFORMS ?= linux/arm64,linux/amd64 # Others: linux/s390x,linux/ppc64le
 
 .PHONY: build-operator-image
 build-operator-image: manifests generate fmt vet ## Build operator container image.
-	@echo "Building operator image: $(QUAY_OPERATOR_IMG):$(TAG)"
+	@echo "Building operator image: $(QUAY_OPERATOR_NAME):$(IMAGE_TAG)"
 	@echo "Git version info will be calculated automatically during build"
-	$(CONTAINER_TOOL) build -t sbd-operator:$(TAG) .
-	$(CONTAINER_TOOL) tag sbd-operator:$(TAG) $(QUAY_OPERATOR_IMG):$(TAG)
+	$(CONTAINER_TOOL) build -t ${IMG} .
 
-.PHONY: build-agent-image  
+.PHONY: build-agent-image
 build-agent-image: manifests generate fmt vet ## Build agent container image.
-	@echo "Building agent image: $(QUAY_AGENT_IMG):$(TAG)"
+	@echo "Building agent image: $(QUAY_AGENT_IMG):$(IMAGE_TAG)"
 	@echo "Git version info will be calculated automatically during build"
-	$(CONTAINER_TOOL) build -f cmd/sbd-agent/Dockerfile -t sbd-agent:$(TAG) .
-	$(CONTAINER_TOOL) tag sbd-agent:$(TAG) $(QUAY_AGENT_IMG):$(TAG)
+	$(CONTAINER_TOOL) build -f cmd/sbd-agent/Dockerfile -t ${AGENT_IMG} .
 
 .PHONY: build-multiarch-operator-image
 build-multiarch-operator-image: manifests generate fmt vet ## Build multi-platform operator container image.
-	@echo "Building multi-platform operator image: $(QUAY_OPERATOR_IMG):$(TAG)"
+	@echo "Building multi-platform operator image: $(QUAY_OPERATOR_NAME):$(IMAGE_TAG)"
 	@echo "Platforms: $(PLATFORMS)"
 	@echo "Git version info will be calculated automatically during build"
-	$(CONTAINER_TOOL) build --platform=$(PLATFORMS) -t $(QUAY_OPERATOR_IMG):$(TAG) .
+	$(CONTAINER_TOOL) build --platform=$(PLATFORMS) -t $(QUAY_OPERATOR_NAME):$(IMAGE_TAG) .
 
 .PHONY: build-multiarch-agent-image
 build-multiarch-agent-image: manifests generate fmt vet ## Build multi-platform agent container image.
-	@echo "Building multi-platform agent image: $(QUAY_AGENT_IMG):$(TAG)"
+	@echo "Building multi-platform agent image: $(QUAY_AGENT_IMG):$(IMAGE_TAG)"
 	@echo "Platforms: $(PLATFORMS)"
 	@echo "Git version info will be calculated automatically during build"
-	$(CONTAINER_TOOL) build --platform=$(PLATFORMS) -f cmd/sbd-agent/Dockerfile -t $(QUAY_AGENT_IMG):$(TAG) .
+	$(CONTAINER_TOOL) build --platform=$(PLATFORMS) -f cmd/sbd-agent/Dockerfile -t $(QUAY_AGENT_IMG):$(IMAGE_TAG) .
 
 .PHONY: build-images
 build-images: build-operator-image build-agent-image ## Build both operator and agent container images.
 	@echo "Built SBD Operator images..."
-	@echo "Operator: $(QUAY_OPERATOR_IMG):$(TAG)"
-	@echo "Agent: $(QUAY_AGENT_IMG):$(TAG)"
+	@echo "Operator: $(QUAY_OPERATOR_NAME):$(IMAGE_TAG)"
+	@echo "Agent: $(QUAY_AGENT_IMG):$(IMAGE_TAG)"
 
 .PHONY: build-multiarch-images
 build-multiarch-images: build-multiarch-operator-image build-multiarch-agent-image ## Build both operator and agent multi-platform container images.
 	@echo "Built multi-platform SBD Operator images..."
-	@echo "Operator: $(QUAY_OPERATOR_IMG):$(TAG)"
-	@echo "Agent: $(QUAY_AGENT_IMG):$(TAG)"
+	@echo "Operator: $(QUAY_OPERATOR_NAME):$(IMAGE_TAG)"
+	@echo "Agent: $(QUAY_AGENT_IMG):$(IMAGE_TAG)"
 	@echo "Platforms: $(PLATFORMS)"
 
 .PHONY: push-operator-image
 push-operator-image: ## Push operator container image to registry.
-	@echo "Pushing operator image: $(QUAY_OPERATOR_IMG):$(TAG)"
-	$(CONTAINER_TOOL) push $(QUAY_OPERATOR_IMG):$(TAG)
+	@echo "Pushing operator image: ${IMG}"
+	$(CONTAINER_TOOL) push ${IMG}
 
 .PHONY: push-agent-image
 push-agent-image: ## Push agent container image to registry.
-	@echo "Pushing agent image: $(QUAY_AGENT_IMG):$(TAG)"
-	$(CONTAINER_TOOL) push $(QUAY_AGENT_IMG):$(TAG)
+	@echo "Pushing agent image: ${AGENT_IMG}"
+	$(CONTAINER_TOOL) push ${AGENT_IMG}
 
 .PHONY: push-images
 push-images: push-operator-image push-agent-image ## Push both operator and agent container images to registry.
@@ -374,13 +393,13 @@ push-images: push-operator-image push-agent-image ## Push both operator and agen
 
 .PHONY: push-multiarch-operator-image
 push-multiarch-operator-image: ## Push multi-platform operator container image to registry.
-	@echo "Pushing multi-platform operator image: $(QUAY_OPERATOR_IMG):$(TAG)"
-	$(CONTAINER_TOOL) manifest push $(QUAY_OPERATOR_IMG):$(TAG)
+	@echo "Pushing multi-platform operator image: $(QUAY_OPERATOR_NAME):$(IMAGE_TAG)"
+	$(CONTAINER_TOOL) manifest push $(QUAY_OPERATOR_NAME):$(IMAGE_TAG)
 
 .PHONY: push-multiarch-agent-image
 push-multiarch-agent-image: ## Push multi-platform agent container image to registry.
-	@echo "Pushing multi-platform agent image: $(QUAY_AGENT_IMG):$(TAG)"
-	$(CONTAINER_TOOL) manifest push $(QUAY_AGENT_IMG):$(TAG)
+	@echo "Pushing multi-platform agent image: $(QUAY_AGENT_IMG):$(IMAGE_TAG)"
+	$(CONTAINER_TOOL) manifest push $(QUAY_AGENT_IMG):$(IMAGE_TAG)
 
 .PHONY: push-multiarch-images
 push-multiarch-images: push-multiarch-operator-image push-multiarch-agent-image ## Push both operator and agent multi-platform container images to registry.
@@ -410,18 +429,29 @@ docker-push: push-images ## Legacy alias for push-images (deprecated).
 docker-buildx: buildx ## Legacy alias for buildx (deprecated).
 	@echo "⚠️  Warning: 'docker-buildx' is deprecated. Use 'make buildx' instead."
 
+##@ Container (composite)
+
+.PHONY: container-build
+container-build: docker-build bundle-build ## Build operator, agent, and bundle images
+
+.PHONY: container-push
+container-push: docker-push bundle-push catalog-build catalog-push ## Push operator/agent, bundle, and catalog images
+
+.PHONY: container-build-and-push
+container-build-and-push: container-build container-push ## Build and push all images (operator, agent, bundle, catalog)
+
 
 .PHONY: update-manifests
 update-manifests: ## Update all manifests to use current QUAY image references (auto-runs with build-push).
 	@echo "Updating manifests with image references..."
-	@echo "Operator: $(QUAY_OPERATOR_IMG):$(TAG) aka. $(OPERATOR_SHA)"
-	@echo "Agent: $(QUAY_AGENT_IMG):$(TAG)  aka. $(AGENT_SHA)"
+	@echo "Operator: $(QUAY_OPERATOR_NAME):$(IMAGE_TAG) aka. $(OPERATOR_SHA)"
+	@echo "Agent: $(QUAY_AGENT_IMG):$(IMAGE_TAG)  aka. $(AGENT_SHA)"
 	
 	# Update agent daemonset manifests
 	@for file in deploy/sbd-agent-daemonset*.yaml; do \
 		if [ -f "$$file" ]; then \
 			echo "Updating $$file..."; \
-			sed -i.bak 's|image: quay\.io/medik8s/sbd-agent:.*|image: $(QUAY_AGENT_IMG):$(TAG)|g' "$$file"; \
+			sed -i.bak 's|image: quay\.io/medik8s/sbd-agent:.*|image: $(QUAY_AGENT_IMG):$(IMAGE_TAG)|g' "$$file"; \
 			rm -f "$$file.bak"; \
 		fi; \
 	done
@@ -430,7 +460,7 @@ update-manifests: ## Update all manifests to use current QUAY image references (
 	@for file in config/samples/*.yaml; do \
 		if [ -f "$$file" ] && grep -q 'image:' "$$file"; then \
 			echo "Updating $$file..."; \
-			sed -i.bak 's|image: "quay\.io/medik8s/sbd-agent:.*"|image: "$(QUAY_AGENT_IMG):$(TAG)"|g' "$$file"; \
+			sed -i.bak 's|image: "quay\.io/medik8s/sbd-agent:.*"|image: "$(QUAY_AGENT_IMG):$(IMAGE_TAG)"|g' "$$file"; \
 			rm -f "$$file.bak"; \
 		fi; \
 	done
@@ -440,13 +470,13 @@ update-manifests: ## Update all manifests to use current QUAY image references (
 .PHONY: build-installer
 build-installer: update-manifests manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
 	mkdir -p dist
-	cd config/manager && $(KUSTOMIZE) edit set image controller=$(QUAY_OPERATOR_IMG):$(TAG)
+	cd config/manager && $(KUSTOMIZE) edit set image controller=$(QUAY_OPERATOR_NAME):$(IMAGE_TAG)
 	$(KUSTOMIZE) build config/default > dist/install.yaml
 
 .PHONY: build-openshift-installer
 build-openshift-installer: update-manifests manifests generate kustomize ## Generate a consolidated YAML with CRDs, deployment, and OpenShift SecurityContextConstraints.
 	mkdir -p dist
-	cd config/manager && $(KUSTOMIZE) edit set image controller=$(QUAY_OPERATOR_IMG):$(TAG)
+	cd config/manager && $(KUSTOMIZE) edit set image controller=$(QUAY_OPERATOR_NAME):$(IMAGE_TAG)
 	$(KUSTOMIZE) build config/openshift-default > dist/install.yaml
 
 
@@ -489,6 +519,8 @@ CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 GINKGO ?= $(LOCALBIN)/ginkgo
+OPERATOR_SDK ?= $(LOCALBIN)/operator-sdk
+OPM ?= $(LOCALBIN)/opm
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.6.0
@@ -499,6 +531,29 @@ ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller
 ENVTEST_K8S_VERSION ?= $(shell go list -m -f "{{ .Version }}" k8s.io/api | awk -F'[v.]' '{printf "1.%d", $$3}')
 GOLANGCI_LINT_VERSION ?= v2.1.0
 GINKGO_VERSION ?= v2.22.2
+
+# OLM tooling versions (aligned with other operators)
+OPERATOR_SDK_VERSION ?= v1.33.0
+OPM_VERSION ?= v1.36.0
+
+# OLM bundle channels/default (aligned defaults)
+CHANNELS ?= stable
+DEFAULT_CHANNEL ?= stable
+
+# CSV patch helpers
+YQ ?= $(LOCALBIN)/yq
+YQ_VERSION ?= v4.44.1
+# 1x1 transparent PNG
+ICON_BASE64 ?= iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/wwAAgMBgS+0L8sAAAAASUVORK5CYII=
+
+# Derived bundle metadata opts
+ifneq ($(origin CHANNELS), undefined)
+BUNDLE_CHANNELS := --channels=$(CHANNELS)
+endif
+ifneq ($(origin DEFAULT_CHANNEL), undefined)
+BUNDLE_DEFAULT_CHANNEL := --default-channel=$(DEFAULT_CHANNEL)
+endif
+BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
@@ -548,3 +603,90 @@ mv $(1) $(1)-$(3) ;\
 } ;\
 ln -sf $(1)-$(3) $(1)
 endef
+
+##@ OLM Bundle & Catalog
+
+# CSV path for post-generation edits if needed
+CSV ?= ./bundle/manifests/$(OPERATOR_NAME).clusterserviceversion.yaml
+
+.PHONY: bundle
+bundle: manifests operator-sdk kustomize yq ## Generate OLM bundle manifests and metadata, then validate
+	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
+	$(KUSTOMIZE) build config/default | $(OPERATOR_SDK) generate bundle -q --manifests --metadata --overwrite --version $(VERSION) $(BUNDLE_METADATA_OPTS)
+	$(MAKE) bundle-update
+	$(MAKE) bundle-validate
+
+.PHONY: bundle-validate
+bundle-validate: operator-sdk ## Validate bundle directory
+	$(OPERATOR_SDK) bundle validate ./bundle --select-optional suite=operatorframework
+
+.PHONY: bundle-build
+bundle-build: bundle ## Build bundle image
+	@echo "Building bundle image: ${BUNDLE_IMG}"
+	$(CONTAINER_TOOL) build -f bundle.Dockerfile -t ${BUNDLE_IMG} .
+
+.PHONY: bundle-push
+bundle-push: ## Push bundle image
+	@echo "Pushing bundle image: ${BUNDLE_IMG}"
+	$(CONTAINER_TOOL) push ${BUNDLE_IMG}
+
+.PHONY: catalog-build
+catalog-build: opm ## Build a catalog image (single-bundle index)
+	@echo "Building catalog image: ${CATALOG_IMG}"
+	$(OPM) index add --container-tool $(CONTAINER_TOOL) --tag $(CATALOG_IMG) --bundles $(BUNDLE_IMG)
+
+.PHONY: catalog-push
+catalog-push: ## Push catalog image
+	$(CONTAINER_TOOL) push ${CATALOG_IMG}
+
+.PHONY: add-replaces-field
+add-replaces-field: ## Add replaces to CSV for versioned builds
+	@if [ "$(VERSION)" != "latest" ] && [ "$(PREVIOUS_VERSION)" != "$(VERSION)" ] && [ "$(PREVIOUS_VERSION)" != "" ]; then \
+		sed -r -i "/  version: $(VERSION)/ a\  replaces: $(OPERATOR_NAME).v$(PREVIOUS_VERSION)" ${CSV} || true ;\
+	else \
+		echo "Skipping replaces field (VERSION=$(VERSION), PREVIOUS_VERSION=$(PREVIOUS_VERSION))" ;\
+	fi
+
+.PHONY: bundle-reset
+bundle-reset: ## Reset bundle to default version
+	VERSION=0.0.1 $(MAKE) bundle
+
+.PHONY: operator-sdk
+operator-sdk: $(OPERATOR_SDK) ## Download operator-sdk locally if necessary.
+$(OPERATOR_SDK): $(LOCALBIN)
+	@{ \
+	set -e ;\
+	OS=$$(go env GOOS) && ARCH=$$(go env GOARCH) ;\
+	URL="https://github.com/operator-framework/operator-sdk/releases/download/$(OPERATOR_SDK_VERSION)/operator-sdk_$${OS}_$${ARCH}"; \
+	echo "Downloading $$URL"; \
+	curl -sSLo $(OPERATOR_SDK) "$$URL"; \
+	chmod +x $(OPERATOR_SDK); \
+	}
+
+.PHONY: opm
+opm: $(OPM) ## Download opm locally if necessary.
+$(OPM): $(LOCALBIN)
+	@{ \
+	set -e ;\
+	OS=$$(go env GOOS) && ARCH=$$(go env GOARCH) ;\
+	URL="https://github.com/operator-framework/operator-registry/releases/download/$(OPM_VERSION)/$${OS}-$${ARCH}-opm"; \
+	echo "Downloading $$URL"; \
+	curl -sSLo $(OPM) "$$URL"; \
+	chmod +x $(OPM); \
+	}
+
+.PHONY: yq
+yq: $(YQ) ## Download yq locally if necessary.
+$(YQ): $(LOCALBIN)
+	$(call go-install-tool,$(YQ),github.com/mikefarah/yq/v4,$(YQ_VERSION))
+
+.PHONY: bundle-update
+bundle-update: yq ## Patch CSV with image, icon and minKubeVersion
+	@echo "Patching CSV: ${CSV}"
+	@# set container image annotation
+	$(YQ) -i '.metadata.annotations.containerImage = "$(IMG)"' ${CSV}
+	@# ensure icon has data and mediatype
+	$(YQ) -i '.spec.icon[0].base64data = "$(ICON_BASE64)"' ${CSV}
+	$(YQ) -i '.spec.icon[0].mediatype = "image/png"' ${CSV}
+	@# set minimum supported Kubernetes version
+	$(YQ) -i '.spec.minKubeVersion = "1.26.0"' ${CSV}
